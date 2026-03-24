@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Logoscore
+Exec=logoscore
+Icon=logoscore
+Terminal=true
+Categories=Utility;
