@@ -1,25 +1,37 @@
 #include <QCoreApplication>
 #include <QDebug>
 #include <cstdio>
-#include "logos_core.h"
-#include "command_line_parser.h"
-#include "call_executor.h"
+#include <cstring>
+#include <iostream>
 
-// Custom message handler that ensures immediate flushing of output
-// We do this due to github actions timing out
-void flushingMessageHandler(QtMsgType type, const QMessageLogContext &context, const QString &msg) {
+#include "config.h"
+#include "daemon/daemon.h"
+#include "daemon/connection_file.h"
+#include "client/client.h"
+#include "client/output.h"
+#include "client/commands/command.h"
+#include "inline/command_line_parser.h"
+#include "inline/call_executor.h"
+#include "logos_core.h"
+
+static bool g_verbose = false;
+
+static void messageHandler(QtMsgType type, const QMessageLogContext &context, const QString &msg) {
     QByteArray localMsg = msg.toLocal8Bit();
     const char *file = context.file ? context.file : "";
     const char *function = context.function ? context.function : "";
-    
+
     switch (type) {
     case QtDebugMsg:
+        if (!g_verbose) return;
         fprintf(stderr, "Debug: %s\n", localMsg.constData());
         break;
     case QtInfoMsg:
+        if (!g_verbose) return;
         fprintf(stderr, "Info: %s\n", localMsg.constData());
         break;
     case QtWarningMsg:
+        if (!g_verbose) return;
         fprintf(stderr, "Warning: %s\n", localMsg.constData());
         break;
     case QtCriticalMsg:
@@ -30,30 +42,181 @@ void flushingMessageHandler(QtMsgType type, const QMessageLogContext &context, c
         fflush(stderr);
         abort();
     }
-    fflush(stderr);  // Flush after every message
+    fflush(stderr);
 }
 
-int main(int argc, char *argv[]) {
-    // Install custom message handler before any Qt operations
-    qInstallMessageHandler(flushingMessageHandler);
+enum class Mode {
+    Daemon,
+    Client,
+    Inline,
+    Help,
+    Version
+};
 
+static Mode detectMode(int argc, char* argv[])
+{
+    // Scan argv for mode indicators
+    bool hasDaemonFlag = false;
+    bool hasSubcommand = false;
+    bool hasInlineFlags = false;
+    QString firstPositionalArg;
+
+    QStringList subcommands = knownSubcommands();
+
+    for (int i = 1; i < argc; ++i) {
+        QString arg = QString::fromUtf8(argv[i]);
+
+        if (arg == "-D" || arg == "daemon") {
+            hasDaemonFlag = true;
+            break;
+        }
+        if (arg == "--help" || arg == "-h") {
+            return Mode::Help;
+        }
+        if (arg == "--version") {
+            return Mode::Version;
+        }
+        if (arg == "-m" || arg == "--modules-dir" ||
+            arg == "-l" || arg == "--load-modules" ||
+            arg == "-c" || arg == "--call" ||
+            arg == "--quit-on-finish") {
+            hasInlineFlags = true;
+        }
+        // Check if first positional arg is a known subcommand
+        if (!arg.startsWith('-') && firstPositionalArg.isEmpty()) {
+            firstPositionalArg = arg;
+        }
+    }
+
+    if (hasDaemonFlag)
+        return Mode::Daemon;
+
+    if (!firstPositionalArg.isEmpty() && subcommands.contains(firstPositionalArg))
+        return Mode::Client;
+
+    if (hasInlineFlags)
+        return Mode::Inline;
+
+    return Mode::Help;
+}
+
+static void printHelp()
+{
+    std::cout << "logoscore - Logos Core runtime CLI\n"
+              << "\n"
+              << "Usage:\n"
+              << "  logoscore -D [--modules-dir <path>]...       Start daemon\n"
+              << "  logoscore <command> [flags] [args...]        Run a command\n"
+              << "  logoscore -m <path> -l <mods> -c <call>     Inline mode (legacy)\n"
+              << "\n"
+              << "Commands:\n"
+              << "  status                  Show daemon and module health\n"
+              << "  load-module <name>      Load a module into the daemon\n"
+              << "  unload-module <name>    Unload a module from the daemon\n"
+              << "  reload-module <name>    Reload (unload + load) a module\n"
+              << "  list-modules [--loaded] List available or loaded modules\n"
+              << "  module-info <name>      Show detailed module information\n"
+              << "  info <name>             Alias for module-info\n"
+              << "  call <mod> <method>     Call a method on a loaded module\n"
+              << "  watch <mod> [--event]   Watch events from a module\n"
+              << "  stats                   Show module resource usage\n"
+              << "  stop                    Stop the daemon\n"
+              << "\n"
+              << "Global Flags:\n"
+              << "  -j, --json              Force JSON output\n"
+              << "  -q, --quiet             Suppress non-essential output\n"
+              << "  -v, --verbose           Show debug logs\n"
+              << "  -h, --help              Show this help\n"
+              << "      --version           Show version\n"
+              << "\n"
+              << "Daemon Flags:\n"
+              << "  -D, daemon              Start the daemon process\n"
+              << "  -m, --modules-dir       Module search directory (repeatable)\n"
+              << "\n"
+              << "Legacy (Inline) Flags:\n"
+              << "  -m, --modules-dir       Module search directory (repeatable)\n"
+              << "  -l, --load-modules      Comma-separated modules to load\n"
+              << "  -c, --call              Call module.method(args)\n"
+              << "      --quit-on-finish    Exit after calls complete\n"
+              << std::endl;
+}
+
+static int runClientMode(int argc, char* argv[])
+{
+    // Parse global flags and subcommand
+    bool jsonMode = false;
+    bool quiet = false;
+    QString subcommand;
+    QStringList cmdArgs;
+
+    for (int i = 1; i < argc; ++i) {
+        QString arg = QString::fromUtf8(argv[i]);
+
+        if (arg == "--json" || arg == "-j") {
+            jsonMode = true;
+            continue;
+        }
+        if (arg == "--quiet" || arg == "-q") {
+            quiet = true;
+            continue;
+        }
+        if (arg == "--verbose" || arg == "-v") {
+            continue; // already handled in main()
+        }
+
+        if (subcommand.isEmpty() && !arg.startsWith('-')) {
+            subcommand = arg;
+        } else if (!subcommand.isEmpty()) {
+            cmdArgs.append(arg);
+        }
+    }
+
+    Output output(jsonMode);
+    RpcClient rpcClient;
+
+    auto cmd = createCommand(subcommand, rpcClient, output);
+    if (!cmd) {
+        output.printError("INVALID_ARGS",
+                         QString("Unknown command: %1. Run 'logoscore --help' for usage.").arg(subcommand));
+        return 1;
+    }
+
+    return cmd->execute(cmdArgs);
+}
+
+static int runDaemonMode(int argc, char* argv[])
+{
+    QStringList modulesDirs;
+
+    for (int i = 1; i < argc; ++i) {
+        QString arg = QString::fromUtf8(argv[i]);
+        if ((arg == "-m" || arg == "--modules-dir") && i + 1 < argc) {
+            modulesDirs.append(QString::fromUtf8(argv[i + 1]));
+            ++i;
+        }
+    }
+
+    return Daemon::start(argc, argv, modulesDirs);
+}
+
+static int runInlineMode(int argc, char* argv[])
+{
     QCoreApplication app(argc, argv);
     app.setApplicationName("logoscore");
     app.setApplicationVersion("1.0");
 
     CoreArgs args = parseCommandLineArgs(app);
-    if (!args.valid) {
+    if (!args.valid)
         return 1;
-    }
 
     logos_core_init(argc, argv);
-    
+
     for (const QString& dir : args.modulesDirs) {
         logos_core_add_plugins_dir(dir.toUtf8().constData());
     }
-    
+
     logos_core_start();
-    
+
     if (!args.loadModules.isEmpty()) {
         for (const QString& moduleName : args.loadModules) {
             QString trimmed = moduleName.trimmed();
@@ -64,7 +227,7 @@ int main(int argc, char *argv[]) {
             }
         }
     }
-    
+
     if (!args.calls.isEmpty()) {
         int callResult = CallExecutor::executeCalls(args.calls);
         if (args.quitOnFinish || callResult != 0) {
@@ -73,4 +236,50 @@ int main(int argc, char *argv[]) {
     }
 
     return logos_core_exec();
+}
+
+int main(int argc, char *argv[])
+{
+    // Check for verbose flag before any Qt operations
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
+            g_verbose = true;
+            break;
+        }
+    }
+
+    qInstallMessageHandler(messageHandler);
+
+    Mode mode = detectMode(argc, argv);
+
+    switch (mode) {
+    case Mode::Help:
+        printHelp();
+        return 0;
+
+    case Mode::Version:
+        std::cout << "logoscore version 1.0" << std::endl;
+        return 0;
+
+    case Mode::Daemon:
+    {
+        QCoreApplication app(argc, argv);
+        app.setApplicationName("logoscore");
+        app.setApplicationVersion("1.0");
+        return runDaemonMode(argc, argv);
+    }
+
+    case Mode::Client:
+    {
+        QCoreApplication app(argc, argv);
+        app.setApplicationName("logoscore");
+        app.setApplicationVersion("1.0");
+        return runClientMode(argc, argv);
+    }
+
+    case Mode::Inline:
+        return runInlineMode(argc, argv);
+    }
+
+    return 1;
 }

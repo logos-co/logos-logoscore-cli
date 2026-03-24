@@ -44,48 +44,145 @@ nix build '.#logos-logoscore-cli'
 
 ## Usage
 
-### Command Line Options
+`logoscore` operates in two modes: **daemon mode** (long-running process with client commands) and **inline mode** (single-process, legacy).
+
+### Daemon Mode
+
+Start a daemon, then use client commands to manage modules and call methods.
+
+#### Starting the Daemon
+
+```bash
+# Start the daemon with module directories
+logoscore -D -m ./modules
+logoscore daemon --modules-dir ./modules
+
+# Start in the background
+logoscore -D -m ./modules &
+```
+
+The daemon writes a connection file to `~/.logoscore/daemon.json` on startup and removes it on shutdown.
+
+#### Client Commands
+
+All client commands connect to the running daemon. When stdout is not a TTY (piped or redirected), output is JSON by default. Use `--json` / `-j` to force JSON in a terminal.
+
+```bash
+# Check daemon health
+logoscore status
+logoscore status --json
+
+# Load a module (dependencies resolved automatically)
+logoscore load-module waku
+logoscore load-module chat --json
+
+# Unload a module
+logoscore unload-module waku
+
+# Reload a module (unload + load; falls back to load if not loaded)
+logoscore reload-module chat
+
+# List all discovered modules
+logoscore list-modules
+logoscore list-modules --loaded    # only loaded modules
+
+# Get detailed module info (methods, dependencies, crash details)
+logoscore module-info chat
+logoscore info chat                # alias
+
+# Call a method on a loaded module
+logoscore call chat send_message "hello world"
+logoscore call storage load_config @config.json   # @file reads from file
+
+# Alternative verbose call syntax
+logoscore module chat method send_message "hello"
+
+# Watch events from a module (streams until Ctrl+C)
+logoscore watch chat --event chat-message
+logoscore watch chat --json        # NDJSON output
+
+# Show resource usage for loaded modules
+logoscore stats
+```
+
+#### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `1` | General error / daemon not running (for `status`) |
+| `2` | No daemon running |
+| `3` | Module error (not found, load/unload failed) |
+| `4` | Method error (not found, call failed, timeout) |
+
+#### Authentication
+
+For local usage, token management is automatic — the daemon writes a token to `~/.logoscore/daemon.json` and clients read it.
+
+For remote or programmatic access:
+
+```bash
+# Via environment variable
+LOGOSCORE_TOKEN=<token> logoscore list-modules --json
+
+# Via config file
+echo '{"token": "<token>"}' > ~/.logoscore/config.json
+```
+
+Token resolution order: `LOGOSCORE_TOKEN` env var → `~/.logoscore/config.json` → `~/.logoscore/daemon.json`.
+
+#### Agent / Script Example
+
+```bash
+# Start daemon
+logoscore -D -m ./modules &
+sleep 2
+
+# Preflight: verify daemon is running
+logoscore status --json | jq -e '.daemon.status == "running"' > /dev/null
+
+# Load modules
+logoscore load-module chat --json
+
+# Discover available methods
+logoscore module-info chat --json | jq '.methods[].name'
+
+# Call a method
+logoscore call chat send_message "hello from script" --json
+
+# Auto-reload any crashed modules
+logoscore list-modules --json | jq -r '.[] | select(.status == "crashed") | .name' | while read mod; do
+  logoscore reload-module "$mod" --json
+done
+
+# Stream events to a log file
+logoscore watch chat --event chat-message --json >> events.log &
+```
+
+### Inline Mode (Legacy)
+
+Single-process mode — no daemon needed. Start the core, load modules, call methods, and exit.
+
+```bash
+logoscore -m ./modules -l waku,chat -c "chat.send_message(hello)" --quit-on-finish
+```
+
+#### Inline Options
 
 ```
-logoscore [options]
-
-Options:
   -m, --modules-dir <path>    Directory to scan for modules (repeatable)
   -l, --load-modules <modules> Comma-separated list of modules to load
   -c, --call <call>           Call a module method: module.method(arg1, arg2)
                               Use @file to read a parameter from a file.
                               Can be repeated for sequential calls.
       --quit-on-finish        Exit after all -c calls complete
-  -h, --help                  Show help
-      --version               Show version
 ```
 
-### Method Call Syntax
-
-```
-module_name.method_name(arg1, arg2, ...)
-```
-
-- **Type auto-detection:** `true`/`false` → bool, `42` → int, `3.14` → double, else → string
-- **File parameters:** `@filename` loads the file content as the argument
-- **30-second timeout** per call; exit code 1 on failure
-
-### Examples
+#### Inline Examples
 
 ```bash
-# Run with default modules directory
-logoscore
-
-# Specify a custom modules directory
-logoscore --modules-dir /path/to/modules
-logoscore -m /path/to/modules
-
 # Load specific modules (deps resolved automatically)
-logoscore --load-modules module1,module2,module3
-logoscore -l module1,module2,module3
-
-# Load modules and call a method
-logoscore -m ./modules -l my_module -c "my_module.start()"
+logoscore -m ./modules -l module1,module2
 
 # Call with parameters
 logoscore -l storage -c "storage.init('config', 42, true)"
@@ -98,18 +195,13 @@ logoscore -l storage \
   -c "storage.init(@config.json)" \
   -c "storage.start()"
 
-# Exit after calls finish (useful in scripts)
-logoscore -m ./modules -l my_module \
-  -c "my_module.doWork(hello)" \
-  --quit-on-finish
-
 # Multiple modules directory sources
 logoscore -m ./core-modules -m ./extra-modules -l my_module
 ```
 
 ### Dependency Resolution
 
-When using `--load-modules`, `logoscore` automatically resolves and loads transitive dependencies in the correct order. For example, if `logos_irc` depends on `waku_module` and `chat`, loading `logos_irc` alone is equivalent to loading `waku_module,chat,logos_irc`.
+When loading modules, `logoscore` automatically resolves and loads transitive dependencies in the correct order. For example, if `logos_irc` depends on `waku_module` and `chat`, loading `logos_irc` alone is equivalent to loading `waku_module,chat,logos_irc`.
 
 ## Supported Platforms
 

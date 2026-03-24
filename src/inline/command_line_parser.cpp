@@ -109,6 +109,9 @@ CoreArgs parseCommandLineArgs(QCoreApplication& app) {
     );
     parser.addOption(quitOnFinishOption);
 
+    QCommandLineOption verboseOption("verbose", "Show debug logs");
+    parser.addOption(verboseOption);
+
     parser.process(app);
 
     if (parser.isSet(modulesDirOption)) {

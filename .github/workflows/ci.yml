@@ -7,8 +7,15 @@ on:
     branches: [ master ]
 
 jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
+  test:
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64-linux
+            runner: ubuntu-latest
+          - arch: aarch64-linux
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
 
     steps:
     - name: Checkout code
@@ -25,5 +32,8 @@ jobs:
         name: logos-co
         authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
 
+    - name: Build
+      run: nix build --print-build-logs
+
     - name: Run tests
-      run: nix build '.#checks.x86_64-linux.tests' --print-build-logs
+      run: nix build '.#checks.${{ matrix.arch }}.tests' --print-build-logs
