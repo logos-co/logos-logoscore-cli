@@ -4,7 +4,7 @@
   inputs = {
     logos-nix.url = "github:logos-co/logos-nix";
     nixpkgs.follows = "logos-nix/nixpkgs";
-    logos-liblogos.url = "github:logos-co/logos-liblogos/logoscore_cli";
+    logos-liblogos.url = "github:logos-co/logos-liblogos";
     logos-capability-module.url = "github:logos-co/logos-capability-module";
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";

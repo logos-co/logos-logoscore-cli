@@ -137,16 +137,15 @@
         ]
       },
       "locked": {
-        "lastModified": 1774367910,
+        "lastModified": 1774372066,
         "narHash": "sha256-VS2MCr5jp7ARl/CEzMadlpp5LS5wpaOQ3EO+6rW+peE=",
         "owner": "logos-co",
         "repo": "logos-liblogos",
-        "rev": "d6379ea2f311eee6868fbf8f345707ae8bb01ea2",
+        "rev": "9c006df0cf3923c4caab1afc2ff8b97f0173b7a9",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
-        "ref": "logoscore_cli",
         "repo": "logos-liblogos",
         "type": "github"
       }
