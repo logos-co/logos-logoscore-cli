@@ -67,6 +67,7 @@ logoscore [global-flags] <command> [command-flags] [args...]
 | `--json` | `-j` | Output as JSON. Default when stdout is not a TTY. |
 | `--modules-dir <path>` | `-m` | Module search directory (daemon mode only, repeatable). |
 | `--quiet` | `-q` | Suppress non-essential output. |
+| `--verbose` | `-v` | Show debug/info/warning logs (suppressed by default). |
 | `--help` | `-h` | Show help. |
 | `--version` | | Show version. |
 
@@ -83,7 +84,7 @@ logoscore -D [--modules-dir <path>]...
 logoscore daemon [--modules-dir <path>]...
 ```
 
-Starts the Logos Core runtime in the foreground. Logs to stderr. Writes `~/.logoscore/daemon.json` on startup, removes it on clean shutdown.
+Starts the Logos Core runtime in the foreground. Startup and shutdown messages go to stdout (so `> logs.txt` captures them); debug/info/warning logs go to stderr and are suppressed unless `--verbose` is passed. Writes `~/.logoscore/daemon.json` on startup, removes it on clean shutdown.
 
 The daemon scans the configured module directories for available plugins and makes them available for loading via client commands.
 
@@ -159,9 +160,13 @@ logoscore call <module> <method> [args...]
 
 Invokes the named method on the specified module. Arguments are positional. Use the `@file` prefix to read a parameter value from a file.
 
+Arguments are automatically type-coerced: numeric strings become integers or doubles, `"true"`/`"false"` become booleans, and everything else remains a string. This allows method signatures with typed parameters to match correctly.
+
 ```bash
 logoscore call chat send_message "hello"
 logoscore call storage load_config @config.json
+logoscore call math twoArgs "hello" 2          # "hello" as string, 2 as integer
+logoscore call config setBool "flag" true       # "flag" as string, true as boolean
 ```
 
 **Alternative syntax** (explicit form for readability):
@@ -198,6 +203,30 @@ logoscore stats
 ```
 
 Displays CPU and memory usage for each loaded module process.
+
+### `stop`
+
+Stop the running daemon.
+
+```
+logoscore stop
+```
+
+Sends a shutdown request to the daemon via `core_service`. The daemon performs a clean shutdown: unloads all modules, removes the connection file, and exits. The client prints a confirmation message and exits.
+
+If the daemon exits before the RPC response arrives (expected behavior), the client treats the connection loss as a successful shutdown.
+
+**Human:**
+```
+$ logoscore stop
+Daemon stopped.
+```
+
+**JSON:**
+```json
+$ logoscore stop --json
+{"status":"ok","message":"Daemon shutting down."}
+```
 
 ### `info <module>`
 
@@ -579,7 +608,12 @@ $ logoscore module-info chat --json
 ```
 $ logoscore call chat send_message "hello world"
 message sent (id: msg_4a7b2c)
+
+$ logoscore call math add 2 3
+5
 ```
+
+In human mode, scalar results (strings, numbers, booleans) are printed as plain values. Structured results (objects, arrays) are printed as indented JSON. Null results produce no output.
 
 **JSON:**
 ```
@@ -694,9 +728,11 @@ $ logoscore list-modules --json
 ### Output Rules
 
 - Primary output (results, data) goes to stdout.
-- Diagnostics, progress, and human-readable errors go to stderr.
+- Debug, info, and warning logs go to stderr and are suppressed by default. Pass `--verbose` to show them.
+- Critical and fatal errors always go to stderr.
 - In JSON mode, colors are disabled and only structured data goes to stdout.
 - JSON mode auto-activates when stdout is not a TTY (piped or redirected), so agents and scripts get JSON by default without needing `--json`.
+- Daemon startup/shutdown messages go to stdout, so `logoscore -D > logs.txt` captures them correctly.
 
 ---
 
@@ -968,9 +1004,15 @@ kill $WATCH_PID
    → Runs until killed
 
 5. STOP DAEMON
-   Ctrl+C / kill <pid>
+   logoscore stop
+   → Client sends shutdown RPC to core_service
+   → Daemon schedules quit (with brief delay to send RPC response)
    → Daemon unloads all modules
    → Removes ~/.logoscore/daemon.json
    → Exits
+
+   Alternatively: Ctrl+C / kill <pid> / SIGTERM
+   → Signal handler triggers QCoreApplication::quit()
+   → Same cleanup as above
 ```
 
