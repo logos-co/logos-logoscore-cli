@@ -38,14 +38,43 @@ endif()
 add_library(logos_core SHARED IMPORTED)
 set_target_properties(logos_core PROPERTIES
     IMPORTED_LOCATION "${LOGOS_CORE_LIBRARY}"
-    INTERFACE_INCLUDE_DIRECTORIES "${LOGOS_LIBLOGOS_ROOT}/include"
+    INTERFACE_INCLUDE_DIRECTORIES "${LOGOS_LIBLOGOS_ROOT}/include;${LOGOS_LIBLOGOS_ROOT}/include/cpp"
 )
 
 # ── logoscore executable ──────────────────────────────────────────────────────
 set(CLI_SOURCES
     src/main.cpp
-    src/command_line_parser.cpp
-    src/call_executor.cpp
+    src/config.cpp
+
+    # Daemon path
+    src/daemon/daemon.cpp
+    src/daemon/connection_file.cpp
+
+    # Client path
+    src/client/client.cpp
+    src/client/output.cpp
+    src/client/commands/command.cpp
+    src/client/commands/status_command.cpp
+    src/client/commands/load_module_command.cpp
+    src/client/commands/unload_module_command.cpp
+    src/client/commands/reload_module_command.cpp
+    src/client/commands/list_modules_command.cpp
+    src/client/commands/module_info_command.cpp
+    src/client/commands/call_command.cpp
+    src/client/commands/watch_command.cpp
+    src/client/commands/stats_command.cpp
+    src/client/commands/stop_command.cpp
+
+    # Core service (in-process daemon module)
+    src/core_service/core_service_impl.cpp
+    src/core_service/core_service_dispatch.cpp
+
+    # SDK provider implementation (needed for in-process core_service)
+    ${LOGOS_LIBLOGOS_ROOT}/include/cpp/logos_provider_object.cpp
+
+    # Inline path (legacy)
+    src/inline/command_line_parser.cpp
+    src/inline/call_executor.cpp
 )
 
 add_executable(logoscore ${CLI_SOURCES})
@@ -59,6 +88,7 @@ target_link_libraries(logoscore PRIVATE
 target_include_directories(logoscore PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${LOGOS_LIBLOGOS_ROOT}/include
+    ${LOGOS_LIBLOGOS_ROOT}/include/cpp
 )
 
 # RPATH so the binary finds liblogos_core at runtime

@@ -1,0 +1,7 @@
+{
+  "name": "core_service",
+  "version": "1.0.0",
+  "type": "core",
+  "category": "management",
+  "description": "RPC gateway for CLI client commands"
+}

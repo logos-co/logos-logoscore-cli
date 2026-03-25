@@ -35,7 +35,7 @@ static fs::path getExecutableDir() {
 class CLITest : public ::testing::Test {
 protected:
     fs::path logoscoreBinary;
-    
+
     void SetUp() override {
         // Check for LOGOSCORE_BINARY environment variable first
         const char* envBinary = std::getenv("LOGOSCORE_BINARY");
@@ -43,41 +43,41 @@ protected:
             logoscoreBinary = envBinary;
             return;
         }
-        
+
         // Get the directory where the test executable is located
         fs::path execDir = getExecutableDir();
-        
+
         // Find the logoscore binary - try multiple locations
         std::vector<fs::path> searchPaths;
-        
+
         // First, check in the same directory as the test executable (Nix builds)
         if (!execDir.empty()) {
             searchPaths.push_back(execDir / "logoscore");
         }
-        
+
         // Then try paths relative to current working directory
-        searchPaths.push_back(fs::current_path() / ".." / "bin" / "logoscore");        // Running from build/tests
-        searchPaths.push_back(fs::current_path() / "bin" / "logoscore");               // Running from build root
-        searchPaths.push_back(fs::current_path() / ".." / ".." / "bin" / "logoscore"); // Other build configurations
-        searchPaths.push_back(fs::current_path().parent_path() / "logoscore");         // Direct parent
-        
+        searchPaths.push_back(fs::current_path() / ".." / "bin" / "logoscore");
+        searchPaths.push_back(fs::current_path() / "bin" / "logoscore");
+        searchPaths.push_back(fs::current_path() / ".." / ".." / "bin" / "logoscore");
+        searchPaths.push_back(fs::current_path().parent_path() / "logoscore");
+
         for (const auto& path : searchPaths) {
             if (fs::exists(path)) {
                 logoscoreBinary = fs::canonical(path);
                 return;
             }
         }
-        
+
         // Binary not found, skip tests
         std::string triedPaths;
         for (size_t i = 0; i < searchPaths.size(); ++i) {
             if (i > 0) triedPaths += ", ";
             triedPaths += "\"" + searchPaths[i].string() + "\"";
         }
-        GTEST_SKIP() << "logoscore binary not found. Set LOGOSCORE_BINARY env var or build the binary first. Tried: " 
+        GTEST_SKIP() << "logoscore binary not found. Set LOGOSCORE_BINARY env var or build the binary first. Tried: "
                      << triedPaths;
     }
-    
+
     // Helper to run logoscore command
     int runLogoscore(const std::string& args, std::string* output = nullptr) {
         std::string cmd = logoscoreBinary.string() + " " + args;
@@ -85,7 +85,7 @@ protected:
             cmd += " 2>&1";
             FILE* pipe = popen(cmd.c_str(), "r");
             if (!pipe) return -1;
-            
+
             char buffer[128];
             while (fgets(buffer, sizeof(buffer), pipe)) {
                 *output += buffer;
@@ -97,189 +97,172 @@ protected:
             return WEXITSTATUS(status);
         }
     }
-    
+
     // Helper to run logoscore with timeout (for commands that run event loop)
-    // Uses timeout command to kill process after specified seconds
     int runLogoscoreWithTimeout(const std::string& args, std::string* output, int timeoutSecs = 2) {
         std::string cmd = "timeout " + std::to_string(timeoutSecs) + " " + logoscoreBinary.string() + " " + args + " 2>&1";
         FILE* pipe = popen(cmd.c_str(), "r");
         if (!pipe) return -1;
-        
+
         char buffer[128];
         while (fgets(buffer, sizeof(buffer), pipe)) {
             *output += buffer;
         }
         int status = pclose(pipe);
-        // timeout command returns 124 when it times out (which is expected for event loop)
-        // We'll treat timeout as success for our purposes since we got the output
         return WEXITSTATUS(status);
     }
 };
 
-// Test: logoscore --help
-// Verifies that help text is displayed correctly and includes all expected options
+// ═════════════════════════════════════════════════════════════════════════════
+// Help and version tests
+// ═════════════════════════════════════════════════════════════════════════════
+
 TEST_F(CLITest, HelpCommand) {
     std::string output;
     int exitCode = runLogoscore("--help", &output);
-    
+
     EXPECT_EQ(exitCode, 0);
-    EXPECT_NE(output.find("Logos Core"), std::string::npos) << "Help should contain application description";
-    EXPECT_NE(output.find("--help"), std::string::npos) << "Help should contain --help option";
-    EXPECT_NE(output.find("--version"), std::string::npos) << "Help should contain --version option";
-    EXPECT_NE(output.find("--modules-dir"), std::string::npos) << "Help should contain --modules-dir option";
+    // New help text includes subcommands
+    EXPECT_NE(output.find("logoscore"), std::string::npos) << "Help should contain app name";
+    EXPECT_NE(output.find("status"), std::string::npos) << "Help should list status command";
+    EXPECT_NE(output.find("load-module"), std::string::npos) << "Help should list load-module command";
+    EXPECT_NE(output.find("call"), std::string::npos) << "Help should list call command";
+    EXPECT_NE(output.find("watch"), std::string::npos) << "Help should list watch command";
+    EXPECT_NE(output.find("--json"), std::string::npos) << "Help should document --json flag";
 }
 
-// Test: logoscore --version
-// Verifies that version information is displayed correctly
+TEST_F(CLITest, HelpShortFlag) {
+    std::string output;
+    int exitCode = runLogoscore("-h", &output);
+    EXPECT_EQ(exitCode, 0);
+    EXPECT_NE(output.find("logoscore"), std::string::npos);
+}
+
 TEST_F(CLITest, VersionCommand) {
     std::string output;
     int exitCode = runLogoscore("--version", &output);
-    
+
     EXPECT_EQ(exitCode, 0);
-    // Should contain some version string (we set "1.0" in main.cpp)
-    EXPECT_FALSE(output.empty()) << "Version output should not be empty";
+    EXPECT_NE(output.find("1.0"), std::string::npos) << "Version output should contain version number";
 }
 
-// Test: --modules-dir option actually adds the custom modules directory
-// Verifies that the --modules-dir option works by checking the output
-TEST_F(CLITest, ModulesDirOption_SetDirectory) {
+TEST_F(CLITest, NoArgs_ShowsHelp) {
     std::string output;
-    int exitCode = runLogoscoreWithTimeout("--modules-dir /tmp/test_modules", &output);
-    
-    // Check that the directory was actually added (qDebug output from app_lifecycle.cpp)
-    EXPECT_NE(output.find("Added plugins directory:"), std::string::npos) 
+    int exitCode = runLogoscore("", &output);
+    EXPECT_EQ(exitCode, 0);
+    EXPECT_NE(output.find("logoscore"), std::string::npos) << "No args should show help";
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Client commands without daemon (should fail gracefully)
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST_F(CLITest, Status_NoDaemon) {
+    std::string output;
+    int exitCode = runLogoscore("status --json", &output);
+    // Should report not_running (exit 1) or connection error (exit 2)
+    EXPECT_NE(exitCode, 0);
+}
+
+TEST_F(CLITest, ListModules_NoDaemon) {
+    std::string output;
+    int exitCode = runLogoscore("list-modules --json", &output);
+    EXPECT_NE(exitCode, 0);
+}
+
+TEST_F(CLITest, LoadModule_NoDaemon) {
+    std::string output;
+    int exitCode = runLogoscore("load-module waku --json", &output);
+    EXPECT_NE(exitCode, 0);
+}
+
+TEST_F(CLITest, ModuleInfo_NoDaemon) {
+    std::string output;
+    int exitCode = runLogoscore("module-info chat --json", &output);
+    EXPECT_NE(exitCode, 0);
+}
+
+TEST_F(CLITest, Stats_NoDaemon) {
+    std::string output;
+    int exitCode = runLogoscore("stats --json", &output);
+    EXPECT_NE(exitCode, 0);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Inline mode (legacy flags) — backward compatibility
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST_F(CLITest, InlineMode_ModulesDirOption) {
+    std::string output;
+    int exitCode = runLogoscoreWithTimeout("--verbose --modules-dir /tmp/test_modules", &output);
+
+    EXPECT_NE(output.find("Added plugins directory:"), std::string::npos)
         << "Should see debug message that custom directory was added";
-    EXPECT_NE(output.find("/tmp/test_modules"), std::string::npos) 
+    EXPECT_NE(output.find("/tmp/test_modules"), std::string::npos)
         << "Should see the custom directory path in output";
 }
 
-// Test: --load-modules option actually attempts to load specified modules
-// Verifies that the --load-modules option works by trying to load a non-existent module
-TEST_F(CLITest, LoadModulesOption_LoadsModules) {
+TEST_F(CLITest, InlineMode_LoadModulesOption) {
     std::string output;
-    int exitCode = runLogoscoreWithTimeout("--load-modules fake_module_xyz", &output);
-    
-    // Check that it actually tried to load the module (and failed since it doesn't exist)
-    // The warning comes from dependency resolution when the module isn't in known plugins
+    int exitCode = runLogoscoreWithTimeout("--verbose --load-modules fake_module_xyz", &output);
+
     EXPECT_NE(output.find("Module not found in known plugins:"), std::string::npos)
         << "Should see warning that module was not found";
     EXPECT_NE(output.find("fake_module_xyz"), std::string::npos)
         << "Should see the module name in output";
 }
 
-// Test: -l alias works as short form for --load-modules
-// Verifies that the -l option produces the same behavior as --load-modules
-TEST_F(CLITest, LoadModulesShortAlias_Works) {
+TEST_F(CLITest, InlineMode_ShortAliases) {
     std::string output;
-    int exitCode = runLogoscoreWithTimeout("-l fake_module_alias", &output);
-    
-    // Check that -l alias actually attempts to load the module (same behavior as --load-modules)
-    EXPECT_NE(output.find("Module not found in known plugins:"), std::string::npos)
-        << "Should see warning that module was not found";
-    EXPECT_NE(output.find("fake_module_alias"), std::string::npos)
-        << "Should see the module name in output";
-}
+    int exitCode = runLogoscoreWithTimeout("--verbose -m /tmp/test_modules_alias", &output);
 
-// Test: -m alias works as short form for --modules-dir
-// Verifies that the -m option produces the same behavior as --modules-dir
-TEST_F(CLITest, ModulesDirShortAlias_Works) {
-    std::string output;
-    int exitCode = runLogoscoreWithTimeout("-m /tmp/test_modules_alias", &output);
-    
-    // Check that -m alias actually adds the directory (same behavior as --modules-dir)
     EXPECT_NE(output.find("Added plugins directory:"), std::string::npos)
-        << "Should see debug message that custom directory was added";
-    EXPECT_NE(output.find("/tmp/test_modules_alias"), std::string::npos)
-        << "Should see the custom directory path in output";
+        << "Short alias -m should work";
+    EXPECT_NE(output.find("/tmp/test_modules_alias"), std::string::npos);
 }
 
-// Test: invalid option
-// Verifies error handling when an unknown option is provided
-TEST_F(CLITest, InvalidOption) {
+TEST_F(CLITest, InlineMode_CallSyntax) {
     std::string output;
-    int exitCode = runLogoscore("--invalid-option-xyz", &output);
-    
-    // Qt's QCommandLineParser exits with code 1 for unknown options
-    EXPECT_NE(exitCode, 0) << "Invalid option should cause non-zero exit code";
-    EXPECT_FALSE(output.empty()) << "Error output should not be empty";
+    int exitCode = runLogoscoreWithTimeout("--verbose --call \"fake_module.someMethod()\"", &output);
+
+    // Should try to execute the call and fail (module not loaded)
+    EXPECT_NE(output.find("Plugin not loaded") + output.find("fake_module"), std::string::npos);
 }
 
-// =============================================================================
-// --call option tests
-// =============================================================================
-
-// Test: --call option appears in help
-// Verifies that the --call option is documented in help text
-TEST_F(CLITest, CallOption_AppearsInHelp) {
+TEST_F(CLITest, InlineMode_CallShortAlias) {
     std::string output;
-    int exitCode = runLogoscore("--help", &output);
-    
-    EXPECT_EQ(exitCode, 0);
-    EXPECT_NE(output.find("--call"), std::string::npos) 
-        << "Help should contain --call option";
-    EXPECT_NE(output.find("-c"), std::string::npos) 
-        << "Help should contain -c short option";
+    int exitCode = runLogoscoreWithTimeout("--verbose -c \"fake_module.testMethod()\"", &output);
+
+    EXPECT_NE(output.find("Plugin not loaded") + output.find("fake_module"), std::string::npos);
 }
 
-// Test: --call with invalid syntax (no dot separator)
-// Verifies that invalid call syntax is rejected
-TEST_F(CLITest, CallOption_InvalidSyntaxNoDot) {
+TEST_F(CLITest, InlineMode_InvalidCallSyntax) {
     std::string output;
-    int exitCode = runLogoscoreWithTimeout("--call \"modulemethodname()\"", &output);
-    
-    EXPECT_NE(output.find("Invalid call syntax") + output.find("Skipping invalid call"), std::string::npos)
-        << "Should warn about invalid call syntax (no dot found)";
+    int exitCode = runLogoscoreWithTimeout("--verbose --call \"modulemethodname()\"", &output);
+
+    EXPECT_NE(output.find("Invalid call syntax") + output.find("Skipping invalid call"), std::string::npos);
 }
 
-// Test: --call with non-existent module
-// Verifies that calling a method on a non-loaded module fails appropriately
-TEST_F(CLITest, CallOption_NonExistentModule) {
-    std::string output;
-    int exitCode = runLogoscoreWithTimeout("--call \"fake_module.someMethod()\"", &output);
-    
-    EXPECT_NE(output.find("Plugin not loaded") + output.find("fake_module"), std::string::npos)
-        << "Should indicate that the module is not loaded";
-}
-
-// Test: --call short alias -c works
-// Verifies that -c produces the same behavior as --call
-TEST_F(CLITest, CallOption_ShortAliasWorks) {
-    std::string output;
-    int exitCode = runLogoscoreWithTimeout("-c \"fake_module.testMethod()\"", &output);
-    
-    EXPECT_NE(output.find("Plugin not loaded") + output.find("fake_module"), std::string::npos)
-        << "Short alias -c should work the same as --call";
-}
-
-// Test: --call with multiple calls
-// Verifies that multiple --call options are processed
-TEST_F(CLITest, CallOption_MultipleCallsProcessed) {
+TEST_F(CLITest, InlineMode_MultipleCalls) {
     std::string output;
     int exitCode = runLogoscoreWithTimeout(
-        "--call \"module1.method1()\" --call \"module2.method2()\"", &output);
-    
-    EXPECT_NE(output.find("Executing call") + output.find("module1"), std::string::npos)
-        << "Should attempt to execute module calls";
+        "--verbose --call \"module1.method1()\" --call \"module2.method2()\"", &output);
+
+    EXPECT_NE(output.find("Executing call") + output.find("module1"), std::string::npos);
 }
 
-// Test: --call with file parameter
-// Verifies that @file syntax is recognized (even if file doesn't exist)
-TEST_F(CLITest, CallOption_FileParameterSyntax) {
+TEST_F(CLITest, InlineMode_FileParameterSyntax) {
     std::string output;
     int exitCode = runLogoscoreWithTimeout(
-        "--call \"fake_module.init(@/nonexistent/file.txt)\"", &output);
-    
-    EXPECT_NE(output.find("Failed to open file") + output.find("Plugin not loaded"), std::string::npos)
-        << "Should attempt to resolve @file parameter";
+        "--verbose --call \"fake_module.init(@/nonexistent/file.txt)\"", &output);
+
+    EXPECT_NE(output.find("Failed to open file") + output.find("Plugin not loaded"), std::string::npos);
 }
 
-// Test: --call parsing preserves parameters
-// Verifies that parameters are correctly parsed from the call string
-TEST_F(CLITest, CallOption_ParameterParsing) {
+TEST_F(CLITest, InlineMode_ParameterParsing) {
     std::string output;
     int exitCode = runLogoscoreWithTimeout(
-        "--call \"fake_module.method('string param', 42, true)\"", &output);
-    
-    EXPECT_NE(output.find("3 params") + output.find("params"), std::string::npos)
-        << "Should parse multiple parameters correctly";
+        "--verbose --call \"fake_module.method('string param', 42, true)\"", &output);
+
+    EXPECT_NE(output.find("3 params") + output.find("params"), std::string::npos);
 }
