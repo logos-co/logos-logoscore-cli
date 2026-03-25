@@ -159,6 +159,33 @@ done
 logoscore watch chat --event chat-message --json >> events.log &
 ```
 
+#### Events Example
+
+Modules can emit events that you can listen to in real time. Use `watch` to subscribe and `call` to trigger:
+
+```bash
+# Start daemon with a modules directory
+logoscore -D -m ./modules_dir &
+sleep 2
+
+# Load the module
+logoscore load-module test_basic_module
+
+# Start watching for events in the background, writing to a file
+logoscore watch test_basic_module --event testEvent > events.txt &
+WATCH_PID=$!
+
+# Trigger the event from another call
+logoscore call test_basic_module emitTestEvent "hello world"
+
+# Check the captured event
+cat events.txt
+
+# Clean up
+kill $WATCH_PID
+logoscore stop
+```
+
 ### Inline Mode (Legacy)
 
 Single-process mode — no daemon needed. Start the core, load modules, call methods, and exit.
