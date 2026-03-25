@@ -72,7 +72,7 @@ int CallCommand::execute(const QStringList& args)
     if (err != 0)
         return err;
 
-    // Resolve @file parameters
+    // Resolve @file parameters and coerce types
     QVariantList resolvedArgs;
     for (const QString& arg : methodArgs) {
         QString resolved = resolveFileParam(arg);
@@ -81,7 +81,27 @@ int CallCommand::execute(const QStringList& args)
                                QString("Failed to read file: %1").arg(arg.mid(1)));
             return 1;
         }
-        resolvedArgs.append(resolved);
+
+        // Try to coerce to native types so the RPC target can match signatures
+        if (resolved == "true") {
+            resolvedArgs.append(true);
+        } else if (resolved == "false") {
+            resolvedArgs.append(false);
+        } else {
+            bool isInt = false;
+            int intVal = resolved.toInt(&isInt);
+            if (isInt) {
+                resolvedArgs.append(intVal);
+            } else {
+                bool isDouble = false;
+                double dblVal = resolved.toDouble(&isDouble);
+                if (isDouble) {
+                    resolvedArgs.append(dblVal);
+                } else {
+                    resolvedArgs.append(resolved);
+                }
+            }
+        }
     }
 
     QJsonObject result = client().callModuleMethod(moduleName, methodName, resolvedArgs);
@@ -103,15 +123,22 @@ int CallCommand::execute(const QStringList& args)
         QJsonValue resultValue = result.value("result");
         if (resultValue.isString()) {
             output().printRaw(resultValue.toString());
-        } else {
-            // Print as JSON for structured results
-            QJsonDocument doc;
-            if (resultValue.isArray())
-                doc = QJsonDocument(resultValue.toArray());
-            else if (resultValue.isObject())
-                doc = QJsonDocument(resultValue.toObject());
+        } else if (resultValue.isDouble()) {
+            // Handles both integers and floating point
+            double d = resultValue.toDouble();
+            if (d == static_cast<int>(d))
+                output().printRaw(QString::number(static_cast<int>(d)));
             else
-                doc = QJsonDocument(result);
+                output().printRaw(QString::number(d));
+        } else if (resultValue.isBool()) {
+            output().printRaw(resultValue.toBool() ? "true" : "false");
+        } else if (resultValue.isNull() || resultValue.isUndefined()) {
+            // Nothing useful to print
+        } else if (resultValue.isArray()) {
+            QJsonDocument doc(resultValue.toArray());
+            output().printRaw(QString::fromUtf8(doc.toJson(QJsonDocument::Indented)));
+        } else if (resultValue.isObject()) {
+            QJsonDocument doc(resultValue.toObject());
             output().printRaw(QString::fromUtf8(doc.toJson(QJsonDocument::Indented)));
         }
     }

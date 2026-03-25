@@ -10,12 +10,32 @@ int StopCommand::execute(const QStringList& args)
 
     QJsonObject result = client().shutdown();
 
-    if (result.value("status").toString() == "error") {
-        output().printError(result.value("code").toString(),
-                           result.value("message").toString());
+    QString status = result.value("status").toString();
+
+    // If the daemon shut down before the RPC response arrived, the call
+    // returns an RPC_FAILED error.  That's expected — treat it as success.
+    if (status == "error") {
+        QString code = result.value("code").toString();
+        if (code == "RPC_FAILED") {
+            // Daemon likely already exited — that's fine
+            if (output().isJsonMode()) {
+                QJsonObject ok;
+                ok["status"] = "ok";
+                ok["message"] = "Daemon stopped.";
+                output().printSuccess(ok);
+            } else {
+                output().printRaw("Daemon stopped.");
+            }
+            return 0;
+        }
+        output().printError(code, result.value("message").toString());
         return 1;
     }
 
-    output().printSuccess(result);
+    if (output().isJsonMode()) {
+        output().printSuccess(result);
+    } else {
+        output().printRaw("Daemon stopped.");
+    }
     return 0;
 }

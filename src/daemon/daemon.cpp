@@ -82,10 +82,10 @@ int Daemon::start(int argc, char* argv[], const QStringList& modulesDirs)
         return 1;
     }
 
-    fprintf(stderr, "Logoscore daemon started (pid %lld, instance %s)\n",
+    fprintf(stdout, "Logoscore daemon started (pid %lld, instance %s)\n",
             static_cast<long long>(pid), instanceId.toUtf8().constData());
-    fprintf(stderr, "Connection file: %s\n", ConnectionFile::filePath().toUtf8().constData());
-    fflush(stderr);
+    fprintf(stdout, "Connection file: %s\n", ConnectionFile::filePath().toUtf8().constData());
+    fflush(stdout);
 
     // 7. Set up signal handlers for clean shutdown
     setupSignalHandlers();
@@ -94,8 +94,8 @@ int Daemon::start(int argc, char* argv[], const QStringList& modulesDirs)
     int result = logos_core_exec();
 
     // 9. Cleanup
-    fprintf(stderr, "Shutting down logoscore daemon...\n");
-    fflush(stderr);
+    fprintf(stdout, "Shutting down logoscore daemon...\n");
+    fflush(stdout);
 
     logos_core_cleanup();
     ConnectionFile::remove();
@@ -103,8 +103,8 @@ int Daemon::start(int argc, char* argv[], const QStringList& modulesDirs)
     delete coreServiceImpl;
     delete coreServiceApi;
 
-    fprintf(stderr, "Logoscore daemon stopped.\n");
-    fflush(stderr);
+    fprintf(stdout, "Logoscore daemon stopped.\n");
+    fflush(stdout);
 
     return result;
 }

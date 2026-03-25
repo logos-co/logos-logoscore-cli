@@ -321,8 +321,8 @@ QJsonObject CoreServiceImpl::shutdown()
     result["status"] = "ok";
     result["message"] = "Daemon shutting down.";
 
-    // Schedule quit on next event loop iteration so the RPC response is sent first
-    QTimer::singleShot(0, QCoreApplication::instance(), &QCoreApplication::quit);
+    // Give the RPC layer time to send the response before we quit
+    QTimer::singleShot(200, QCoreApplication::instance(), &QCoreApplication::quit);
 
     return result;
 }
