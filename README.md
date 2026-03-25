@@ -58,7 +58,7 @@ logoscore -D -m ./modules
 logoscore daemon --modules-dir ./modules
 
 # Start in the background
-logoscore -D -m ./modules &
+logoscore -D -m ./modules > logs.txt &
 ```
 
 The daemon writes a connection file to `~/.logoscore/daemon.json` on startup and removes it on shutdown.
