@@ -1,5 +1,5 @@
 #include "call_executor.h"
-#include "logos_core.h"
+#include "logos_sdk_c.h"
 #include <QFile>
 #include <QTextStream>
 #include <QJsonDocument>
@@ -120,7 +120,7 @@ bool CallExecutor::executeCall(const ModuleCall& call) {
     
     CallResult result;
     
-    logos_core_call_plugin_method_async(
+    logos_sdk_call_method_async(
         call.moduleName.toUtf8().constData(),
         call.methodName.toUtf8().constData(),
         paramsJson.isEmpty() ? "[]" : paramsJson.toUtf8().constData(),

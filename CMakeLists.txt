@@ -41,6 +41,32 @@ set_target_properties(logos_core PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${LOGOS_LIBLOGOS_ROOT}/include;${LOGOS_LIBLOGOS_ROOT}/include/cpp"
 )
 
+# ── logos-module-client dependency ────────────────────────────────────────────
+# LOGOS_MODULE_CLIENT_ROOT must point to the installed logos-module-client tree
+# (containing lib/liblogos_module_client.{so,dylib} and include/)
+if(NOT DEFINED LOGOS_MODULE_CLIENT_ROOT OR LOGOS_MODULE_CLIENT_ROOT STREQUAL "")
+    message(FATAL_ERROR "LOGOS_MODULE_CLIENT_ROOT is not set. Pass -DLOGOS_MODULE_CLIENT_ROOT=<path>")
+endif()
+get_filename_component(LOGOS_MODULE_CLIENT_ROOT "${LOGOS_MODULE_CLIENT_ROOT}" ABSOLUTE)
+
+message(STATUS "Using logos-module-client at ${LOGOS_MODULE_CLIENT_ROOT}")
+
+find_library(LOGOS_MODULE_CLIENT_LIBRARY
+    NAMES logos_module_client
+    PATHS "${LOGOS_MODULE_CLIENT_ROOT}/lib"
+    NO_DEFAULT_PATH
+)
+
+if(NOT LOGOS_MODULE_CLIENT_LIBRARY)
+    message(FATAL_ERROR "liblogos_module_client not found in ${LOGOS_MODULE_CLIENT_ROOT}/lib")
+endif()
+
+add_library(logos_module_client SHARED IMPORTED)
+set_target_properties(logos_module_client PROPERTIES
+    IMPORTED_LOCATION "${LOGOS_MODULE_CLIENT_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${LOGOS_MODULE_CLIENT_ROOT}/include"
+)
+
 # ── logoscore executable ──────────────────────────────────────────────────────
 set(CLI_SOURCES
     src/main.cpp
@@ -81,6 +107,7 @@ add_executable(logoscore ${CLI_SOURCES})
 
 target_link_libraries(logoscore PRIVATE
     logos_core
+    logos_module_client
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::RemoteObjects
 )
@@ -89,6 +116,7 @@ target_include_directories(logoscore PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${LOGOS_LIBLOGOS_ROOT}/include
     ${LOGOS_LIBLOGOS_ROOT}/include/cpp
+    ${LOGOS_MODULE_CLIENT_ROOT}/include
 )
 
 # RPATH so the binary finds liblogos_core at runtime

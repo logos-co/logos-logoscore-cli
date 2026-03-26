@@ -5,12 +5,13 @@
     logos-nix.url = "github:logos-co/logos-nix";
     nixpkgs.follows = "logos-nix/nixpkgs";
     logos-liblogos.url = "github:logos-co/logos-liblogos";
+    logos-module-client.url = "github:logos-co/logos-module-client";
     logos-capability-module.url = "github:logos-co/logos-capability-module";
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-liblogos, logos-capability-module, nix-bundle-dir, nix-bundle-appimage }:
+  outputs = { self, nixpkgs, logos-nix, logos-liblogos, logos-module-client, logos-capability-module, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f {
@@ -18,13 +19,15 @@
         pkgs = import nixpkgs { inherit system; };
         liblogos = logos-liblogos.packages.${system}.logos-liblogos;
         liblogosLib = logos-liblogos.packages.${system}.logos-liblogos-lib;
+        moduleClient = logos-module-client.packages.${system}.logos-module-client;
+        moduleClientLib = logos-module-client.packages.${system}.logos-module-client-lib;
         capabilityModule = logos-capability-module.packages.${system}.default;
         dirBundler = nix-bundle-dir.bundlers.${system}.qtApp;
         appBundler = nix-bundle-appimage.lib.${system}.mkAppImage;
       });
     in
     {
-      packages = forAllSystems ({ pkgs, system, liblogos, liblogosLib, capabilityModule, dirBundler, appBundler }:
+      packages = forAllSystems ({ pkgs, system, liblogos, liblogosLib, moduleClient, moduleClientLib, capabilityModule, dirBundler, appBundler }:
         let
           pname = "logos-logoscore-cli";
           version = "0.1.0";
@@ -56,6 +59,7 @@
             cmakeFlags = [
               "-GNinja"
               "-DLOGOS_LIBLOGOS_ROOT=${liblogos}"
+              "-DLOGOS_MODULE_CLIENT_ROOT=${moduleClient}"
             ];
           };
 
@@ -150,6 +154,12 @@
                 chmod -R +w $out/lib
               fi
 
+              # Copy liblogos_module_client so logoscore can link at runtime
+              if [ -d ${moduleClientLib}/lib ]; then
+                cp -r ${moduleClientLib}/lib/* $out/lib/
+                chmod -R +w $out/lib
+              fi
+
               if [ -d ${modules}/modules ]; then
                 cp -r ${modules}/modules/* $out/modules/
               fi
@@ -191,11 +201,13 @@
               pkgs.qt6.qtremoteobjects
               pkgs.gtest
               liblogosLib
+              moduleClientLib
             ];
 
             cmakeFlags = [
               "-GNinja"
               "-DLOGOS_LIBLOGOS_ROOT=${liblogos}"
+              "-DLOGOS_MODULE_CLIENT_ROOT=${moduleClient}"
             ];
 
             installPhase = ''
@@ -209,6 +221,10 @@
 
               if [ -d ${liblogosLib}/lib ]; then
                 cp -r ${liblogosLib}/lib/* $out/lib/ || true
+              fi
+
+              if [ -d ${moduleClientLib}/lib ]; then
+                cp -r ${moduleClientLib}/lib/* $out/lib/ || true
               fi
 
               ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
