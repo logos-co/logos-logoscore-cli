@@ -7,11 +7,13 @@
     logos-liblogos.url = "github:logos-co/logos-liblogos";
     logos-module-client.url = "github:logos-co/logos-module-client";
     logos-capability-module.url = "github:logos-co/logos-capability-module";
+    logos-package-manager.url = "github:logos-co/logos-package-manager";
+    nix-bundle-lgx.url = "github:logos-co/nix-bundle-lgx";
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-liblogos, logos-module-client, logos-capability-module, nix-bundle-dir, nix-bundle-appimage }:
+  outputs = { self, nixpkgs, logos-nix, logos-liblogos, logos-module-client, logos-capability-module, logos-package-manager, nix-bundle-lgx, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f {
@@ -21,13 +23,15 @@
         liblogosLib = logos-liblogos.packages.${system}.logos-liblogos-lib;
         moduleClient = logos-module-client.packages.${system}.logos-module-client;
         moduleClientLib = logos-module-client.packages.${system}.logos-module-client-lib;
-        capabilityModule = logos-capability-module.packages.${system}.default;
+        capabilityModuleLib = logos-capability-module.packages.${system}.lib;
+        lgpmCli = logos-package-manager.packages.${system}.cli;
+        bundleLgx = nix-bundle-lgx.bundlers.${system}.default;
         dirBundler = nix-bundle-dir.bundlers.${system}.qtApp;
         appBundler = nix-bundle-appimage.lib.${system}.mkAppImage;
       });
     in
     {
-      packages = forAllSystems ({ pkgs, system, liblogos, liblogosLib, moduleClient, moduleClientLib, capabilityModule, dirBundler, appBundler }:
+      packages = forAllSystems ({ pkgs, system, liblogos, liblogosLib, moduleClient, moduleClientLib, capabilityModuleLib, lgpmCli, bundleLgx, dirBundler, appBundler }:
         let
           pname = "logos-logoscore-cli";
           version = "0.1.0";
@@ -37,6 +41,25 @@
             description = "Logos logoscore headless module runtime CLI";
             platforms = platforms.unix;
           };
+
+          # Bundle capability module as LGX, install with lgpm
+          capabilityModuleLgx = bundleLgx capabilityModuleLib;
+          modules = pkgs.runCommand "${pname}-modules-${version}"
+            {
+              inherit meta;
+              nativeBuildInputs = [ lgpmCli ];
+            }
+            ''
+              mkdir -p $out/modules
+
+              for lgxFile in ${capabilityModuleLgx}/*.lgx; do
+                echo "Installing $(basename "$lgxFile")..."
+                lgpm --modules-dir "$out/modules" install --file "$lgxFile"
+              done
+
+              echo "Modules directory contents:"
+              ls -laR $out/modules/
+            '';
 
           # Build the logoscore binary against logos-liblogos
           build = pkgs.stdenv.mkDerivation {
@@ -63,60 +86,6 @@
               "-DLOGOS_MODULE_CLIENT_ROOT=${moduleClient}"
             ];
           };
-
-          # Bundle modules (capability_module) so logoscore can load it by default
-          modules = pkgs.runCommand "${pname}-modules-${version}"
-            { inherit meta; }
-            ''
-              mkdir -p $out/modules/capability_module
-
-              if [ -d ${capabilityModule}/lib ]; then
-                for lib in ${capabilityModule}/lib/*.dylib ${capabilityModule}/lib/*.so; do
-                  if [ -f "$lib" ]; then
-                    cp "$lib" $out/modules/capability_module/
-                  fi
-                done
-              fi
-
-              pluginFile=""
-              for f in $out/modules/capability_module/*; do
-                if [ -f "$f" ]; then
-                  pluginFile="$(basename "$f")"
-                  break
-                fi
-              done
-
-              if [ -z "$pluginFile" ]; then
-                echo "Error: No capability_module library found"
-                exit 1
-              fi
-
-              platform=""
-              arch=""
-              case "$(uname -s)" in
-                Linux)  platform="linux" ;;
-                Darwin) platform="darwin" ;;
-              esac
-              case "$(uname -m)" in
-                x86_64)        arch="x86_64" ;;
-                aarch64|arm64) arch="aarch64" ;;
-              esac
-
-              # Dev build: use -dev suffix variant keys
-              cat > $out/modules/capability_module/manifest.json <<EOF
-              {
-                "name": "capability_module",
-                "version": "1.0.0",
-                "main": {
-                  "$platform-$arch-dev": "$pluginFile",
-                  "$platform-amd64-dev": "$pluginFile",
-                  "$platform-arm64-dev": "$pluginFile",
-                  "$platform-x86_64-dev": "$pluginFile",
-                  "$platform-aarch64-dev": "$pluginFile"
-                }
-              }
-              EOF
-            '';
 
           # Package the logoscore binary with its runtime deps
           bin = pkgs.stdenvNoCC.mkDerivation {

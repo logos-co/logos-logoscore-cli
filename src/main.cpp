@@ -215,6 +215,11 @@ static int runInlineMode(int argc, char* argv[])
         logos_core_add_plugins_dir(dir.c_str());
     }
 
+    QByteArray bundledDir = qgetenv("LOGOS_BUNDLED_MODULES_DIR");
+    if (!bundledDir.isEmpty()) {
+        logos_core_add_plugins_dir(bundledDir.constData());
+    }
+
     logos_core_start();
 
     if (!args.loadModules.empty()) {
