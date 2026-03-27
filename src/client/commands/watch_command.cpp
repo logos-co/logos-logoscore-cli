@@ -1,4 +1,5 @@
 #include "watch_command.h"
+#include <CLI/CLI.hpp>
 #include <QCoreApplication>
 #include <csignal>
 
@@ -9,24 +10,25 @@ static void watchSignalHandler(int)
     g_watchInterrupted = 1;
 }
 
-int WatchCommand::execute(const QStringList& args)
+int WatchCommand::execute(const std::vector<std::string>& args)
 {
-    if (args.isEmpty()) {
+    CLI::App cli{"watch"};
+    cli.set_help_flag();
+    std::string module;
+    std::string event;
+    cli.add_option("module", module, "Module name")->required();
+    cli.add_option("--event", event, "Event name to filter");
+    try {
+        auto argsCopy = args;
+        cli.parse(argsCopy);
+    } catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS",
                            "Usage: logoscore watch <module> [--event <name>]");
         return 1;
     }
 
-    QString moduleName = args.first();
-    QString eventName;
-
-    // Parse --event flag
-    for (int i = 1; i < args.size(); ++i) {
-        if (args.at(i) == "--event" && i + 1 < args.size()) {
-            eventName = args.at(i + 1);
-            ++i;
-        }
-    }
+    QString moduleName = QString::fromStdString(module);
+    QString eventName = QString::fromStdString(event);
 
     int err = ensureConnected();
     if (err != 0)

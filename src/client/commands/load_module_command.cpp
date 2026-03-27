@@ -1,8 +1,16 @@
 #include "load_module_command.h"
+#include <CLI/CLI.hpp>
 
-int LoadModuleCommand::execute(const QStringList& args)
+int LoadModuleCommand::execute(const std::vector<std::string>& args)
 {
-    if (args.isEmpty()) {
+    CLI::App cli{"load-module"};
+    cli.set_help_flag();  // help handled at top level
+    std::string name;
+    cli.add_option("name", name, "Module name")->required();
+    try {
+        auto argsCopy = args;
+        cli.parse(argsCopy);
+    } catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS", "Usage: logoscore load-module <name>");
         return 1;
     }
@@ -11,7 +19,7 @@ int LoadModuleCommand::execute(const QStringList& args)
     if (err != 0)
         return err;
 
-    QString moduleName = args.first();
+    QString moduleName = QString::fromStdString(name);
     QJsonObject result = client().loadModule(moduleName);
 
     QString status = result.value("status").toString();

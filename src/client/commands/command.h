@@ -5,13 +5,15 @@
 #include "../output.h"
 #include <QStringList>
 #include <memory>
+#include <string>
+#include <vector>
 
 class Command {
 public:
     Command(Client& client, Output& output);
     virtual ~Command() = default;
 
-    virtual int execute(const QStringList& args) = 0;
+    virtual int execute(const std::vector<std::string>& args) = 0;
     virtual QString name() const = 0;
     virtual QString description() const = 0;
 

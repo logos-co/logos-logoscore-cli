@@ -1,3 +1,4 @@
+#include <CLI/CLI.hpp>
 #include <QCoreApplication>
 #include <QDebug>
 #include <cstdio>
@@ -47,164 +48,45 @@ static void messageHandler(QtMsgType type, const QMessageLogContext &context, co
     fflush(stderr);
 }
 
-enum class Mode {
-    Daemon,
-    Client,
-    Inline,
-    Help,
-    Version
-};
-
-static Mode detectMode(int argc, char* argv[])
+static int runInlineMode(int argc, char* argv[],
+                         const std::vector<std::string>& modulesDirs,
+                         const std::string& loadModulesStr,
+                         const std::vector<std::string>& callStrs,
+                         bool quitOnFinish)
 {
-    // Scan argv for mode indicators
-    bool hasDaemonFlag = false;
-    bool hasInlineFlags = false;
-    std::string firstPositionalArg;
+    // Build CoreArgs from pre-parsed CLI11 values
+    CoreArgs args;
+    args.valid = true;
+    args.quitOnFinish = quitOnFinish;
+    args.modulesDirs = modulesDirs;
 
-    QStringList subcommands = knownSubcommands();
-
-    for (int i = 1; i < argc; ++i) {
-        std::string arg(argv[i]);
-
-        if (arg == "-D" || arg == "daemon") {
-            hasDaemonFlag = true;
-            break;
+    // Parse comma-separated module names
+    if (!loadModulesStr.empty()) {
+        std::string current;
+        for (char c : loadModulesStr) {
+            if (c == ',') {
+                if (!current.empty()) {
+                    args.loadModules.push_back(current);
+                    current.clear();
+                }
+            } else {
+                current += c;
+            }
         }
-        if (arg == "--help" || arg == "-h") {
-            return Mode::Help;
-        }
-        if (arg == "--version") {
-            return Mode::Version;
-        }
-        if (arg == "-m" || arg == "--modules-dir" ||
-            arg == "-l" || arg == "--load-modules" ||
-            arg == "-c" || arg == "--call" ||
-            arg == "--quit-on-finish") {
-            hasInlineFlags = true;
-        }
-        // Check if first positional arg is a known subcommand
-        if (arg[0] != '-' && firstPositionalArg.empty()) {
-            firstPositionalArg = arg;
+        if (!current.empty()) {
+            args.loadModules.push_back(current);
         }
     }
 
-    if (hasDaemonFlag)
-        return Mode::Daemon;
-
-    if (!firstPositionalArg.empty() && subcommands.contains(QString::fromStdString(firstPositionalArg)))
-        return Mode::Client;
-
-    if (hasInlineFlags)
-        return Mode::Inline;
-
-    return Mode::Help;
-}
-
-static void printHelp()
-{
-    std::cout << "logoscore - Logos Core runtime CLI\n"
-              << "\n"
-              << "Usage:\n"
-              << "  logoscore -D [--modules-dir <path>]...       Start daemon\n"
-              << "  logoscore <command> [flags] [args...]        Run a command\n"
-              << "  logoscore -m <path> -l <mods> -c <call>     Inline mode (legacy)\n"
-              << "\n"
-              << "Commands:\n"
-              << "  status                  Show daemon and module health\n"
-              << "  load-module <name>      Load a module into the daemon\n"
-              << "  unload-module <name>    Unload a module from the daemon\n"
-              << "  reload-module <name>    Reload (unload + load) a module\n"
-              << "  list-modules [--loaded] List available or loaded modules\n"
-              << "  module-info <name>      Show detailed module information\n"
-              << "  info <name>             Alias for module-info\n"
-              << "  call <mod> <method>     Call a method on a loaded module\n"
-              << "  watch <mod> [--event]   Watch events from a module\n"
-              << "  stats                   Show module resource usage\n"
-              << "  stop                    Stop the daemon\n"
-              << "\n"
-              << "Global Flags:\n"
-              << "  -j, --json              Force JSON output\n"
-              << "  -q, --quiet             Suppress non-essential output\n"
-              << "  -v, --verbose           Show debug logs\n"
-              << "  -h, --help              Show this help\n"
-              << "      --version           Show version\n"
-              << "\n"
-              << "Daemon Flags:\n"
-              << "  -D, daemon              Start the daemon process\n"
-              << "  -m, --modules-dir       Module search directory (repeatable)\n"
-              << "\n"
-              << "Legacy (Inline) Flags:\n"
-              << "  -m, --modules-dir       Module search directory (repeatable)\n"
-              << "  -l, --load-modules      Comma-separated modules to load\n"
-              << "  -c, --call              Call module.method(args)\n"
-              << "      --quit-on-finish    Exit after calls complete\n"
-              << std::endl;
-}
-
-static int runClientMode(int argc, char* argv[])
-{
-    // Parse global flags and subcommand
-    bool jsonMode = false;
-    bool quiet = false;
-    std::string subcommand;
-    QStringList cmdArgs;
-
-    for (int i = 1; i < argc; ++i) {
-        std::string arg(argv[i]);
-
-        if (arg == "--json" || arg == "-j") {
-            jsonMode = true;
-            continue;
-        }
-        if (arg == "--quiet" || arg == "-q") {
-            quiet = true;
-            continue;
-        }
-        if (arg == "--verbose" || arg == "-v") {
-            continue; // already handled in main()
-        }
-
-        if (subcommand.empty() && arg[0] != '-') {
-            subcommand = arg;
-        } else if (!subcommand.empty()) {
-            cmdArgs.append(QString::fromUtf8(argv[i]));
+    // Parse call strings
+    for (const auto& callStr : callStrs) {
+        ModuleCall call = parseCallString(callStr);
+        if (!call.moduleName.empty() && !call.methodName.empty()) {
+            args.calls.push_back(call);
+        } else {
+            fprintf(stderr, "Skipping invalid call: %s\n", callStr.c_str());
         }
     }
-
-    Output output(jsonMode);
-    RpcClient rpcClient;
-
-    auto cmd = createCommand(QString::fromStdString(subcommand), rpcClient, output);
-    if (!cmd) {
-        output.printError("INVALID_ARGS",
-                         QString("Unknown command: %1. Run 'logoscore --help' for usage.").arg(QString::fromStdString(subcommand)));
-        return 1;
-    }
-
-    return cmd->execute(cmdArgs);
-}
-
-static int runDaemonMode(int argc, char* argv[])
-{
-    std::vector<std::string> modulesDirs;
-
-    for (int i = 1; i < argc; ++i) {
-        std::string arg(argv[i]);
-        if ((arg == "-m" || arg == "--modules-dir") && i + 1 < argc) {
-            modulesDirs.push_back(argv[i + 1]);
-            ++i;
-        }
-    }
-
-    return Daemon::start(argc, argv, modulesDirs);
-}
-
-static int runInlineMode(int argc, char* argv[])
-{
-    CoreArgs args = parseCommandLineArgs(argc, argv);
-    if (!args.valid)
-        return 1;
 
     QCoreApplication app(argc, argv);
     app.setApplicationName("logoscore");
@@ -247,46 +129,143 @@ static int runInlineMode(int argc, char* argv[])
 
 int main(int argc, char *argv[])
 {
-    // Check for verbose flag before any Qt operations
-    for (int i = 1; i < argc; ++i) {
-        if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
-            g_verbose = true;
-            break;
-        }
+    // ── CLI11 setup ──────────────────────────────────────────────────────────
+    CLI::App app{"logoscore - Logos Core runtime CLI"};
+    app.set_version_flag("--version", "logoscore version 1.0");
+    app.set_help_flag("-h,--help", "Show this help");
+
+    // Global flags
+    app.add_flag("-v,--verbose", g_verbose, "Show debug logs");
+
+    // Client global flags (defined at app level so they work before subcommands;
+    // also extracted from subcommand remaining() for placement after subcommands)
+    bool jsonMode = false;
+    app.add_flag("-j,--json", jsonMode, "Force JSON output");
+
+    bool quiet = false;
+    app.add_flag("-q,--quiet", quiet, "Suppress non-essential output");
+
+    // Daemon flag (-D as shorthand for daemon subcommand)
+    bool daemonFlag = false;
+    app.add_flag("-D", daemonFlag, "Start the daemon process");
+
+    // Shared option: modules directory (used by daemon + inline)
+    std::vector<std::string> modulesDirs;
+    app.add_option("-m,--modules-dir", modulesDirs, "Module search directory (repeatable)");
+
+    // Inline mode options
+    std::string loadModulesStr;
+    app.add_option("-l,--load-modules", loadModulesStr, "Comma-separated modules to load");
+
+    std::vector<std::string> callStrs;
+    app.add_option("-c,--call", callStrs, "Call module.method(args) (repeatable)");
+
+    bool quitOnFinish = false;
+    app.add_flag("--quit-on-finish", quitOnFinish, "Exit after calls complete");
+
+    // ── Client subcommands ───────────────────────────────────────────────────
+    // All client subcommands use allow_extras() so their positional args and
+    // command-specific flags (--loaded, --event) are captured in remaining().
+    // Global flags (--json, --quiet) mixed in after the subcommand are also
+    // captured and extracted before dispatching to the command object.
+
+    auto* daemonSub  = app.add_subcommand("daemon", "Start the daemon process");
+    daemonSub->fallthrough();  // -m, -v after "daemon" fall through to parent
+
+    auto* statusSub        = app.add_subcommand("status", "Show daemon and module health");
+    auto* loadModuleSub    = app.add_subcommand("load-module", "Load a module into the daemon");
+    auto* unloadModuleSub  = app.add_subcommand("unload-module", "Unload a module from the daemon");
+    auto* reloadModuleSub  = app.add_subcommand("reload-module", "Reload (unload + load) a module");
+    auto* listModulesSub   = app.add_subcommand("list-modules", "List available or loaded modules");
+    auto* moduleInfoSub    = app.add_subcommand("module-info", "Show detailed module information");
+    auto* infoSub          = app.add_subcommand("info", "Alias for module-info");
+    auto* callSub          = app.add_subcommand("call", "Call a method on a loaded module");
+    auto* moduleSub        = app.add_subcommand("module", "Call a method (verbose syntax)");
+    auto* watchSub         = app.add_subcommand("watch", "Watch events from a module");
+    auto* statsSub         = app.add_subcommand("stats", "Show module resource usage");
+    auto* stopSub          = app.add_subcommand("stop", "Stop the daemon");
+
+    // Allow extras on all client subcommands so their positional args and
+    // command-specific flags pass through to the Command objects unchanged
+    for (auto* sub : {statusSub, loadModuleSub, unloadModuleSub, reloadModuleSub,
+                      listModulesSub, moduleInfoSub, infoSub, callSub, moduleSub,
+                      watchSub, statsSub, stopSub}) {
+        sub->allow_extras();
     }
+
+    app.require_subcommand(0, 1);  // 0 or 1 subcommand
+
+    // ── Parse ────────────────────────────────────────────────────────────────
+    CLI11_PARSE(app, argc, argv);
 
     qInstallMessageHandler(messageHandler);
 
-    Mode mode = detectMode(argc, argv);
-
-    switch (mode) {
-    case Mode::Help:
-        printHelp();
-        return 0;
-
-    case Mode::Version:
-        std::cout << "logoscore version 1.0" << std::endl;
-        return 0;
-
-    case Mode::Daemon:
-    {
-        QCoreApplication app(argc, argv);
-        app.setApplicationName("logoscore");
-        app.setApplicationVersion("1.0");
-        return runDaemonMode(argc, argv);
+    // ── Daemon mode ──────────────────────────────────────────────────────────
+    if (daemonFlag || daemonSub->parsed()) {
+        QCoreApplication qapp(argc, argv);
+        qapp.setApplicationName("logoscore");
+        qapp.setApplicationVersion("1.0");
+        return Daemon::start(argc, argv, modulesDirs);
     }
 
-    case Mode::Client:
-    {
-        QCoreApplication app(argc, argv);
-        app.setApplicationName("logoscore");
-        app.setApplicationVersion("1.0");
-        return runClientMode(argc, argv);
+    // ── Client mode ──────────────────────────────────────────────────────────
+    struct SubInfo { CLI::App* sub; QString name; };
+    std::vector<SubInfo> clientSubs = {
+        {statusSub, "status"},
+        {loadModuleSub, "load-module"},
+        {unloadModuleSub, "unload-module"},
+        {reloadModuleSub, "reload-module"},
+        {listModulesSub, "list-modules"},
+        {moduleInfoSub, "module-info"},
+        {infoSub, "info"},
+        {callSub, "call"},
+        {moduleSub, "module"},
+        {watchSub, "watch"},
+        {statsSub, "stats"},
+        {stopSub, "stop"},
+    };
+
+    for (auto& [sub, name] : clientSubs) {
+        if (!sub->parsed())
+            continue;
+
+        QCoreApplication qapp(argc, argv);
+        qapp.setApplicationName("logoscore");
+        qapp.setApplicationVersion("1.0");
+
+        // Collect remaining args from the subcommand, extracting global flags
+        // (global flags placed after the subcommand end up in remaining())
+        std::vector<std::string> cmdArgs;
+
+        for (const auto& r : sub->remaining()) {
+            if (r == "--json" || r == "-j") {
+                jsonMode = true;
+            } else if (r == "--quiet" || r == "-q") {
+                quiet = true;
+            } else {
+                cmdArgs.push_back(r);
+            }
+        }
+
+        Output output(jsonMode);
+        RpcClient rpcClient;
+
+        auto cmd = createCommand(name, rpcClient, output);
+        if (!cmd) {
+            output.printError("INVALID_ARGS",
+                             QString("Unknown command: %1. Run 'logoscore --help' for usage.").arg(name));
+            return 1;
+        }
+
+        return cmd->execute(cmdArgs);
     }
 
-    case Mode::Inline:
-        return runInlineMode(argc, argv);
+    // ── Inline mode (legacy) ─────────────────────────────────────────────────
+    if (!modulesDirs.empty() || !loadModulesStr.empty() || !callStrs.empty() || quitOnFinish) {
+        return runInlineMode(argc, argv, modulesDirs, loadModulesStr, callStrs, quitOnFinish);
     }
 
-    return 1;
+    // ── No mode detected — show help ─────────────────────────────────────────
+    std::cout << app.help() << std::endl;
+    return 0;
 }

@@ -78,6 +78,7 @@
               pkgs.qt6.qtremoteobjects
               pkgs.nlohmann_json
               pkgs.stduuid
+              pkgs.cli11
               pkgs.gtest
             ];
 
@@ -172,6 +173,7 @@
               pkgs.qt6.qtremoteobjects
               pkgs.nlohmann_json
               pkgs.stduuid
+              pkgs.cli11
               pkgs.gtest
               liblogosLib
               moduleClientLib
@@ -269,6 +271,7 @@
             pkgs.qt6.qtremoteobjects
             pkgs.nlohmann_json
             pkgs.stduuid
+            pkgs.cli11
             pkgs.gtest
           ];
           shellHook = ''

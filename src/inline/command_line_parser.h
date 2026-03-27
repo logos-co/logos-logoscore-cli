@@ -18,6 +18,7 @@ struct CoreArgs {
     std::vector<ModuleCall> calls;              // Optional: module method calls to execute
 };
 
-CoreArgs parseCommandLineArgs(int argc, char* argv[]);
+// Parse a "module.method(arg1,arg2)" call string into a ModuleCall struct.
+ModuleCall parseCallString(const std::string& callStr);
 
 #endif // COMMAND_LINE_PARSER_H

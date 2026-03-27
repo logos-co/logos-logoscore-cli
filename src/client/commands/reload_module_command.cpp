@@ -1,8 +1,16 @@
 #include "reload_module_command.h"
+#include <CLI/CLI.hpp>
 
-int ReloadModuleCommand::execute(const QStringList& args)
+int ReloadModuleCommand::execute(const std::vector<std::string>& args)
 {
-    if (args.isEmpty()) {
+    CLI::App cli{"reload-module"};
+    cli.set_help_flag();
+    std::string name;
+    cli.add_option("name", name, "Module name")->required();
+    try {
+        auto argsCopy = args;
+        cli.parse(argsCopy);
+    } catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS", "Usage: logoscore reload-module <name>");
         return 1;
     }
@@ -11,7 +19,7 @@ int ReloadModuleCommand::execute(const QStringList& args)
     if (err != 0)
         return err;
 
-    QString moduleName = args.first();
+    QString moduleName = QString::fromStdString(name);
 
     if (!output().isJsonMode()) {
         // Print progress to stderr in human mode

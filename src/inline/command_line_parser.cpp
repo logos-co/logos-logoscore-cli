@@ -48,7 +48,7 @@ static std::vector<std::string> parseParams(const std::string& paramsStr) {
     return result;
 }
 
-static ModuleCall parseCallString(const std::string& callStr) {
+ModuleCall parseCallString(const std::string& callStr) {
     ModuleCall call;
 
     auto dotIndex = callStr.find('.');
@@ -77,54 +77,4 @@ static ModuleCall parseCallString(const std::string& callStr) {
     call.params = parseParams(paramsStr);
 
     return call;
-}
-
-CoreArgs parseCommandLineArgs(int argc, char* argv[]) {
-    CoreArgs args;
-    args.valid = false;
-    args.quitOnFinish = false;
-
-    for (int i = 1; i < argc; ++i) {
-        std::string arg(argv[i]);
-
-        if (arg == "-m" || arg == "--modules-dir") {
-            if (i + 1 < argc) {
-                args.modulesDirs.push_back(argv[++i]);
-            }
-        } else if (arg == "-l" || arg == "--load-modules") {
-            if (i + 1 < argc) {
-                std::string modulesList(argv[++i]);
-                std::string current;
-                for (char c : modulesList) {
-                    if (c == ',') {
-                        if (!current.empty()) {
-                            args.loadModules.push_back(current);
-                            current.clear();
-                        }
-                    } else {
-                        current += c;
-                    }
-                }
-                if (!current.empty()) {
-                    args.loadModules.push_back(current);
-                }
-            }
-        } else if (arg == "-c" || arg == "--call") {
-            if (i + 1 < argc) {
-                std::string callStr(argv[++i]);
-                ModuleCall call = parseCallString(callStr);
-                if (!call.moduleName.empty() && !call.methodName.empty()) {
-                    args.calls.push_back(call);
-                } else {
-                    fprintf(stderr, "Skipping invalid call: %s\n", callStr.c_str());
-                }
-            }
-        } else if (arg == "--quit-on-finish") {
-            args.quitOnFinish = true;
-        }
-        // --verbose, --help, --version handled elsewhere
-    }
-
-    args.valid = true;
-    return args;
 }

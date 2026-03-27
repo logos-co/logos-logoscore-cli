@@ -24,6 +24,7 @@ target_include_directories(logoscore_testlib PUBLIC
     ${LOGOS_LIBLOGOS_ROOT}/include
 )
 target_link_libraries(logoscore_testlib PUBLIC
+    CLI11::CLI11
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::RemoteObjects
 )

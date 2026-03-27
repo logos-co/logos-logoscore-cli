@@ -1,8 +1,16 @@
 #include "module_info_command.h"
+#include <CLI/CLI.hpp>
 
-int ModuleInfoCommand::execute(const QStringList& args)
+int ModuleInfoCommand::execute(const std::vector<std::string>& args)
 {
-    if (args.isEmpty()) {
+    CLI::App cli{"module-info"};
+    cli.set_help_flag();
+    std::string name;
+    cli.add_option("name", name, "Module name")->required();
+    try {
+        auto argsCopy = args;
+        cli.parse(argsCopy);
+    } catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS", "Usage: logoscore module-info <name>");
         return 1;
     }
@@ -11,7 +19,7 @@ int ModuleInfoCommand::execute(const QStringList& args)
     if (err != 0)
         return err;
 
-    QString moduleName = args.first();
+    QString moduleName = QString::fromStdString(name);
     QJsonObject info = client().getModuleInfo(moduleName);
 
     QString status = info.value("status").toString();

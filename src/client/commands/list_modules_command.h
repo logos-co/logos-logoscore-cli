@@ -7,7 +7,7 @@ class ListModulesCommand : public Command {
 public:
     using Command::Command;
 
-    int execute(const QStringList& args) override;
+    int execute(const std::vector<std::string>& args) override;
     QString name() const override { return "list-modules"; }
     QString description() const override { return "List available or loaded modules"; }
 };

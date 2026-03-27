@@ -1,8 +1,16 @@
 #include "unload_module_command.h"
+#include <CLI/CLI.hpp>
 
-int UnloadModuleCommand::execute(const QStringList& args)
+int UnloadModuleCommand::execute(const std::vector<std::string>& args)
 {
-    if (args.isEmpty()) {
+    CLI::App cli{"unload-module"};
+    cli.set_help_flag();
+    std::string name;
+    cli.add_option("name", name, "Module name")->required();
+    try {
+        auto argsCopy = args;
+        cli.parse(argsCopy);
+    } catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS", "Usage: logoscore unload-module <name>");
         return 1;
     }
@@ -11,7 +19,7 @@ int UnloadModuleCommand::execute(const QStringList& args)
     if (err != 0)
         return err;
 
-    QString moduleName = args.first();
+    QString moduleName = QString::fromStdString(name);
     QJsonObject result = client().unloadModule(moduleName);
 
     QString status = result.value("status").toString();

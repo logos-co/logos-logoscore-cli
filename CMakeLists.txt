@@ -73,6 +73,20 @@ find_package(nlohmann_json REQUIRED)
 # ── stduuid (header-only) ────────────────────────────────────────────────────
 find_package(stduuid REQUIRED)
 
+# ── CLI11 (header-only) ──────────────────────────────────────────────────────
+find_package(CLI11 QUIET)
+if(NOT CLI11_FOUND)
+    message(STATUS "CLI11 not found via find_package, using FetchContent")
+    include(FetchContent)
+    FetchContent_Declare(CLI11
+        GIT_REPOSITORY https://github.com/CLIUtils/CLI11
+        GIT_TAG v2.4.2
+    )
+    FetchContent_MakeAvailable(CLI11)
+else()
+    message(STATUS "Using system CLI11")
+endif()
+
 # ── logoscore executable ──────────────────────────────────────────────────────
 set(CLI_SOURCES
     src/main.cpp
@@ -116,6 +130,7 @@ target_link_libraries(logoscore PRIVATE
     logos_module_client
     nlohmann_json::nlohmann_json
     stduuid
+    CLI11::CLI11
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::RemoteObjects
 )
