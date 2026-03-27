@@ -53,12 +53,12 @@ bool RpcClient::connect()
         return false;
     }
 
-    d->instanceId = d->connInfo.instanceId;
+    d->instanceId = QString::fromStdString(d->connInfo.instanceId);
 
     // Resolve token
     d->token = Config::getToken();
     if (d->token.isEmpty())
-        d->token = d->connInfo.token;
+        d->token = QString::fromStdString(d->connInfo.token);
 
     if (d->token.isEmpty()) {
         m_lastError = "No authentication token found.";
@@ -161,12 +161,16 @@ QJsonObject RpcClient::getStatus()
     QJsonObject status;
     QJsonObject daemon;
     daemon["status"] = "running";
-    daemon["pid"] = d->connInfo.pid;
-    daemon["instance_id"] = d->connInfo.instanceId;
+    daemon["pid"] = static_cast<qint64>(d->connInfo.pid);
+    daemon["instance_id"] = QString::fromStdString(d->connInfo.instanceId);
     daemon["version"] = QCoreApplication::applicationVersion();
-    if (d->connInfo.startedAt.isValid()) {
-        qint64 uptimeSecs = d->connInfo.startedAt.secsTo(QDateTime::currentDateTimeUtc());
-        daemon["uptime_seconds"] = uptimeSecs;
+    if (!d->connInfo.startedAt.empty()) {
+        QDateTime started = QDateTime::fromString(
+            QString::fromStdString(d->connInfo.startedAt), Qt::ISODate);
+        if (started.isValid()) {
+            qint64 uptimeSecs = started.secsTo(QDateTime::currentDateTimeUtc());
+            daemon["uptime_seconds"] = uptimeSecs;
+        }
     }
     status["daemon"] = daemon;
     status["modules"] = QJsonArray();
