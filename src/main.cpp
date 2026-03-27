@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <string>
 
 #include "config.h"
 #include "daemon/daemon.h"
@@ -57,14 +58,13 @@ static Mode detectMode(int argc, char* argv[])
 {
     // Scan argv for mode indicators
     bool hasDaemonFlag = false;
-    bool hasSubcommand = false;
     bool hasInlineFlags = false;
-    QString firstPositionalArg;
+    std::string firstPositionalArg;
 
     QStringList subcommands = knownSubcommands();
 
     for (int i = 1; i < argc; ++i) {
-        QString arg = QString::fromUtf8(argv[i]);
+        std::string arg(argv[i]);
 
         if (arg == "-D" || arg == "daemon") {
             hasDaemonFlag = true;
@@ -83,7 +83,7 @@ static Mode detectMode(int argc, char* argv[])
             hasInlineFlags = true;
         }
         // Check if first positional arg is a known subcommand
-        if (!arg.startsWith('-') && firstPositionalArg.isEmpty()) {
+        if (arg[0] != '-' && firstPositionalArg.empty()) {
             firstPositionalArg = arg;
         }
     }
@@ -91,7 +91,7 @@ static Mode detectMode(int argc, char* argv[])
     if (hasDaemonFlag)
         return Mode::Daemon;
 
-    if (!firstPositionalArg.isEmpty() && subcommands.contains(firstPositionalArg))
+    if (!firstPositionalArg.empty() && subcommands.contains(QString::fromStdString(firstPositionalArg)))
         return Mode::Client;
 
     if (hasInlineFlags)
@@ -146,11 +146,11 @@ static int runClientMode(int argc, char* argv[])
     // Parse global flags and subcommand
     bool jsonMode = false;
     bool quiet = false;
-    QString subcommand;
+    std::string subcommand;
     QStringList cmdArgs;
 
     for (int i = 1; i < argc; ++i) {
-        QString arg = QString::fromUtf8(argv[i]);
+        std::string arg(argv[i]);
 
         if (arg == "--json" || arg == "-j") {
             jsonMode = true;
@@ -164,20 +164,20 @@ static int runClientMode(int argc, char* argv[])
             continue; // already handled in main()
         }
 
-        if (subcommand.isEmpty() && !arg.startsWith('-')) {
+        if (subcommand.empty() && arg[0] != '-') {
             subcommand = arg;
-        } else if (!subcommand.isEmpty()) {
-            cmdArgs.append(arg);
+        } else if (!subcommand.empty()) {
+            cmdArgs.append(QString::fromUtf8(argv[i]));
         }
     }
 
     Output output(jsonMode);
     RpcClient rpcClient;
 
-    auto cmd = createCommand(subcommand, rpcClient, output);
+    auto cmd = createCommand(QString::fromStdString(subcommand), rpcClient, output);
     if (!cmd) {
         output.printError("INVALID_ARGS",
-                         QString("Unknown command: %1. Run 'logoscore --help' for usage.").arg(subcommand));
+                         QString("Unknown command: %1. Run 'logoscore --help' for usage.").arg(QString::fromStdString(subcommand)));
         return 1;
     }
 
@@ -189,7 +189,7 @@ static int runDaemonMode(int argc, char* argv[])
     QStringList modulesDirs;
 
     for (int i = 1; i < argc; ++i) {
-        QString arg = QString::fromUtf8(argv[i]);
+        std::string arg(argv[i]);
         if ((arg == "-m" || arg == "--modules-dir") && i + 1 < argc) {
             modulesDirs.append(QString::fromUtf8(argv[i + 1]));
             ++i;
@@ -201,34 +201,33 @@ static int runDaemonMode(int argc, char* argv[])
 
 static int runInlineMode(int argc, char* argv[])
 {
+    CoreArgs args = parseCommandLineArgs(argc, argv);
+    if (!args.valid)
+        return 1;
+
     QCoreApplication app(argc, argv);
     app.setApplicationName("logoscore");
     app.setApplicationVersion("1.0");
 
-    CoreArgs args = parseCommandLineArgs(app);
-    if (!args.valid)
-        return 1;
-
     logos_core_init(argc, argv);
 
-    for (const QString& dir : args.modulesDirs) {
-        logos_core_add_plugins_dir(dir.toUtf8().constData());
+    for (const std::string& dir : args.modulesDirs) {
+        logos_core_add_plugins_dir(dir.c_str());
     }
 
     logos_core_start();
 
-    if (!args.loadModules.isEmpty()) {
-        for (const QString& moduleName : args.loadModules) {
-            QString trimmed = moduleName.trimmed();
-            if (trimmed.isEmpty())
+    if (!args.loadModules.empty()) {
+        for (const std::string& moduleName : args.loadModules) {
+            if (moduleName.empty())
                 continue;
-            if (!logos_core_load_plugin_with_dependencies(trimmed.toUtf8().constData())) {
-                qWarning() << "Failed to load module:" << trimmed;
+            if (!logos_core_load_plugin_with_dependencies(moduleName.c_str())) {
+                qWarning() << "Failed to load module:" << QString::fromStdString(moduleName);
             }
         }
     }
 
-    if (!args.calls.isEmpty()) {
+    if (!args.calls.empty()) {
         int callResult = CallExecutor::executeCalls(args.calls);
         if (args.quitOnFinish || callResult != 0) {
             return callResult;

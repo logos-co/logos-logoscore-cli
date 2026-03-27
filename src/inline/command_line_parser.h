@@ -1,26 +1,23 @@
 #ifndef COMMAND_LINE_PARSER_H
 #define COMMAND_LINE_PARSER_H
 
-#include <QString>
-#include <QStringList>
-#include <QList>
-
-class QCoreApplication;
+#include <string>
+#include <vector>
 
 struct ModuleCall {
-    QString moduleName;
-    QString methodName;
-    QStringList params;  // Raw param strings (including @file refs)
+    std::string moduleName;
+    std::string methodName;
+    std::vector<std::string> params;  // Raw param strings (including @file refs)
 };
 
 struct CoreArgs {
     bool valid;
-    bool quitOnFinish;            // Exit after -c calls complete (--quit-on-finish)
-    QStringList modulesDirs;      // Optional: custom modules directories (repeatable -m)
-    QStringList loadModules;      // Optional: modules to load in order
-    QList<ModuleCall> calls;      // Optional: module method calls to execute
+    bool quitOnFinish;                          // Exit after -c calls complete (--quit-on-finish)
+    std::vector<std::string> modulesDirs;       // Optional: custom modules directories (repeatable -m)
+    std::vector<std::string> loadModules;       // Optional: modules to load in order
+    std::vector<ModuleCall> calls;              // Optional: module method calls to execute
 };
 
-CoreArgs parseCommandLineArgs(QCoreApplication& app);
+CoreArgs parseCommandLineArgs(int argc, char* argv[]);
 
 #endif // COMMAND_LINE_PARSER_H

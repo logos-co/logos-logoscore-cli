@@ -27,19 +27,19 @@ QString CallExecutor::resolveParam(const QString& param) {
     if (param.startsWith('@')) {
         QString filePath = param.mid(1);
         QFile file(filePath);
-        
+
         if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
             qWarning() << "Failed to open file:" << filePath;
             return QString();
         }
-        
+
         QTextStream in(&file);
         QString content = in.readAll();
         file.close();
-        
+
         return content;
     }
-    
+
     return param;
 }
 
@@ -50,37 +50,37 @@ QJsonValue CallExecutor::convertParam(const QString& param) {
     if (param.toLower() == "false") {
         return QJsonValue(false);
     }
-    
+
     bool ok;
     int intVal = param.toInt(&ok);
     if (ok) {
         return QJsonValue(intVal);
     }
-    
+
     double doubleVal = param.toDouble(&ok);
     if (ok) {
         return QJsonValue(doubleVal);
     }
-    
+
     return QJsonValue(param);
 }
 
-QString CallExecutor::buildParamsJson(const QStringList& params) {
+QString CallExecutor::buildParamsJson(const std::vector<std::string>& params) {
     QJsonArray paramsArray;
-    
-    for (int i = 0; i < params.size(); ++i) {
-        QString rawParam = params[i];
+
+    for (size_t i = 0; i < params.size(); ++i) {
+        QString rawParam = QString::fromStdString(params[i]);
         QString resolvedParam = resolveParam(rawParam);
-        
+
         if (rawParam.startsWith('@') && resolvedParam.isEmpty()) {
             qWarning() << "Failed to resolve file parameter:" << rawParam;
             return QString();
         }
-        
+
         QJsonObject paramObj;
         paramObj["name"] = QString("arg%1").arg(i);
         paramObj["value"] = resolvedParam;
-        
+
         QJsonValue converted = convertParam(resolvedParam);
         if (converted.isBool()) {
             paramObj["type"] = "bool";
@@ -98,76 +98,77 @@ QString CallExecutor::buildParamsJson(const QStringList& params) {
             paramObj["type"] = "QString";
             paramObj["value"] = resolvedParam;
         }
-        
+
         paramsArray.append(paramObj);
     }
-    
+
     QJsonDocument doc(paramsArray);
     return QString::fromUtf8(doc.toJson(QJsonDocument::Compact));
 }
 
 bool CallExecutor::executeCall(const ModuleCall& call) {
-    qDebug() << "Executing call:" << call.moduleName << "." << call.methodName 
+    qDebug() << "Executing call:" << QString::fromStdString(call.moduleName) << "."
+             << QString::fromStdString(call.methodName)
              << "with" << call.params.size() << "params";
-    
+
     QString paramsJson = buildParamsJson(call.params);
     if (call.params.size() > 0 && paramsJson.isEmpty()) {
-        std::cerr << "Error: Failed to build parameters for " 
-                  << call.moduleName.toStdString() << "." 
-                  << call.methodName.toStdString() << std::endl;
+        std::cerr << "Error: Failed to build parameters for "
+                  << call.moduleName << "."
+                  << call.methodName << std::endl;
         return false;
     }
-    
+
     CallResult result;
-    
+
     logos_sdk_call_method_async(
-        call.moduleName.toUtf8().constData(),
-        call.methodName.toUtf8().constData(),
+        call.moduleName.c_str(),
+        call.methodName.c_str(),
         paramsJson.isEmpty() ? "[]" : paramsJson.toUtf8().constData(),
         methodCallCallback,
         &result
     );
-    
+
     QEventLoop loop;
     QTimer timeoutTimer;
     timeoutTimer.setSingleShot(true);
     timeoutTimer.setInterval(30000);
-    
+
     QTimer pollTimer;
     pollTimer.setInterval(100);
-    
+
     QObject::connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
     QObject::connect(&pollTimer, &QTimer::timeout, [&]() {
         if (result.completed) {
             loop.quit();
         }
     });
-    
+
     timeoutTimer.start();
     pollTimer.start();
     loop.exec();
-    
+
     pollTimer.stop();
     timeoutTimer.stop();
-    
+
     if (!result.completed) {
-        std::cerr << "Error: Timeout waiting for " 
-                  << call.moduleName.toStdString() << "." 
-                  << call.methodName.toStdString() << std::endl;
+        std::cerr << "Error: Timeout waiting for "
+                  << call.moduleName << "."
+                  << call.methodName << std::endl;
         return false;
     }
-    
+
     if (!result.success) {
         std::cerr << "Error: " << result.message.toStdString() << std::endl;
         return false;
     }
-    
+
     std::cout << result.message.toStdString() << std::endl;
-    
+
     return true;
 }
 
-int CallExecutor::executeCalls(const QList<ModuleCall>& calls) {
+int CallExecutor::executeCalls(const std::vector<ModuleCall>& calls) {
     for (const ModuleCall& call : calls) {
         if (!executeCall(call)) {
             return 1;
