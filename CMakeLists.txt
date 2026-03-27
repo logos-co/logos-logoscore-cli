@@ -70,6 +70,9 @@ set_target_properties(logos_module_client PROPERTIES
 # ── nlohmann_json (header-only) ───────────────────────────────────────────────
 find_package(nlohmann_json REQUIRED)
 
+# ── stduuid (header-only) ────────────────────────────────────────────────────
+find_package(stduuid REQUIRED)
+
 # ── logoscore executable ──────────────────────────────────────────────────────
 set(CLI_SOURCES
     src/main.cpp
@@ -112,6 +115,7 @@ target_link_libraries(logoscore PRIVATE
     logos_core
     logos_module_client
     nlohmann_json::nlohmann_json
+    stduuid
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::RemoteObjects
 )

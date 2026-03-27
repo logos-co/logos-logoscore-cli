@@ -1,11 +1,12 @@
 #ifndef DAEMON_H
 #define DAEMON_H
 
-#include <QStringList>
+#include <string>
+#include <vector>
 
 class Daemon {
 public:
-    static int start(int argc, char* argv[], const QStringList& modulesDirs);
+    static int start(int argc, char* argv[], const std::vector<std::string>& modulesDirs);
 
 private:
     static void setupSignalHandlers();
