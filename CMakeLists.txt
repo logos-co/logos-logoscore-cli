@@ -91,6 +91,7 @@ endif()
 set(CLI_SOURCES
     src/main.cpp
     src/config.cpp
+    src/paths.cpp
 
     # Daemon path
     src/daemon/daemon.cpp

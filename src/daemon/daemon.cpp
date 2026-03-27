@@ -1,6 +1,7 @@
 #include "daemon.h"
 #include "connection_file.h"
 #include "../config.h"
+#include "../paths.h"
 #include "logos_core.h"
 
 #include <logos_api.h>
@@ -74,9 +75,10 @@ int Daemon::start(int argc, char* argv[], const std::vector<std::string>& module
         std::string absDir = std::filesystem::absolute(dir, ec).string();
         logos_core_add_plugins_dir(ec ? dir.c_str() : absDir.c_str());
     }
-    const char* bundledDir = std::getenv("LOGOS_BUNDLED_MODULES_DIR");
-    if (bundledDir && bundledDir[0] != '\0') {
-        logos_core_add_plugins_dir(bundledDir);
+
+    std::string bundledDir = paths::bundledModulesDir();
+    if (!bundledDir.empty()) {
+        logos_core_add_plugins_dir(bundledDir.c_str());
     }
 
     // 4. Start core (discover plugins, launch logos_host in remote mode)
