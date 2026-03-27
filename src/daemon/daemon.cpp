@@ -13,6 +13,8 @@
 #include <QDebug>
 
 #include <csignal>
+#include <string>
+#include <vector>
 #include <unistd.h>
 
 static volatile sig_atomic_t g_shutdownRequested = 0;
@@ -77,14 +79,18 @@ int Daemon::start(int argc, char* argv[], const QStringList& modulesDirs)
     TokenManager::instance().saveToken("cli_client", token);
 
     // 6. Write connection file
-    if (!ConnectionFile::write(instanceId, token, pid, modulesDirs)) {
-        qCritical() << "Failed to write connection file:" << ConnectionFile::filePath();
+    std::vector<std::string> modDirsVec;
+    for (const QString& d : modulesDirs)
+        modDirsVec.push_back(d.toStdString());
+
+    if (!ConnectionFile::write(instanceId.toStdString(), token.toStdString(), pid, modDirsVec)) {
+        qCritical() << "Failed to write connection file:" << ConnectionFile::filePath().c_str();
         return 1;
     }
 
     fprintf(stdout, "Logoscore daemon started (pid %lld, instance %s)\n",
             static_cast<long long>(pid), instanceId.toUtf8().constData());
-    fprintf(stdout, "Connection file: %s\n", ConnectionFile::filePath().toUtf8().constData());
+    fprintf(stdout, "Connection file: %s\n", ConnectionFile::filePath().c_str());
     fflush(stdout);
 
     // 7. Set up signal handlers for clean shutdown

@@ -1,31 +1,30 @@
 #ifndef CONNECTION_FILE_H
 #define CONNECTION_FILE_H
 
-#include <QString>
-#include <QStringList>
-#include <QJsonObject>
-#include <QDateTime>
+#include <string>
+#include <vector>
+#include <cstdint>
 
 struct ConnectionInfo {
     bool valid = false;
-    QString instanceId;
-    QString token;
-    qint64 pid = -1;
-    QDateTime startedAt;
-    QStringList modulesDirs;
+    std::string instanceId;
+    std::string token;
+    int64_t pid = -1;
+    std::string startedAt;           // ISO 8601 UTC timestamp
+    std::vector<std::string> modulesDirs;
 };
 
 class ConnectionFile {
 public:
-    static bool write(const QString& instanceId, const QString& token,
-                      qint64 pid, const QStringList& modulesDirs);
+    static bool write(const std::string& instanceId, const std::string& token,
+                      int64_t pid, const std::vector<std::string>& modulesDirs);
     static ConnectionInfo read();
     static bool remove();
     static bool isStale();
-    static QString filePath();
+    static std::string filePath();
 
 private:
-    static bool isPidAlive(qint64 pid);
+    static bool isPidAlive(int64_t pid);
 };
 
 #endif // CONNECTION_FILE_H

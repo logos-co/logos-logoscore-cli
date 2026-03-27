@@ -53,6 +53,7 @@
             buildInputs = [
               pkgs.qt6.qtbase
               pkgs.qt6.qtremoteobjects
+              pkgs.nlohmann_json
               pkgs.gtest
             ];
 
@@ -199,6 +200,7 @@
             buildInputs = [
               pkgs.qt6.qtbase
               pkgs.qt6.qtremoteobjects
+              pkgs.nlohmann_json
               pkgs.gtest
               liblogosLib
               moduleClientLib
@@ -294,6 +296,7 @@
           buildInputs = [
             pkgs.qt6.qtbase
             pkgs.qt6.qtremoteobjects
+            pkgs.nlohmann_json
             pkgs.gtest
           ];
           shellHook = ''
