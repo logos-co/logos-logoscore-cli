@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -265,4 +267,131 @@ TEST_F(CLITest, InlineMode_ParameterParsing) {
         "--verbose --call \"fake_module.method('string param', 42, true)\"", &output);
 
     EXPECT_NE(output.find("3 params") + output.find("params"), std::string::npos);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Timing tests — client commands must return quickly (catches RPC hangs)
+// If the RPC layer has a misconfigured token key or missing timeout,
+// commands hang for 20+ seconds waiting for capability_module negotiation.
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST_F(CLITest, Status_NoDaemon_ReturnsFast) {
+    auto start = std::chrono::steady_clock::now();
+    std::string output;
+    int exitCode = runLogoscore("status --json", &output);
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+    EXPECT_LE(secs, 5) << "status should return within 5 seconds (took " << secs << "s). "
+                        << "Likely an RPC timeout or token key misconfiguration.";
+    EXPECT_NE(exitCode, 0);
+}
+
+TEST_F(CLITest, LoadModule_NoDaemon_ReturnsFast) {
+    auto start = std::chrono::steady_clock::now();
+    std::string output;
+    int exitCode = runLogoscore("load-module test --json", &output);
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+    EXPECT_LE(secs, 5) << "load-module should return within 5 seconds (took " << secs << "s).";
+    EXPECT_NE(exitCode, 0);
+}
+
+TEST_F(CLITest, Stop_NoDaemon_ReturnsFast) {
+    auto start = std::chrono::steady_clock::now();
+    std::string output;
+    int exitCode = runLogoscore("stop --json", &output);
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+    EXPECT_LE(secs, 5) << "stop should return within 5 seconds (took " << secs << "s).";
+    EXPECT_NE(exitCode, 0);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Module manifest discovery — manifest.json must have "type": "core"
+// PackageManagerLib::getInstalledModules() filters by type and silently
+// skips modules without it.
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST_F(CLITest, InlineMode_ManifestWithType_Discovered) {
+    fs::path tmpDir = fs::temp_directory_path() / "logoscore_test_discovery";
+    fs::path modDir = tmpDir / "test_discovery_module";
+    fs::create_directories(modDir);
+
+#if defined(__APPLE__)
+    #if defined(__aarch64__)
+        std::string variant = "darwin-arm64-dev";
+    #else
+        std::string variant = "darwin-x86_64-dev";
+    #endif
+#elif defined(__aarch64__)
+    std::string variant = "linux-arm64-dev";
+#elif defined(__x86_64__)
+    std::string variant = "linux-x86_64-dev";
+#else
+    std::string variant = "linux-x86-dev";
+#endif
+
+    // Manifest WITH "type": "core" — should be discoverable
+    {
+        std::ofstream f(modDir / "manifest.json");
+        f << R"({"name":"test_discovery_module","version":"1.0.0","type":"core","main":{")"
+          << variant << R"(":"test_discovery_module_plugin.so"}})";
+    }
+    // Dummy plugin file so mainFilePath resolves
+    { std::ofstream f(modDir / "test_discovery_module_plugin.so"); f << "dummy"; }
+
+    std::string output;
+    int exitCode = runLogoscoreWithTimeout(
+        "--verbose --modules-dir " + tmpDir.string() + " --quit-on-finish", &output, 5);
+
+    // Module should appear in discovery output (processPlugin may fail on the
+    // dummy binary, but the important thing is PackageManagerLib found it)
+    bool foundInOutput = output.find("test_discovery_module") != std::string::npos;
+    EXPECT_TRUE(foundInOutput)
+        << "Module with 'type: core' in manifest should be discovered. Output:\n" << output;
+
+    fs::remove_all(tmpDir);
+}
+
+TEST_F(CLITest, InlineMode_ManifestWithoutType_NotDiscovered) {
+    fs::path tmpDir = fs::temp_directory_path() / "logoscore_test_no_type";
+    fs::path modDir = tmpDir / "test_notype_module";
+    fs::create_directories(modDir);
+
+#if defined(__APPLE__)
+    #if defined(__aarch64__)
+        std::string variant = "darwin-arm64-dev";
+    #else
+        std::string variant = "darwin-x86_64-dev";
+    #endif
+#elif defined(__aarch64__)
+    std::string variant = "linux-arm64-dev";
+#elif defined(__x86_64__)
+    std::string variant = "linux-x86_64-dev";
+#else
+    std::string variant = "linux-x86-dev";
+#endif
+
+    // Manifest WITHOUT "type" field — should be silently skipped
+    {
+        std::ofstream f(modDir / "manifest.json");
+        f << R"({"name":"test_notype_module","version":"1.0.0","main":{")"
+          << variant << R"(":"test_notype_module_plugin.so"}})";
+    }
+    { std::ofstream f(modDir / "test_notype_module_plugin.so"); f << "dummy"; }
+
+    std::string output;
+    int exitCode = runLogoscoreWithTimeout(
+        "--verbose --modules-dir " + tmpDir.string() + " --quit-on-finish", &output, 5);
+
+    // Module should NOT be found because it lacks "type": "core"
+    bool discoveredMsg = output.find("Discovered module:") != std::string::npos &&
+                         output.find("test_notype_module") != std::string::npos;
+    EXPECT_FALSE(discoveredMsg)
+        << "Module without 'type: core' should NOT be discovered. Output:\n" << output;
+
+    fs::remove_all(tmpDir);
 }
