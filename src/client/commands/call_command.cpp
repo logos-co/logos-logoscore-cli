@@ -18,7 +18,7 @@ QString CallCommand::resolveFileParam(const QString& param)
     return content;
 }
 
-int CallCommand::execute(const QStringList& args)
+int CallCommand::execute(const std::vector<std::string>& args)
 {
     // Parse args: either "call <module> <method> [args...]"
     // or "module <name> method <method> [args...]"
@@ -26,40 +26,31 @@ int CallCommand::execute(const QStringList& args)
     QString methodName;
     QStringList methodArgs;
 
-    if (args.isEmpty()) {
+    if (args.empty()) {
         output().printError("INVALID_ARGS",
                            "Usage: logoscore call <module> <method> [args...]");
         return 1;
     }
 
     // Check for verbose "module <name> method <method>" syntax
-    // args[0] is the first arg after the subcommand keyword
-    if (args.size() >= 1) {
-        // For "logoscore call <module> <method> [args...]"
-        // args = [<module>, <method>, args...]
-        // For "logoscore module <name> method <method> [args...]"
-        // main.cpp passes the subcommand as "module", and args = [<name>, method, <method>, args...]
-        int i = 0;
-
-        // Check if this is the verbose form: first arg after "module" subcommand
-        // In that case args = [<name>, "method", <method>, ...]
-        if (args.size() >= 3 && args.at(1) == "method") {
-            moduleName = args.at(0);
-            methodName = args.at(2);
-            for (int j = 3; j < args.size(); ++j)
-                methodArgs.append(args.at(j));
-        } else {
-            // Short form: <module> <method> [args...]
-            if (args.size() < 2) {
-                output().printError("INVALID_ARGS",
-                                   "Usage: logoscore call <module> <method> [args...]");
-                return 1;
-            }
-            moduleName = args.at(0);
-            methodName = args.at(1);
-            for (int j = 2; j < args.size(); ++j)
-                methodArgs.append(args.at(j));
+    // For "logoscore module <name> method <method> [args...]"
+    //   args = [<name>, method, <method>, args...]
+    if (args.size() >= 3 && args[1] == "method") {
+        moduleName = QString::fromStdString(args[0]);
+        methodName = QString::fromStdString(args[2]);
+        for (size_t j = 3; j < args.size(); ++j)
+            methodArgs.append(QString::fromStdString(args[j]));
+    } else {
+        // Short form: <module> <method> [args...]
+        if (args.size() < 2) {
+            output().printError("INVALID_ARGS",
+                               "Usage: logoscore call <module> <method> [args...]");
+            return 1;
         }
+        moduleName = QString::fromStdString(args[0]);
+        methodName = QString::fromStdString(args[1]);
+        for (size_t j = 2; j < args.size(); ++j)
+            methodArgs.append(QString::fromStdString(args[j]));
     }
 
     if (moduleName.isEmpty() || methodName.isEmpty()) {

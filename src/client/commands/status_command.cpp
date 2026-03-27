@@ -1,9 +1,9 @@
 #include "status_command.h"
 #include "../../daemon/connection_file.h"
 
-int StatusCommand::execute(const QStringList& args)
+int StatusCommand::execute(const std::vector<std::string>& args)
 {
-    Q_UNUSED(args);
+    (void)args;
 
     // First check if connection file exists and PID is alive
     ConnectionInfo connInfo = ConnectionFile::read();

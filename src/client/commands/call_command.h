@@ -7,7 +7,7 @@ class CallCommand : public Command {
 public:
     using Command::Command;
 
-    int execute(const QStringList& args) override;
+    int execute(const std::vector<std::string>& args) override;
     QString name() const override { return "call"; }
     QString description() const override { return "Call a method on a loaded module"; }
 

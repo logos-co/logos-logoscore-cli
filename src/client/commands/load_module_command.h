@@ -7,7 +7,7 @@ class LoadModuleCommand : public Command {
 public:
     using Command::Command;
 
-    int execute(const QStringList& args) override;
+    int execute(const std::vector<std::string>& args) override;
     QString name() const override { return "load-module"; }
     QString description() const override { return "Load a module into the daemon"; }
 };

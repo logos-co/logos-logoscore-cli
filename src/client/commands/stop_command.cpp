@@ -1,8 +1,8 @@
 #include "stop_command.h"
 
-int StopCommand::execute(const QStringList& args)
+int StopCommand::execute(const std::vector<std::string>& args)
 {
-    Q_UNUSED(args);
+    (void)args;
 
     int err = ensureConnected();
     if (err != 0)

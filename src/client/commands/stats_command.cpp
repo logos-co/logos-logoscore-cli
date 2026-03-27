@@ -1,8 +1,8 @@
 #include "stats_command.h"
 
-int StatsCommand::execute(const QStringList& args)
+int StatsCommand::execute(const std::vector<std::string>& args)
 {
-    Q_UNUSED(args);
+    (void)args;
 
     int err = ensureConnected();
     if (err != 0)

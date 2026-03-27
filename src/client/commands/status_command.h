@@ -7,7 +7,7 @@ class StatusCommand : public Command {
 public:
     using Command::Command;
 
-    int execute(const QStringList& args) override;
+    int execute(const std::vector<std::string>& args) override;
     QString name() const override { return "status"; }
     QString description() const override { return "Show daemon and module health"; }
 };
