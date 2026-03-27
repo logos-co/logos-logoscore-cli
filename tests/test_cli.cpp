@@ -356,6 +356,83 @@ TEST_F(CLITest, InlineMode_ManifestWithType_Discovered) {
     fs::remove_all(tmpDir);
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// Relative path resolution — logos_core cannot load plugin metadata from
+// relative paths (dlopen fails to resolve RPATH).  logoscore must resolve
+// --modules-dir to an absolute path before calling logos_core_add_plugins_dir.
+//
+// These tests verify this by checking that the "Added plugins directory:"
+// debug message contains an absolute path, even when the CLI receives a
+// relative one.
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST_F(CLITest, InlineMode_RelativePath_ResolvedToAbsolute) {
+    fs::path parentDir = fs::temp_directory_path() / "logoscore_test_relpath";
+    fs::path modulesDir = parentDir / "my_modules";
+    fs::create_directories(modulesDir);
+
+    // cd into parentDir, pass relative "./my_modules"
+    std::string cmd = "cd " + parentDir.string() + " && timeout 5 "
+        + logoscoreBinary.string()
+        + " --verbose --modules-dir ./my_modules --quit-on-finish 2>&1";
+
+    FILE* pipe = popen(cmd.c_str(), "r");
+    ASSERT_NE(pipe, nullptr);
+    std::string output;
+    char buffer[256];
+    while (fgets(buffer, sizeof(buffer), pipe))
+        output += buffer;
+    pclose(pipe);
+
+    // The "Added plugins directory:" message should contain an absolute path
+    // (starts with '/'), NOT the relative "./my_modules"
+    std::string marker = "Added plugins directory:";
+    auto pos = output.find(marker);
+    ASSERT_NE(pos, std::string::npos) << "Should see plugins directory message. Output:\n" << output;
+
+    std::string afterMarker = output.substr(pos + marker.size());
+    // The path in the message must be absolute (contain '/' followed by the dir name)
+    bool isAbsolute = afterMarker.find("/my_modules") != std::string::npos;
+    bool isRelative = afterMarker.find("\"./my_modules\"") != std::string::npos;
+    EXPECT_TRUE(isAbsolute && !isRelative)
+        << "Relative --modules-dir should be resolved to absolute before passing to logos_core. "
+        << "Output:\n" << output;
+
+    fs::remove_all(parentDir);
+}
+
+TEST_F(CLITest, DaemonMode_RelativePath_ResolvedToAbsolute) {
+    fs::path parentDir = fs::temp_directory_path() / "logoscore_test_relpath_daemon";
+    fs::path modulesDir = parentDir / "my_modules";
+    fs::create_directories(modulesDir);
+
+    // cd into parentDir, start daemon with relative "./my_modules"
+    std::string cmd = "cd " + parentDir.string() + " && timeout 5 "
+        + logoscoreBinary.string()
+        + " -D --verbose --modules-dir ./my_modules 2>&1";
+
+    FILE* pipe = popen(cmd.c_str(), "r");
+    ASSERT_NE(pipe, nullptr);
+    std::string output;
+    char buffer[256];
+    while (fgets(buffer, sizeof(buffer), pipe))
+        output += buffer;
+    pclose(pipe);
+
+    std::string marker = "Added plugins directory:";
+    auto pos = output.find(marker);
+    ASSERT_NE(pos, std::string::npos) << "Should see plugins directory message. Output:\n" << output;
+
+    std::string afterMarker = output.substr(pos + marker.size());
+    bool isAbsolute = afterMarker.find("/my_modules") != std::string::npos;
+    bool isRelative = afterMarker.find("\"./my_modules\"") != std::string::npos;
+    EXPECT_TRUE(isAbsolute && !isRelative)
+        << "Daemon relative --modules-dir should be resolved to absolute before passing to logos_core. "
+        << "Output:\n" << output;
+
+    fs::remove_all(parentDir);
+}
+
 TEST_F(CLITest, InlineMode_ManifestWithoutType_NotDiscovered) {
     fs::path tmpDir = fs::temp_directory_path() / "logoscore_test_no_type";
     fs::path modDir = tmpDir / "test_notype_module";

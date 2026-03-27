@@ -2,6 +2,7 @@
 #include <QDebug>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <string>
 
@@ -186,12 +187,12 @@ static int runClientMode(int argc, char* argv[])
 
 static int runDaemonMode(int argc, char* argv[])
 {
-    QStringList modulesDirs;
+    std::vector<std::string> modulesDirs;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg(argv[i]);
         if ((arg == "-m" || arg == "--modules-dir") && i + 1 < argc) {
-            modulesDirs.append(QString::fromUtf8(argv[i + 1]));
+            modulesDirs.push_back(argv[i + 1]);
             ++i;
         }
     }
@@ -212,7 +213,9 @@ static int runInlineMode(int argc, char* argv[])
     logos_core_init(argc, argv);
 
     for (const std::string& dir : args.modulesDirs) {
-        logos_core_add_plugins_dir(dir.c_str());
+        std::error_code ec;
+        std::string absDir = std::filesystem::absolute(dir, ec).string();
+        logos_core_add_plugins_dir(ec ? dir.c_str() : absDir.c_str());
     }
 
     QByteArray bundledDir = qgetenv("LOGOS_BUNDLED_MODULES_DIR");

@@ -9,10 +9,16 @@
 #include "../core_service/core_service_impl.h"
 
 #include <QCoreApplication>
-#include <QUuid>
-#include <QDebug>
+#include <QString>
+
+#include <uuid.h>
 
 #include <csignal>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <random>
 #include <string>
 #include <vector>
 #include <unistd.h>
@@ -21,7 +27,7 @@ static volatile sig_atomic_t g_shutdownRequested = 0;
 
 void Daemon::signalHandler(int signal)
 {
-    Q_UNUSED(signal);
+    (void)signal;
     g_shutdownRequested = 1;
 
     // Post a quit event to the Qt event loop
@@ -39,25 +45,38 @@ void Daemon::setupSignalHandlers()
     sigaction(SIGTERM, &sa, nullptr);
 }
 
-int Daemon::start(int argc, char* argv[], const QStringList& modulesDirs)
+int Daemon::start(int argc, char* argv[], const std::vector<std::string>& modulesDirs)
 {
     // 1. Generate instance ID BEFORE core init, so logos_host inherits it
-    QString instanceId = QUuid::createUuid().toString(QUuid::Id128).left(12);
-    QString token = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    qint64 pid = QCoreApplication::applicationPid();
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    uuids::uuid_random_generator uuidGen(gen);
 
-    qputenv("LOGOS_INSTANCE_ID", instanceId.toUtf8());
+    // instanceId: 12 hex chars (no dashes), like QUuid::Id128.left(12)
+    std::string fullUuid = uuids::to_string(uuidGen());
+    std::string instanceId;
+    for (char c : fullUuid)
+        if (c != '-') instanceId += c;
+    instanceId = instanceId.substr(0, 12);
+
+    std::string token = uuids::to_string(uuidGen());
+    int64_t pid = getpid();
+
+    setenv("LOGOS_INSTANCE_ID", instanceId.c_str(), 1);
 
     // 2. Initialize logos core
     logos_core_init(argc, argv);
 
     // 3. Add plugin directories — user-specified and bundled
-    for (const QString& dir : modulesDirs) {
-        logos_core_add_plugins_dir(dir.toUtf8().constData());
+    //    Resolve to absolute paths: logos_core cannot load plugin metadata from relative paths.
+    for (const std::string& dir : modulesDirs) {
+        std::error_code ec;
+        std::string absDir = std::filesystem::absolute(dir, ec).string();
+        logos_core_add_plugins_dir(ec ? dir.c_str() : absDir.c_str());
     }
-    QByteArray bundledDir = qgetenv("LOGOS_BUNDLED_MODULES_DIR");
-    if (!bundledDir.isEmpty()) {
-        logos_core_add_plugins_dir(bundledDir.constData());
+    const char* bundledDir = std::getenv("LOGOS_BUNDLED_MODULES_DIR");
+    if (bundledDir && bundledDir[0] != '\0') {
+        logos_core_add_plugins_dir(bundledDir);
     }
 
     // 4. Start core (discover plugins, launch logos_host in remote mode)
@@ -76,20 +95,16 @@ int Daemon::start(int argc, char* argv[], const QStringList& modulesDirs)
     provider->registerObject("core_service", static_cast<LogosProviderObject*>(coreServiceImpl));
 
     // Save the client token so core_service can authenticate CLI clients
-    TokenManager::instance().saveToken("cli_client", token);
+    TokenManager::instance().saveToken("cli_client", QString::fromStdString(token));
 
     // 6. Write connection file
-    std::vector<std::string> modDirsVec;
-    for (const QString& d : modulesDirs)
-        modDirsVec.push_back(d.toStdString());
-
-    if (!ConnectionFile::write(instanceId.toStdString(), token.toStdString(), pid, modDirsVec)) {
-        qCritical() << "Failed to write connection file:" << ConnectionFile::filePath().c_str();
+    if (!ConnectionFile::write(instanceId, token, pid, modulesDirs)) {
+        fprintf(stderr, "Failed to write connection file: %s\n", ConnectionFile::filePath().c_str());
         return 1;
     }
 
     fprintf(stdout, "Logoscore daemon started (pid %lld, instance %s)\n",
-            static_cast<long long>(pid), instanceId.toUtf8().constData());
+            static_cast<long long>(pid), instanceId.c_str());
     fprintf(stdout, "Connection file: %s\n", ConnectionFile::filePath().c_str());
     fflush(stdout);
 
