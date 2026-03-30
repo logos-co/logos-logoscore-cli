@@ -19,6 +19,8 @@
         pkgs = import nixpkgs { inherit system; };
         liblogos = logos-liblogos.packages.${system}.logos-liblogos;
         liblogosLib = logos-liblogos.packages.${system}.logos-liblogos-lib;
+        liblogosPortable = logos-liblogos.packages.${system}.portable;
+        liblogosPortableLib = logos-liblogos.packages.${system}.portable;
         moduleClient = logos-module-client.packages.${system}.logos-module-client;
         moduleClientLib = logos-module-client.packages.${system}.logos-module-client-lib;
         capabilityModule = logos-capability-module.packages.${system}.default;
@@ -27,7 +29,7 @@
       });
     in
     {
-      packages = forAllSystems ({ pkgs, system, liblogos, liblogosLib, moduleClient, moduleClientLib, capabilityModule, dirBundler, appBundler }:
+      packages = forAllSystems ({ pkgs, system, liblogos, liblogosLib, liblogosPortable, liblogosPortableLib, moduleClient, moduleClientLib, capabilityModule, dirBundler, appBundler }:
         let
           pname = "logos-logoscore-cli";
           version = "0.1.0";
@@ -38,9 +40,9 @@
             platforms = platforms.unix;
           };
 
-          # Build the logoscore binary against logos-liblogos
-          build = pkgs.stdenv.mkDerivation {
-            inherit pname version src meta;
+          mkBuild = { liblogosDrv, portable ? false }: pkgs.stdenv.mkDerivation {
+            pname = if portable then "${pname}-portable" else pname;
+            inherit version src meta;
 
             dontWrapQtApps = true;
 
@@ -58,13 +60,14 @@
 
             cmakeFlags = [
               "-GNinja"
-              "-DLOGOS_LIBLOGOS_ROOT=${liblogos}"
+              "-DLOGOS_LIBLOGOS_ROOT=${liblogosDrv}"
               "-DLOGOS_MODULE_CLIENT_ROOT=${moduleClient}"
+            ] ++ pkgs.lib.optionals portable [
+              "-DLOGOS_PORTABLE_BUILD=ON"
             ];
           };
 
-          # Bundle modules (capability_module) so logoscore can load it by default
-          modules = pkgs.runCommand "${pname}-modules-${version}"
+          mkModules = { portable ? false }: pkgs.runCommand "${pname}-modules-${version}"
             { inherit meta; }
             ''
               mkdir -p $out/modules/capability_module
@@ -101,6 +104,22 @@
                 aarch64|arm64) arch="aarch64" ;;
               esac
 
+              ${if portable then ''
+              # Portable build: standard platform variant keys
+              cat > $out/modules/capability_module/manifest.json <<EOF
+              {
+                "name": "capability_module",
+                "version": "1.0.0",
+                "main": {
+                  "$platform-$arch": "$pluginFile",
+                  "$platform-amd64": "$pluginFile",
+                  "$platform-arm64": "$pluginFile",
+                  "$platform-x86_64": "$pluginFile",
+                  "$platform-aarch64": "$pluginFile"
+                }
+              }
+              EOF
+              '' else ''
               # Dev build: use -dev suffix variant keys
               cat > $out/modules/capability_module/manifest.json <<EOF
               {
@@ -115,11 +134,11 @@
                 }
               }
               EOF
+              ''}
             '';
 
-          # Package the logoscore binary with its runtime deps
-          bin = pkgs.stdenvNoCC.mkDerivation {
-            pname = "${pname}-bin";
+          mkBin = { buildDrv, liblogosLibDrv, liblogosDrv, modulesDrv, portable ? false }: pkgs.stdenvNoCC.mkDerivation {
+            pname = "${pname}-bin${pkgs.lib.optionalString portable "-portable"}";
             inherit version meta;
 
             dontUnpack = true;
@@ -136,8 +155,8 @@
 
             qtWrapperArgs = [
               "--unset LD_LIBRARY_PATH"
-              "--set LOGOS_BUNDLED_MODULES_DIR ${modules}/modules"
-              "--set LOGOS_HOST_PATH ${liblogos}/bin/logos_host"
+              "--set LOGOS_BUNDLED_MODULES_DIR ${modulesDrv}/modules"
+              "--set LOGOS_HOST_PATH ${liblogosDrv}/bin/logos_host"
             ];
 
             installPhase = ''
@@ -145,23 +164,21 @@
 
               mkdir -p $out/bin $out/lib $out/modules
 
-              cp -r ${build}/bin/* $out/bin/
+              cp -r ${buildDrv}/bin/* $out/bin/
               chmod -R +w $out/bin
 
-              # Copy liblogos_core so logoscore can link at runtime
-              if [ -d ${liblogosLib}/lib ]; then
-                cp -r ${liblogosLib}/lib/* $out/lib/
+              if [ -d ${liblogosLibDrv}/lib ]; then
+                cp -r ${liblogosLibDrv}/lib/* $out/lib/
                 chmod -R +w $out/lib
               fi
 
-              # Copy liblogos_module_client so logoscore can link at runtime
               if [ -d ${moduleClientLib}/lib ]; then
                 cp -r ${moduleClientLib}/lib/* $out/lib/
                 chmod -R +w $out/lib
               fi
 
-              if [ -d ${modules}/modules ]; then
-                cp -r ${modules}/modules/* $out/modules/
+              if [ -d ${modulesDrv}/modules ]; then
+                cp -r ${modulesDrv}/modules/* $out/modules/
               fi
 
               ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
@@ -181,7 +198,28 @@
             '';
           };
 
-          # Tests derivation: builds cli_tests + logoscore binary for integration tests
+          # Dev build (default)
+          build = mkBuild { liblogosDrv = liblogos; };
+          modules = mkModules {};
+          bin = mkBin {
+            buildDrv = build;
+            liblogosLibDrv = liblogosLib;
+            liblogosDrv = liblogos;
+            modulesDrv = modules;
+          };
+
+          # Portable build
+          buildPortable = mkBuild { liblogosDrv = liblogosPortable; portable = true; };
+          modulesPortable = mkModules { portable = true; };
+          binPortable = mkBin {
+            buildDrv = buildPortable;
+            liblogosLibDrv = liblogosPortableLib;
+            liblogosDrv = liblogosPortable;
+            modulesDrv = modulesPortable;
+            portable = true;
+          };
+
+          # Tests derivation
           tests = pkgs.stdenv.mkDerivation {
             pname = "${pname}-tests";
             inherit version src meta;
@@ -246,9 +284,15 @@
             name = pname;
             paths = [ bin ];
           };
+
+          logoscoreCliPortable = pkgs.symlinkJoin {
+            name = "${pname}-portable";
+            paths = [ binPortable ];
+          };
         in
         {
           cli = logoscoreCli;
+          portable = logoscoreCliPortable;
           tests = tests;
           cli-bundle-dir = dirBundler bin;
           cli-appimage = appBundler {
