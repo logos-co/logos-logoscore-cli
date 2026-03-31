@@ -97,7 +97,9 @@ static int runInlineMode(int argc, char* argv[],
     for (const std::string& dir : args.modulesDirs) {
         std::error_code ec;
         std::string absDir = std::filesystem::absolute(dir, ec).string();
-        logos_core_add_plugins_dir(ec ? dir.c_str() : absDir.c_str());
+        const char* resolved = ec ? dir.c_str() : absDir.c_str();
+        qDebug() << "Added plugins directory:" << resolved;
+        logos_core_add_plugins_dir(resolved);
     }
 
     QByteArray bundledDir = qgetenv("LOGOS_BUNDLED_MODULES_DIR");
