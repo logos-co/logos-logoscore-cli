@@ -8,6 +8,7 @@
 #include <string>
 
 #include "config.h"
+#include "paths.h"
 #include "daemon/daemon.h"
 #include "daemon/connection_file.h"
 #include "client/client.h"
@@ -102,9 +103,10 @@ static int runInlineMode(int argc, char* argv[],
         logos_core_add_plugins_dir(resolved);
     }
 
-    QByteArray bundledDir = qgetenv("LOGOS_BUNDLED_MODULES_DIR");
-    if (!bundledDir.isEmpty()) {
-        logos_core_add_plugins_dir(bundledDir.constData());
+    std::string bundledDir = paths::bundledModulesDir();
+    if (!bundledDir.empty()) {
+        logos_core_add_plugins_dir(bundledDir.c_str());
+        qDebug() << "Added bundled modules directory:" << bundledDir.c_str();
     }
 
     logos_core_start();

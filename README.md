@@ -11,13 +11,13 @@
 ### Using Nix (Recommended)
 
 ```bash
-# Build logoscore binary
+# Build logoscore binary (works with dev modules)
 nix build
 
 # Build and run tests
 nix build '.#tests'
 
-# Build portable directory bundle
+# Build portable directory bundle (works with portable modules)
 nix build '.#cli-bundle-dir'
 ```
 
