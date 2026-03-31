@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <sys/wait.h>
 #include <vector>
 
 #ifdef __APPLE__
@@ -196,7 +197,7 @@ TEST_F(CLITest, Stats_NoDaemon) {
 
 TEST_F(CLITest, InlineMode_ModulesDirOption) {
     std::string output;
-    int exitCode = runLogoscoreWithTimeout("--verbose --modules-dir /tmp/test_modules", &output);
+    int exitCode = runLogoscoreWithTimeout("--verbose --modules-dir /tmp/test_modules --quit-on-finish", &output);
 
     EXPECT_NE(output.find("Added plugins directory:"), std::string::npos)
         << "Should see debug message that custom directory was added";
@@ -216,7 +217,7 @@ TEST_F(CLITest, InlineMode_LoadModulesOption) {
 
 TEST_F(CLITest, InlineMode_ShortAliases) {
     std::string output;
-    int exitCode = runLogoscoreWithTimeout("--verbose -m /tmp/test_modules_alias", &output);
+    int exitCode = runLogoscoreWithTimeout("--verbose -m /tmp/test_modules_alias --quit-on-finish", &output);
 
     EXPECT_NE(output.find("Added plugins directory:"), std::string::npos)
         << "Short alias -m should work";
@@ -407,7 +408,8 @@ TEST_F(CLITest, DaemonMode_RelativePath_ResolvedToAbsolute) {
     fs::create_directories(modulesDir);
 
     // cd into parentDir, start daemon with relative "./my_modules"
-    std::string cmd = "cd " + parentDir.string() + " && timeout 5 "
+    std::string cmd = "cd " + parentDir.string() + " && HOME=" + parentDir.string()
+        + " timeout 5 "
         + logoscoreBinary.string()
         + " -D --verbose --modules-dir ./my_modules 2>&1";
 

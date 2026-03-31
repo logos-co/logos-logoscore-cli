@@ -9,6 +9,7 @@
 #include "../core_service/core_service_impl.h"
 
 #include <QCoreApplication>
+#include <QDebug>
 #include <QString>
 
 #include <uuid.h>
@@ -72,7 +73,9 @@ int Daemon::start(int argc, char* argv[], const std::vector<std::string>& module
     for (const std::string& dir : modulesDirs) {
         std::error_code ec;
         std::string absDir = std::filesystem::absolute(dir, ec).string();
-        logos_core_add_plugins_dir(ec ? dir.c_str() : absDir.c_str());
+        const char* resolved = ec ? dir.c_str() : absDir.c_str();
+        qDebug() << "Added plugins directory:" << resolved;
+        logos_core_add_plugins_dir(resolved);
     }
     const char* bundledDir = std::getenv("LOGOS_BUNDLED_MODULES_DIR");
     if (bundledDir && bundledDir[0] != '\0') {
