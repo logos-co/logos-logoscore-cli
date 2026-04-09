@@ -47,7 +47,8 @@ void Daemon::setupSignalHandlers()
     sigaction(SIGTERM, &sa, nullptr);
 }
 
-int Daemon::start(int argc, char* argv[], const std::vector<std::string>& modulesDirs)
+int Daemon::start(int argc, char* argv[], const std::vector<std::string>& modulesDirs,
+                  const std::string& persistencePath)
 {
     // 1. Generate instance ID BEFORE core init, so logos_host inherits it
     std::random_device rd;
@@ -85,10 +86,16 @@ int Daemon::start(int argc, char* argv[], const std::vector<std::string>& module
         qDebug() << "Added bundled modules directory:" << bundledDir.c_str();
     }
 
-    // 4. Start core (discover plugins, launch logos_host in remote mode)
+    // 4. Set persistence base path for module instance data
+    std::string persistenceBase = persistencePath.empty()
+        ? Config::configDir().toStdString() + "/data"
+        : persistencePath;
+    logos_core_set_persistence_base_path(persistenceBase.c_str());
+
+    // 5. Start core (discover plugins, launch logos_host in remote mode)
     logos_core_start();
 
-    // 5. Register core_service as an in-process module via the C++ SDK.
+    // 6. Register core_service as an in-process module via the C++ SDK.
     //    This publishes it via Qt RemoteObjects so CLI clients can connect.
     auto* coreServiceApi = new LogosAPI("core_service");
     auto* coreServiceImpl = new CoreServiceImpl();
@@ -103,7 +110,7 @@ int Daemon::start(int argc, char* argv[], const std::vector<std::string>& module
     // Save the client token so core_service can authenticate CLI clients
     TokenManager::instance().saveToken("cli_client", QString::fromStdString(token));
 
-    // 6. Write connection file
+    // 7. Write connection file
     if (!ConnectionFile::write(instanceId, token, pid, modulesDirs)) {
         fprintf(stderr, "Failed to write connection file: %s\n", ConnectionFile::filePath().c_str());
         return 1;
@@ -114,13 +121,13 @@ int Daemon::start(int argc, char* argv[], const std::vector<std::string>& module
     fprintf(stdout, "Connection file: %s\n", ConnectionFile::filePath().c_str());
     fflush(stdout);
 
-    // 7. Set up signal handlers for clean shutdown
+    // 8. Set up signal handlers for clean shutdown
     setupSignalHandlers();
 
-    // 8. Run Qt event loop (blocks)
+    // 9. Run Qt event loop (blocks)
     int result = logos_core_exec();
 
-    // 9. Cleanup
+    // 10. Cleanup
     fprintf(stdout, "Shutting down logoscore daemon...\n");
     fflush(stdout);
 

@@ -197,12 +197,14 @@ logoscore -m ./modules -l waku,chat -c "chat.send_message(hello)" --quit-on-fini
 #### Inline Options
 
 ```
-  -m, --modules-dir <path>    Directory to scan for modules (repeatable)
-  -l, --load-modules <modules> Comma-separated list of modules to load
-  -c, --call <call>           Call a module method: module.method(arg1, arg2)
-                              Use @file to read a parameter from a file.
-                              Can be repeated for sequential calls.
-      --quit-on-finish        Exit after all -c calls complete
+  -m, --modules-dir <path>       Directory to scan for modules (repeatable)
+  -l, --load-modules <modules>   Comma-separated list of modules to load
+  -c, --call <call>              Call a module method: module.method(arg1, arg2)
+                                 Use @file to read a parameter from a file.
+                                 Can be repeated for sequential calls.
+      --quit-on-finish           Exit after all -c calls complete
+      --persistence-path <path>  Base directory for module instance persistence
+                                 (default: ~/.logoscore/data)
 ```
 
 #### Inline Examples
@@ -224,6 +226,9 @@ logoscore -l storage \
 
 # Multiple modules directory sources
 logoscore -m ./core-modules -m ./extra-modules -l my_module
+
+# Custom persistence directory for module instance data
+logoscore -m ./modules -l my_module --persistence-path /tmp/test-data
 ```
 
 ### Dependency Resolution

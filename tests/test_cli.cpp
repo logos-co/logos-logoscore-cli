@@ -435,6 +435,41 @@ TEST_F(CLITest, DaemonMode_RelativePath_ResolvedToAbsolute) {
     fs::remove_all(parentDir);
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// Persistence path option
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST_F(CLITest, HelpCommand_ShowsPersistencePath) {
+    std::string output;
+    int exitCode = runLogoscore("--help", &output);
+    EXPECT_EQ(exitCode, 0);
+    EXPECT_NE(output.find("--persistence-path"), std::string::npos)
+        << "Help should document --persistence-path option. Output:\n" << output;
+}
+
+TEST_F(CLITest, InlineMode_PersistencePathOption) {
+    fs::path tmpDir = fs::temp_directory_path() / "logoscore_test_persistence";
+    fs::path modulesDir = tmpDir / "modules";
+    fs::create_directories(modulesDir);
+
+    std::string output;
+    int exitCode = runLogoscoreWithTimeout(
+        "--verbose --modules-dir " + modulesDir.string()
+        + " --persistence-path " + tmpDir.string()
+        + " --quit-on-finish", &output, 5);
+
+    // The persistence path should be accepted without error.
+    // CLI11 would print "Unknown option" if it didn't recognize the flag.
+    EXPECT_EQ(output.find("Unknown option"), std::string::npos)
+        << "--persistence-path should be a recognized option. Output:\n" << output;
+
+    // Should exit cleanly (0) or via timeout (124) — not a CLI parse error
+    EXPECT_NE(exitCode, 1)
+        << "Exit code 1 suggests a CLI parse error. Output:\n" << output;
+
+    fs::remove_all(tmpDir);
+}
+
 TEST_F(CLITest, InlineMode_ManifestWithoutType_NotDiscovered) {
     fs::path tmpDir = fs::temp_directory_path() / "logoscore_test_no_type";
     fs::path modDir = tmpDir / "test_notype_module";
