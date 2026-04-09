@@ -53,7 +53,8 @@ static int runInlineMode(int argc, char* argv[],
                          const std::vector<std::string>& modulesDirs,
                          const std::string& loadModulesStr,
                          const std::vector<std::string>& callStrs,
-                         bool quitOnFinish)
+                         bool quitOnFinish,
+                         const std::string& persistencePath)
 {
     // Build CoreArgs from pre-parsed CLI11 values
     CoreArgs args;
@@ -108,6 +109,13 @@ static int runInlineMode(int argc, char* argv[],
         logos_core_add_plugins_dir(bundledDir.c_str());
         qDebug() << "Added bundled modules directory:" << bundledDir.c_str();
     }
+
+    // Set persistence base path (user-specified or default)
+    std::string resolvedPersistence = persistencePath;
+    if (resolvedPersistence.empty()) {
+        resolvedPersistence = Config::configDir().toStdString() + "/data";
+    }
+    logos_core_set_persistence_base_path(resolvedPersistence.c_str());
 
     logos_core_start();
 
@@ -167,6 +175,10 @@ int main(int argc, char *argv[])
     bool quitOnFinish = false;
     app.add_flag("--quit-on-finish", quitOnFinish, "Exit after calls complete");
 
+    std::string persistencePath;
+    app.add_option("--persistence-path", persistencePath,
+        "Base directory for module instance persistence (default: ~/.logoscore/data)");
+
     // ── Client subcommands ───────────────────────────────────────────────────
     // All client subcommands use allow_extras() so their positional args and
     // command-specific flags (--loaded, --event) are captured in remaining().
@@ -209,7 +221,7 @@ int main(int argc, char *argv[])
         QCoreApplication qapp(argc, argv);
         qapp.setApplicationName("logoscore");
         qapp.setApplicationVersion("1.0");
-        return Daemon::start(argc, argv, modulesDirs);
+        return Daemon::start(argc, argv, modulesDirs, persistencePath);
     }
 
     // ── Client mode ──────────────────────────────────────────────────────────
@@ -266,7 +278,7 @@ int main(int argc, char *argv[])
 
     // ── Inline mode (legacy) ─────────────────────────────────────────────────
     if (!modulesDirs.empty() || !loadModulesStr.empty() || !callStrs.empty() || quitOnFinish) {
-        return runInlineMode(argc, argv, modulesDirs, loadModulesStr, callStrs, quitOnFinish);
+        return runInlineMode(argc, argv, modulesDirs, loadModulesStr, callStrs, quitOnFinish, persistencePath);
     }
 
     // ── No mode detected — show help ─────────────────────────────────────────

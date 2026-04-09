@@ -6,7 +6,8 @@
 
 class Daemon {
 public:
-    static int start(int argc, char* argv[], const std::vector<std::string>& modulesDirs);
+    static int start(int argc, char* argv[], const std::vector<std::string>& modulesDirs,
+                     const std::string& persistencePath = "");
 
 private:
     static void setupSignalHandlers();
