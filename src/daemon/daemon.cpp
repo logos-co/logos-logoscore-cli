@@ -125,7 +125,7 @@ int Daemon::start(int argc, char* argv[], const std::vector<std::string>& module
     setupSignalHandlers();
 
     // 9. Run Qt event loop (blocks)
-    int result = logos_core_exec();
+    int result = QCoreApplication::exec();
 
     // 10. Cleanup
     fprintf(stdout, "Shutting down logoscore daemon...\n");

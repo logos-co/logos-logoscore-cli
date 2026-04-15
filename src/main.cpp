@@ -136,7 +136,7 @@ static int runInlineMode(int argc, char* argv[],
         }
     }
 
-    return logos_core_exec();
+    return QCoreApplication::exec();
 }
 
 int main(int argc, char *argv[])
