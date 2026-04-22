@@ -5,8 +5,36 @@
 #include <QStandardPaths>
 #include <cstdlib>
 
+namespace {
+// Process-wide override set by setConfigDir(). Empty = not overridden.
+// This is a plain static (not thread-local) — set once at startup from main(),
+// read many times thereafter, never mutated concurrently with reads.
+QString& configDirOverride()
+{
+    static QString s;
+    return s;
+}
+}
+
+void Config::setConfigDir(const QString& path)
+{
+    configDirOverride() = path;
+}
+
 QString Config::configDir()
 {
+    // Precedence: explicit setter (from --config-dir) → LOGOSCORE_CONFIG_DIR
+    // env var → ~/.logoscore. Parallel logoscore instances pick distinct
+    // config dirs so their daemon.json / config.json / data/ trees don't
+    // clash.
+    const QString& override = configDirOverride();
+    if (!override.isEmpty())
+        return override;
+
+    const char* envDir = std::getenv("LOGOSCORE_CONFIG_DIR");
+    if (envDir && *envDir)
+        return QString::fromUtf8(envDir);
+
     return QDir::homePath() + "/.logoscore";
 }
 

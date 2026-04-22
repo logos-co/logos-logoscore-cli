@@ -179,6 +179,13 @@ int main(int argc, char *argv[])
     app.add_option("--persistence-path", persistencePath,
         "Base directory for module instance persistence (default: ~/.logoscore/data)");
 
+    // Override the config dir (daemon.json, config.json, data/) so parallel
+    // logoscore instances can run side-by-side. Client commands must be
+    // invoked with the same --config-dir as the daemon they target.
+    std::string configDirStr;
+    app.add_option("--config-dir", configDirStr,
+        "Override config directory (default: ~/.logoscore; also LOGOSCORE_CONFIG_DIR)");
+
     // ── Client subcommands ───────────────────────────────────────────────────
     // All client subcommands use allow_extras() so their positional args and
     // command-specific flags (--loaded, --event) are captured in remaining().
@@ -215,6 +222,16 @@ int main(int argc, char *argv[])
     CLI11_PARSE(app, argc, argv);
 
     qInstallMessageHandler(messageHandler);
+
+    // Apply --config-dir (if passed) before any Config::* call so the daemon,
+    // client, connection_file, and any forked logos_host all see the same
+    // config dir. Also mirror into the env var so child processes inherit it.
+    if (!configDirStr.empty()) {
+        const std::string absCfg = std::filesystem::absolute(configDirStr).string();
+        std::filesystem::create_directories(absCfg);
+        Config::setConfigDir(QString::fromStdString(absCfg));
+        setenv("LOGOSCORE_CONFIG_DIR", absCfg.c_str(), 1);
+    }
 
     // ── Daemon mode ──────────────────────────────────────────────────────────
     if (daemonFlag || daemonSub->parsed()) {
