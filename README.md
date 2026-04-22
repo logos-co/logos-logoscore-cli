@@ -131,6 +131,26 @@ echo '{"token": "<token>"}' > ~/.logoscore/config.json
 
 Token resolution order: `LOGOSCORE_TOKEN` env var → `~/.logoscore/config.json` → `~/.logoscore/daemon.json`.
 
+#### Parallel Daemons (`--config-dir`)
+
+`--config-dir <path>` overrides the default `~/.logoscore` location for `daemon.json`, `config.json`, and the module persistence tree. This lets multiple `logoscore` daemons run side-by-side against isolated state. Client commands must be invoked with the same `--config-dir` as the daemon they target.
+
+```bash
+# Two parallel daemons with isolated config/state
+logoscore --config-dir /tmp/ls-a -D -m ./modules &
+logoscore --config-dir /tmp/ls-b -D -m ./modules &
+
+# Target each daemon explicitly
+logoscore --config-dir /tmp/ls-a status
+logoscore --config-dir /tmp/ls-b load-module waku
+
+# Stop cleanly
+logoscore --config-dir /tmp/ls-a stop
+logoscore --config-dir /tmp/ls-b stop
+```
+
+Resolution order: `--config-dir` → `LOGOSCORE_CONFIG_DIR` env var → `~/.logoscore`. The flag also mirrors into `LOGOSCORE_CONFIG_DIR` so child processes inherit it.
+
 #### Agent / Script Example
 
 ```bash

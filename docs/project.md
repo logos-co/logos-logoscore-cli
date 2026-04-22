@@ -441,12 +441,21 @@ QVariant Client::loadModule(const QString& name) {
 | Method | Description |
 |--------|-------------|
 | `Config::getToken() -> QString` | Resolve token: env var → config file → connection file |
-| `Config::load() -> Config` | Load `~/.logoscore/config.json` |
+| `Config::load() -> Config` | Load `<configDir>/config.json` |
+| `Config::configDir() -> QString` | Resolve config dir: explicit setter (`--config-dir`) → `LOGOSCORE_CONFIG_DIR` env → `~/.logoscore` |
+| `Config::setConfigDir(QString)` | Process-wide override set from `main` when `--config-dir` is passed |
 
-**Resolution order:**
+**Token resolution order:**
 1. `LOGOSCORE_TOKEN` environment variable
-2. `~/.logoscore/config.json` `{"token": "..."}`
-3. `~/.logoscore/daemon.json` `{"token": "..."}`
+2. `<configDir>/config.json` `{"token": "..."}`
+3. `<configDir>/daemon.json` `{"token": "..."}`
+
+**Config dir resolution order:**
+1. `--config-dir <path>` CLI flag (sets process-wide override, mirrors into `LOGOSCORE_CONFIG_DIR`)
+2. `LOGOSCORE_CONFIG_DIR` environment variable
+3. `~/.logoscore` (default)
+
+Parallel daemons run side-by-side when invoked with distinct `--config-dir` values; client commands must target the daemon by passing the same `--config-dir`.
 
 ### Command Base Class
 

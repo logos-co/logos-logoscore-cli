@@ -21,13 +21,20 @@ protected:
         origHome = qEnvironmentVariable("HOME");
         qputenv("HOME", testDir.toUtf8());
 
-        // Clear LOGOSCORE_TOKEN
+        // Clear token + config-dir overrides so each test starts from a known
+        // state (setConfigDir and LOGOSCORE_CONFIG_DIR both bypass HOME).
         qunsetenv("LOGOSCORE_TOKEN");
+        qunsetenv("LOGOSCORE_CONFIG_DIR");
+        Config::setConfigDir(QString());
     }
 
     void TearDown() override {
         // Restore HOME
         qputenv("HOME", origHome.toUtf8());
+
+        // Clear overrides so they don't leak between tests.
+        qunsetenv("LOGOSCORE_CONFIG_DIR");
+        Config::setConfigDir(QString());
 
         // Clean up temp dir
         QDir(testDir).removeRecursively();
@@ -102,4 +109,67 @@ TEST_F(ConfigTest, Load_ReturnsEmptyOnMissingFile)
 {
     QJsonObject loaded = Config::load();
     EXPECT_TRUE(loaded.isEmpty());
+}
+
+// --------------------------------------------------------------------------
+// Config-dir override: explicit setter > LOGOSCORE_CONFIG_DIR env > ~/.logoscore.
+// These guarantee --config-dir from main() takes effect everywhere and that
+// parallel logoscore instances with distinct --config-dir values land in
+// distinct trees.
+// --------------------------------------------------------------------------
+
+TEST_F(ConfigTest, ConfigDir_EnvVarOverridesHome)
+{
+    const QString alt = testDir + "/alt-config";
+    QDir().mkpath(alt);
+    qputenv("LOGOSCORE_CONFIG_DIR", alt.toUtf8());
+
+    EXPECT_EQ(Config::configDir(), alt);
+    EXPECT_TRUE(Config::configFilePath().startsWith(alt));
+    EXPECT_TRUE(Config::connectionFilePath().startsWith(alt));
+}
+
+TEST_F(ConfigTest, ConfigDir_SetterOverridesEnvVar)
+{
+    const QString envDir = testDir + "/env-config";
+    const QString setterDir = testDir + "/setter-config";
+    QDir().mkpath(envDir);
+    QDir().mkpath(setterDir);
+
+    qputenv("LOGOSCORE_CONFIG_DIR", envDir.toUtf8());
+    Config::setConfigDir(setterDir);
+
+    EXPECT_EQ(Config::configDir(), setterDir)
+        << "explicit setter (from --config-dir) must win over env var";
+}
+
+TEST_F(ConfigTest, ConfigDir_ClearingSetterFallsBackToEnv)
+{
+    const QString envDir = testDir + "/env-config";
+    const QString setterDir = testDir + "/setter-config";
+    QDir().mkpath(envDir);
+    QDir().mkpath(setterDir);
+
+    qputenv("LOGOSCORE_CONFIG_DIR", envDir.toUtf8());
+    Config::setConfigDir(setterDir);
+    ASSERT_EQ(Config::configDir(), setterDir);
+
+    Config::setConfigDir(QString());
+    EXPECT_EQ(Config::configDir(), envDir);
+}
+
+TEST_F(ConfigTest, ConfigDir_OverrideRoutesTokenLookupToOverriddenDir)
+{
+    const QString alt = testDir + "/alt-config";
+    QDir().mkpath(alt);
+    Config::setConfigDir(alt);
+
+    // Write a token under the OVERRIDDEN dir; the legacy ~/.logoscore/config.json
+    // also exists with a different token. The override must win.
+    writeJsonFile(alt + "/config.json",
+                  QJsonObject{{"token", "override-token"}});
+    writeJsonFile(testDir + "/.logoscore/config.json",
+                  QJsonObject{{"token", "home-token"}});
+
+    EXPECT_EQ(Config::getToken(), "override-token");
 }
