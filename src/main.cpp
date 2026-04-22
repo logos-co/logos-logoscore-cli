@@ -227,10 +227,23 @@ int main(int argc, char *argv[])
     // client, connection_file, and any forked logos_host all see the same
     // config dir. Also mirror into the env var so child processes inherit it.
     if (!configDirStr.empty()) {
-        const std::string absCfg = std::filesystem::absolute(configDirStr).string();
-        std::filesystem::create_directories(absCfg);
-        Config::setConfigDir(QString::fromStdString(absCfg));
-        setenv("LOGOSCORE_CONFIG_DIR", absCfg.c_str(), 1);
+        std::error_code ec;
+        const std::filesystem::path absCfgPath =
+            std::filesystem::absolute(configDirStr, ec);
+        if (ec) {
+            std::cerr << "Error: failed to resolve --config-dir '" << configDirStr
+                      << "': " << ec.message() << std::endl;
+            return 1;
+        }
+        std::filesystem::create_directories(absCfgPath, ec);
+        if (ec) {
+            std::cerr << "Error: failed to create --config-dir '" << absCfgPath.string()
+                      << "': " << ec.message() << std::endl;
+            return 1;
+        }
+        const QString absCfg = QString::fromStdString(absCfgPath.string());
+        Config::setConfigDir(absCfg);
+        qputenv("LOGOSCORE_CONFIG_DIR", absCfg.toUtf8());
     }
 
     // ── Daemon mode ──────────────────────────────────────────────────────────
