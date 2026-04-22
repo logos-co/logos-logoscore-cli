@@ -19,7 +19,9 @@ int WatchCommand::execute(const std::vector<std::string>& args)
     cli.add_option("module", module, "Module name")->required();
     cli.add_option("--event", event, "Event name to filter");
     try {
-        auto argsCopy = args;
+        // CLI11 consumes vector args from the back, so the caller must pass
+        // them in reverse order for positional/option interleaving to work.
+        std::vector<std::string> argsCopy(args.rbegin(), args.rend());
         cli.parse(argsCopy);
     } catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS",
