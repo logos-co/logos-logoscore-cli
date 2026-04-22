@@ -66,6 +66,7 @@ logoscore [global-flags] <command> [command-flags] [args...]
 |------|-------|-------------|
 | `--json` | `-j` | Output as JSON. Default when stdout is not a TTY. |
 | `--modules-dir <path>` | `-m` | Module search directory (daemon mode only, repeatable). |
+| `--config-dir <path>` | | Override the config directory (default: `~/.logoscore`; also `LOGOSCORE_CONFIG_DIR`). Client commands must pass the same value as the daemon they target. |
 | `--quiet` | `-q` | Suppress non-essential output. |
 | `--verbose` | `-v` | Show debug/info/warning logs (suppressed by default). |
 | `--help` | `-h` | Show help. |
