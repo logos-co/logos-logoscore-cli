@@ -32,6 +32,9 @@ public:
     QString lastCallMethod;
     QVariantList lastCallArgs;
     QString lastListFilter;
+    QString lastWatchModule;
+    QString lastWatchEventName;
+    bool watchShouldSucceed = false;
 
     bool connect() override {
         m_connected = shouldConnect;
@@ -86,8 +89,10 @@ public:
 
     bool watchModuleEvents(const QString& module, const QString& eventName,
                             std::function<void(const QJsonObject&)> callback) override {
-        Q_UNUSED(module); Q_UNUSED(eventName); Q_UNUSED(callback);
-        return m_connected;
+        Q_UNUSED(callback);
+        lastWatchModule = module;
+        lastWatchEventName = eventName;
+        return m_connected && watchShouldSucceed;
     }
 
 private:
@@ -454,6 +459,60 @@ TEST_F(CommandTest, Watch_MissingArgs)
         int exitCode = cmd->execute({});
         EXPECT_EQ(exitCode, 1);
     });
+}
+
+// Regression: CLI11 parses vector args from the back, so watch_command must
+// reverse them before calling cli.parse(). Without the reverse, the --event
+// value leaked into the positional <module> slot.
+TEST_F(CommandTest, Watch_ParsesModuleAndEventName)
+{
+    auto cmd = createCommand("watch", mockClient, output);
+    captureOutput([&]() {
+        int exitCode = cmd->execute({"chat", "--event", "message"});
+        EXPECT_EQ(exitCode, 3);  // watchShouldSucceed=false => MODULE_NOT_LOADED
+    });
+
+    EXPECT_EQ(mockClient.lastWatchModule, "chat");
+    EXPECT_EQ(mockClient.lastWatchEventName, "message");
+}
+
+TEST_F(CommandTest, Watch_ParsesModuleOnly)
+{
+    auto cmd = createCommand("watch", mockClient, output);
+    captureOutput([&]() {
+        cmd->execute({"waku"});
+    });
+
+    EXPECT_EQ(mockClient.lastWatchModule, "waku");
+    EXPECT_EQ(mockClient.lastWatchEventName, "");
+}
+
+TEST_F(CommandTest, Watch_ModuleNotLoaded_ReturnsExit3)
+{
+    auto cmd = createCommand("watch", mockClient, output);
+    std::string out = captureOutput([&]() {
+        int exitCode = cmd->execute({"missing"});
+        EXPECT_EQ(exitCode, 3);
+    });
+
+    QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(out));
+    EXPECT_EQ(doc.object().value("code").toString(), "MODULE_NOT_LOADED");
+    // Error message must name the original module, not a flag value.
+    EXPECT_TRUE(doc.object().value("message").toString().contains("'missing'"));
+}
+
+TEST_F(CommandTest, Watch_NoDaemon_ReturnsExit2)
+{
+    mockClient.shouldConnect = false;
+    auto cmd = createCommand("watch", mockClient, output);
+
+    std::string out = captureOutput([&]() {
+        int exitCode = cmd->execute({"chat", "--event", "message"});
+        EXPECT_EQ(exitCode, 2);
+    });
+
+    QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(out));
+    EXPECT_EQ(doc.object().value("code").toString(), "NO_DAEMON");
 }
 
 // ── stop ─────────────────────────────────────────────────────────────────────
