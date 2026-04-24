@@ -73,6 +73,13 @@ bool RpcClient::connect()
     // Store token in TokenManager so the SDK can authenticate
     TokenManager::instance().saveToken("cli_client", d->token);
 
+    // Transport config that will be used *only* for the core_service
+    // client. Populated below when the daemon advertised a `transports`
+    // array; left default (LocalSocket) for back-compat with older
+    // daemons that didn't.
+    LogosTransportConfig coreServiceCfg;
+    bool haveExplicitCfg = false;
+
     // Pick a transport from those the daemon advertised:
     //   - $LOGOSCORE_CLIENT_TRANSPORT (set by main.cpp from --client-transport)
     //     if present and matches one of the advertised;
@@ -107,14 +114,13 @@ bool RpcClient::connect()
         const TransportInfo effective =
             ClientConnection::effectiveTransport(*chosen);
 
-        LogosTransportConfig cfg;
-        if (effective.protocol == "tcp")          cfg.protocol = LogosProtocol::Tcp;
-        else if (effective.protocol == "tcp_ssl") cfg.protocol = LogosProtocol::TcpSsl;
-        else                                      cfg.protocol = LogosProtocol::LocalSocket;
-        cfg.host       = effective.host;
-        cfg.port       = effective.port;
-        cfg.caFile     = effective.caFile;
-        cfg.verifyPeer = effective.verifyPeer;
+        if (effective.protocol == "tcp")          coreServiceCfg.protocol = LogosProtocol::Tcp;
+        else if (effective.protocol == "tcp_ssl") coreServiceCfg.protocol = LogosProtocol::TcpSsl;
+        else                                      coreServiceCfg.protocol = LogosProtocol::LocalSocket;
+        coreServiceCfg.host       = effective.host;
+        coreServiceCfg.port       = effective.port;
+        coreServiceCfg.caFile     = effective.caFile;
+        coreServiceCfg.verifyPeer = effective.verifyPeer;
 
         // Codec: use whatever the daemon advertised for this transport,
         // unless the caller pinned --client-codec. If the caller pinned a
@@ -132,17 +138,30 @@ bool RpcClient::connect()
                                    QString::fromStdString(requiredCodec));
             return false;
         }
-        cfg.codec = (advertisedCodec == "cbor")
-                  ? LogosWireCodec::Cbor
-                  : LogosWireCodec::Json;
-        LogosTransportConfigGlobal::setDefault(std::move(cfg));
+        coreServiceCfg.codec = (advertisedCodec == "cbor")
+                             ? LogosWireCodec::Cbor
+                             : LogosWireCodec::Json;
+        haveExplicitCfg = true;
     }
 
-    // Create LogosAPI for this CLI client
+    // Create LogosAPI for this CLI client. The CLI only ever talks to
+    // `core_service` — use the per-client explicit-transport overload
+    // for that one consumer, not `LogosTransportConfigGlobal::setDefault`,
+    // so the transport pick doesn't propagate to anything else in-process.
+    // In particular the LogosAPI constructor unconditionally creates a
+    // LogosAPIProvider that reads the global default to build its bind
+    // URL; if that default were tcp_ssl, the provider would try to bind
+    // a TLS server on the client side (which has no server cert/key)
+    // and abort with "TLS bind failed (:0, )" the first time anything
+    // triggered the bind. Keeping setDefault = LocalSocket means the
+    // client-side provider binds a cheap no-op local socket while the
+    // explicit `core_service` client uses whatever transport we picked.
     d->api = new LogosAPI("cli_client");
 
     // Get a client handle to the daemon's core_service module
-    d->coreService = d->api->getClient("core_service");
+    d->coreService = haveExplicitCfg
+                   ? d->api->getClient("core_service", coreServiceCfg)
+                   : d->api->getClient("core_service");
     if (!d->coreService) {
         m_lastError = "Failed to get core_service client handle.";
         return false;
