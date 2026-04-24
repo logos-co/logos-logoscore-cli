@@ -72,6 +72,45 @@ logoscore [global-flags] <command> [command-flags] [args...]
 | `--help` | `-h` | Show help. |
 | `--version` | | Show version. |
 
+#### Daemon-side transport flags
+
+The daemon defaults to a local Unix socket only. To expose `core_service` over
+the network, pass one or more `--transport=<name>` flags; each opens an
+additional listener that gets advertised in `daemon.json`.
+
+| Flag | Applies to | Description |
+|------|------------|-------------|
+| `--transport <name>` | daemon | Repeatable. One of `local`, `tcp`, `tcp_ssl`. Each occurrence opens a listener. If omitted entirely, `local` is implied. |
+| `--tcp-host <host>` | daemon | TCP bind address (default `127.0.0.1`). Use `0.0.0.0` to accept remote connections. |
+| `--tcp-port <port>` | daemon | TCP port (`0` = auto-assign). |
+| `--tcp-codec <codec>` | daemon | Wire codec for `tcp`: `json` (default, debuggable) or `cbor` (compact). |
+| `--tcp-ssl-host <host>` | daemon | `tcp_ssl` bind address. |
+| `--tcp-ssl-port <port>` | daemon | `tcp_ssl` port (`0` = auto-assign). |
+| `--tcp-ssl-codec <codec>` | daemon | Wire codec for `tcp_ssl`. |
+| `--ssl-ca <path>` | daemon | CA cert PEM file (`tcp_ssl`). |
+| `--ssl-cert <path>` | daemon | Server cert PEM file (`tcp_ssl`). |
+| `--ssl-key <path>` | daemon | Server private key PEM file (`tcp_ssl`). |
+
+#### Client-side transport flags
+
+Client commands pick which advertised transport to dial and may override the
+host/port — needed when the address the daemon bound to differs from the
+reachable one (port-forwarded containers, NAT, SSH tunnels). If none are
+passed, the client prefers `local`; if the daemon didn't advertise `local`
+it errors out rather than guessing.
+
+| Flag | Applies to | Description |
+|------|------------|-------------|
+| `--client-transport <name>` | client | Which advertised transport to use: `local`, `tcp`, `tcp_ssl`. |
+| `--client-tcp-host <host>` | client | Dial this host instead of the advertised one. |
+| `--client-tcp-port <port>` | client | Dial this port instead of the advertised one. |
+| `--client-codec <codec>` | client | Require this codec; aborts if it doesn't match what the daemon advertised for the chosen transport (prevents mixed-codec corruption). |
+| `--no-verify-peer` | client | Skip TLS peer verification. Dev only. |
+
+The client-side overrides also propagate via `LOGOSCORE_CLIENT_*` env vars, so
+subprocesses (e.g. the Python wrapper, or `logoscore watch` that spawns a
+watcher) inherit them.
+
 ---
 
 ## Commands
@@ -239,6 +278,50 @@ logoscore info <module>
 
 Displays version, dependencies, available methods, and crash details (if applicable) for the named module.
 
+### `issue-token --name <name>`
+
+Issue a new named token and write it to `<configDir>/tokens/<name>.json`.
+
+```
+logoscore issue-token --name <name> [--replace]
+```
+
+Writes an entry to `<configDir>/tokens.db` and a companion `tokens/<name>.json`
+for distribution. Without `--replace`, the command refuses to overwrite an
+existing token with the same name so a stale credential isn't silently
+invalidated; pass `--replace` to rotate.
+
+The client file carries the raw token and enough endpoint metadata for a
+remote client to connect. Distribute it the way you'd distribute a private
+key — do not commit it to version control.
+
+This command operates directly on the config dir on disk; it doesn't need the
+daemon to be running. Useful for pre-provisioning credentials before startup.
+
+### `revoke-token <name>`
+
+Remove a named token from `<configDir>/tokens.db`.
+
+```
+logoscore revoke-token <name>
+```
+
+After this returns, any RPC presenting the revoked token is rejected by the
+daemon with an authentication error. The on-disk `tokens/<name>.json` file is
+also removed so clients that still have it can't mistake it for valid.
+
+### `list-tokens`
+
+List all tokens currently issued against this config dir.
+
+```
+logoscore list-tokens
+```
+
+Shows name, issued-at timestamp, and a token fingerprint (the stored hash) —
+never the plaintext token, which only lives in the `tokens/<name>.json` file
+at the moment of issuance. Lost a token? Rotate it with `issue-token --replace`.
+
 ---
 
 ## Authentication
@@ -278,8 +361,14 @@ When a client command runs, the token is resolved in this order (first match win
 | Priority | Source | Example |
 |----------|--------|---------|
 | 1 | `LOGOSCORE_TOKEN` env var | `LOGOSCORE_TOKEN=abc123 logoscore list-modules` |
-| 2 | Config file | `~/.logoscore/config.json` → `{"token": "abc123"}` |
-| 3 | Connection file | `~/.logoscore/daemon.json` → `{"token": "abc123"}` |
+| 2 | Config file | `<configDir>/config.json` → `{"token": "abc123"}` |
+| 3 | Connection file | `<configDir>/daemon.json` → `{"token": "abc123"}` |
+
+A named token issued by `logoscore issue-token --name alice` lives in
+`<configDir>/tokens/alice.json`. To use it as a client on a different machine,
+copy the raw token out of that file into `LOGOSCORE_TOKEN` or into the remote
+host's `config.json`. The per-client file also records endpoint metadata, so
+tooling can read both the token and the reachable endpoint from one place.
 
 ### Obtaining a Token
 
@@ -309,19 +398,38 @@ docker run -e LOGOSCORE_TOKEN=$TOKEN myimage logoscore list-modules --json
 
 ### Connection File
 
-The daemon writes `~/.logoscore/daemon.json` on startup:
+The daemon writes `<configDir>/daemon.json` on startup:
 
 ```json
 {
-  "registry_url": "local:logoscore",
+  "instance_id": "a3f1c8d20b4e",
   "token": "550e8400-e29b-41d4-a716-446655440000",
   "pid": 12345,
   "started_at": "2026-03-23T14:00:00Z",
-  "modules_dirs": ["/path/to/modules"]
+  "modules_dirs": ["/path/to/modules"],
+  "transports": [
+    { "protocol": "local" },
+    { "protocol": "tcp",     "host": "0.0.0.0", "port": 6000, "codec": "json" },
+    { "protocol": "tcp_ssl", "host": "0.0.0.0", "port": 6443,
+      "codec": "cbor", "ca_file": "/etc/logoscore/ca.pem",
+      "verify_peer": true }
+  ]
 }
 ```
 
-Client commands read this file to connect. If the file does not exist or the PID is no longer running, the client exits with code 2. Stale files are detected and cleaned up automatically.
+- `instance_id` is a 12-char UUID prefix the client uses with `LogosInstance::id()`
+  to reconstruct the same registry URL the daemon published (`local:logos_core_service_<id>`).
+- `transports` is the list of endpoints the daemon opened. Empty / absent
+  means the old-style default of one local-socket transport. Clients pick one
+  based on `--client-transport` (or `local` by default if offered).
+- `token` is the automatically-issued CLI client token. Named tokens
+  (`issue-token`) live in `tokens.db` + `tokens/<name>.json` and aren't
+  advertised here.
+
+The client uses this file to answer *how* to reach the daemon. Liveness — *is
+the daemon actually answering?* — is no longer pre-probed; the first RPC (e.g.
+`status`) surfaces a connect failure via the same code path as any other
+method call, so there's one error story instead of "probe ok, RPC fails".
 
 The daemon removes this file on clean shutdown.
 
@@ -626,6 +734,30 @@ When the method returns structured data:
 ```
 $ logoscore call chat get_history --json
 {"status":"ok","module":"chat","method":"get_history","result":[{"id":"msg_4a7b2c","from":"alice","text":"hello","timestamp":"2026-03-23T14:30:01Z"},{"id":"msg_5d8e3f","from":"bob","text":"hi there","timestamp":"2026-03-23T14:30:05Z"}]}
+```
+
+**LogosResult return values:**
+
+Methods declared to return `LogosResult` (the common ok/error wrapper) are
+serialised as:
+
+```json
+{"success": <bool>, "value": <any>, "error": <any>}
+```
+
+`value` is whatever the method stuffed in on success; `error` is whatever it
+stuffed in on failure; the unused side is `null`. Same shape regardless of
+whether the daemon-module hop went over the local socket (QRO), TCP, or
+TCP+SSL — pick the transport you like, assertions stay identical.
+
+```
+$ logoscore call account create_account --json
+{"status":"ok","module":"account","method":"create_account",
+ "result":{"success":true,"value":{"id":"42","name":"alice"},"error":null}}
+
+$ logoscore call account create_account --json    # duplicate name
+{"status":"ok","module":"account","method":"create_account",
+ "result":{"success":false,"value":null,"error":"name already taken"}}
 ```
 
 **Error (human):**

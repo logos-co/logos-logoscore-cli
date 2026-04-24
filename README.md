@@ -129,7 +129,31 @@ LOGOSCORE_TOKEN=<token> logoscore list-modules --json
 echo '{"token": "<token>"}' > ~/.logoscore/config.json
 ```
 
-Token resolution order: `LOGOSCORE_TOKEN` env var → `~/.logoscore/config.json` → `~/.logoscore/daemon.json`.
+Token resolution order: `LOGOSCORE_TOKEN` env var → `<configDir>/config.json` → `<configDir>/daemon.json`.
+
+##### Named client tokens
+
+For multi-client setups (e.g. a daemon serving several remote clients, or CI that
+wants to rotate credentials), issue named tokens. Each named token is stored in
+the daemon's `tokens.db` and written to a per-client file (`tokens/<name>.json`)
+that's safe to hand a specific client:
+
+```bash
+# Issue a token for "alice" (server-side: writes tokens/alice.json)
+logoscore issue-token --name alice
+logoscore issue-token --name alice --replace       # rotate
+
+# List all issued tokens (hashes, names, issued_at)
+logoscore list-tokens
+
+# Revoke by name — the next call using that token fails with an auth error
+logoscore revoke-token alice
+```
+
+`tokens/<name>.json` contains the plaintext token plus the endpoint info needed
+to connect; distribute it the same way you would a private key. Revocation is
+server-authoritative — the daemon removes the entry from `tokens.db` and any
+in-flight or future request presenting that token is rejected.
 
 #### Parallel Daemons (`--config-dir`)
 
@@ -150,6 +174,66 @@ logoscore --config-dir /tmp/ls-b stop
 ```
 
 Resolution order: `--config-dir` → `LOGOSCORE_CONFIG_DIR` env var → `~/.logoscore`. The flag also mirrors into `LOGOSCORE_CONFIG_DIR` so child processes inherit it.
+
+#### Transports
+
+By default the daemon only exposes `core_service` over a local Unix socket (via
+QLocalSocket), which means clients must run on the same host. To reach a daemon
+from another machine, a container, or across NAT, open a network transport:
+
+```bash
+# TCP — plaintext, good for localhost or trusted networks
+logoscore -D -m ./modules \
+    --transport=tcp --tcp-host=0.0.0.0 --tcp-port=6000
+
+# TCP + TLS — wire-encrypted; requires cert/key/CA PEM files
+logoscore -D -m ./modules \
+    --transport=tcp_ssl --tcp-ssl-host=0.0.0.0 --tcp-ssl-port=6443 \
+    --ssl-cert=/etc/logoscore/cert.pem \
+    --ssl-key=/etc/logoscore/key.pem \
+    --ssl-ca=/etc/logoscore/ca.pem
+
+# Multi-transport: publish on several at once. `--transport` is repeatable;
+# each advertises a separate endpoint in daemon.json and clients pick one.
+logoscore -D -m ./modules \
+    --transport=local \
+    --transport=tcp_ssl --tcp-ssl-port=6443 \
+    --ssl-cert=... --ssl-key=... --ssl-ca=...
+```
+
+Per-transport codec (`--tcp-codec` / `--tcp-ssl-codec`) picks the wire format:
+`json` (default, debuggable) or `cbor` (compact).
+
+##### Client-side transport overrides
+
+Clients pick which transport to dial and can override the endpoint the daemon
+advertised — useful when the reachable address differs from what the daemon
+bound to (docker `-p` port-forwarding, NAT, SSH tunnels):
+
+```
+  --client-transport <name>      Which advertised transport to use (local|tcp|tcp_ssl).
+                                 Default: local if offered, otherwise error.
+  --client-tcp-host <host>       Dial this host instead of the advertised one.
+  --client-tcp-port <port>       Dial this port instead of the advertised one.
+  --client-codec <json|cbor>     Require this codec. Aborts if it doesn't match
+                                 what the daemon advertised (avoids mixed-codec
+                                 corruption). Default: whatever daemon chose.
+  --no-verify-peer               Skip TLS peer verification (development only).
+```
+
+Example — connect from a host to a daemon running in docker with `-p 8080:6000`:
+
+```bash
+# On the daemon's host: start inside a container
+docker run -p 8080:6000 logoscore:latest \
+    daemon --transport=tcp --tcp-host=0.0.0.0 --tcp-port=6000 -m /mods
+
+# From the client host: the daemon.json advertises 6000 (container-internal);
+# we dial the host-mapped 8080 instead.
+logoscore --client-transport=tcp --client-tcp-port=8080 status
+```
+
+Same flags work on all client subcommands: `load-module`, `call`, `watch`, etc.
 
 #### Agent / Script Example
 
