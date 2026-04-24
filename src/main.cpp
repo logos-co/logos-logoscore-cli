@@ -345,6 +345,8 @@ int main(int argc, char *argv[])
                               << std::endl;
                     return 1;
                 }
+                t.certFile = sslCertFile;
+                t.keyFile  = sslKeyFile;
             } else if (proto != "local") {
                 std::cerr << "Error: unknown --transport value: " << proto
                           << " (expected local | tcp | tcp_ssl)" << std::endl;

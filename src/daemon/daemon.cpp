@@ -120,6 +120,8 @@ int Daemon::start(int argc, char* argv[], const std::vector<std::string>& module
         LogosTransportConfig c;
         c.host = t.host;
         c.port = t.port;
+        c.certFile   = t.certFile;
+        c.keyFile    = t.keyFile;
         c.caFile     = t.caFile;
         c.verifyPeer = t.verifyPeer;
         // codec: plain transports honor the user's pick; "json" is the

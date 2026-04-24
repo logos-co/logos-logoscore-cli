@@ -12,7 +12,15 @@ struct TransportInfo {
     std::string protocol;   // "local" | "tcp" | "tcp_ssl"
     std::string host;       // bind address (e.g. "0.0.0.0" or "127.0.0.1")
     uint16_t    port = 0;
-    std::string caFile;     // tcp_ssl only
+    // tcp_ssl: server reads cert + key from local disk. These are
+    // populated only on the daemon side from --ssl-cert / --ssl-key
+    // and are deliberately NOT serialized to daemon.json — clients
+    // don't need them, and key paths in particular are local secrets.
+    std::string certFile;
+    std::string keyFile;
+    // tcp_ssl: CA cert for verification. May appear in daemon.json
+    // because clients need it to verify the server's chain.
+    std::string caFile;
     bool        verifyPeer = true;
     // Wire codec for RPC framing. Only meaningful for plain transports
     // (tcp / tcp_ssl); clients must match what the daemon advertised.
