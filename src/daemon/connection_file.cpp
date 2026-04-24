@@ -5,11 +5,11 @@
 
 #include <chrono>
 #include <ctime>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
-#include <signal.h>
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -29,15 +29,11 @@ std::string ConnectionFile::filePath()
     return Config::connectionFilePath().toStdString();
 }
 
-bool ConnectionFile::isPidAlive(int64_t pid)
-{
-    if (pid <= 0)
-        return false;
-    return ::kill(static_cast<pid_t>(pid), 0) == 0;
-}
+// ── Write ──────────────────────────────────────────────────────────────────
 
 bool ConnectionFile::write(const std::string& instanceId, const std::string& token,
-                           int64_t pid, const std::vector<std::string>& modulesDirs)
+                           int64_t pid, const std::vector<std::string>& modulesDirs,
+                           const std::vector<TransportInfo>& transports)
 {
     fs::path path(filePath());
     std::error_code ec;
@@ -52,6 +48,27 @@ bool ConnectionFile::write(const std::string& instanceId, const std::string& tok
     obj["started_at"] = currentUtcIso8601();
     obj["modules_dirs"] = modulesDirs;
 
+    if (!transports.empty()) {
+        json arr = json::array();
+        for (const auto& t : transports) {
+            json j;
+            j["protocol"] = t.protocol;
+            if (t.protocol != "local") {
+                j["host"] = t.host;
+                j["port"] = t.port;
+                // Codec only has meaning for plain transports; local uses
+                // QRemoteObjects' own format and ignores it.
+                j["codec"] = t.codec.empty() ? std::string("json") : t.codec;
+            }
+            if (t.protocol == "tcp_ssl") {
+                if (!t.caFile.empty()) j["ca_file"] = t.caFile;
+                j["verify_peer"] = t.verifyPeer;
+            }
+            arr.push_back(std::move(j));
+        }
+        obj["transports"] = std::move(arr);
+    }
+
     std::ofstream ofs(path, std::ios::trunc);
     if (!ofs)
         return false;
@@ -59,6 +76,8 @@ bool ConnectionFile::write(const std::string& instanceId, const std::string& tok
     ofs << obj.dump(4) << "\n";
     return ofs.good();
 }
+
+// ── Read ── (pure parse; no liveness check) ────────────────────────────────
 
 ConnectionInfo ConnectionFile::read()
 {
@@ -81,10 +100,21 @@ ConnectionInfo ConnectionFile::read()
     info.startedAt   = obj.value("started_at", "");
     info.modulesDirs = obj.value("modules_dirs", std::vector<std::string>{});
 
-    // Validate: check if PID is alive
-    if (info.pid > 0 && isPidAlive(info.pid))
-        info.valid = true;
+    if (obj.contains("transports") && obj["transports"].is_array()) {
+        for (const auto& j : obj["transports"]) {
+            if (!j.is_object()) continue;
+            TransportInfo t;
+            t.protocol   = j.value("protocol", std::string{});
+            t.host       = j.value("host", std::string{});
+            t.port       = static_cast<uint16_t>(j.value("port", 0));
+            t.caFile     = j.value("ca_file", std::string{});
+            t.verifyPeer = j.value("verify_peer", true);
+            t.codec      = j.value("codec", std::string{"json"});
+            if (!t.protocol.empty()) info.transports.push_back(std::move(t));
+        }
+    }
 
+    info.fileOk = !info.instanceId.empty();
     return info;
 }
 
@@ -92,12 +122,4 @@ bool ConnectionFile::remove()
 {
     std::error_code ec;
     return fs::remove(filePath(), ec);
-}
-
-bool ConnectionFile::isStale()
-{
-    ConnectionInfo info = read();
-    if (info.pid <= 0)
-        return true;
-    return !isPidAlive(info.pid);
 }

@@ -186,6 +186,54 @@ int main(int argc, char *argv[])
     app.add_option("--config-dir", configDirStr,
         "Override config directory (default: ~/.logoscore; also LOGOSCORE_CONFIG_DIR)");
 
+    // ── Transport flags (daemon side) ────────────────────────────────────────
+    // --transport is repeatable: each appearance enables another listener.
+    // `local` is always implicitly present, so the CLI on the same host
+    // keeps working without any extra flags. Adding --transport=tcp or
+    // --transport=tcp_ssl opens an additional listener at the given
+    // host/port for remote clients (e.g. daemon in docker, CLI on host).
+    std::vector<std::string> transportFlags;
+    app.add_option("--transport", transportFlags,
+        "Enable a transport for core_service: local | tcp | tcp_ssl (repeatable)");
+
+    std::string tcpHost = "127.0.0.1";
+    uint16_t    tcpPort = 0;
+    std::string tcpCodec = "json";
+    app.add_option("--tcp-host", tcpHost, "TCP bind address (default 127.0.0.1)");
+    app.add_option("--tcp-port", tcpPort, "TCP port (0 = auto-assign)");
+    app.add_option("--tcp-codec", tcpCodec,
+        "Wire codec for the TCP listener: json (default) | cbor");
+
+    std::string tcpSslHost = "127.0.0.1";
+    uint16_t    tcpSslPort = 0;
+    std::string tcpSslCodec = "json";
+    std::string sslCaFile, sslCertFile, sslKeyFile;
+    app.add_option("--tcp-ssl-host", tcpSslHost, "TCP+SSL bind address");
+    app.add_option("--tcp-ssl-port", tcpSslPort, "TCP+SSL port (0 = auto-assign)");
+    app.add_option("--tcp-ssl-codec", tcpSslCodec,
+        "Wire codec for the TCP+SSL listener: json (default) | cbor");
+    app.add_option("--ssl-ca",   sslCaFile,   "CA file (TCP+SSL)");
+    app.add_option("--ssl-cert", sslCertFile, "Server cert (TCP+SSL)");
+    app.add_option("--ssl-key",  sslKeyFile,  "Server private key (TCP+SSL)");
+
+    // ── Transport flags (client side) ────────────────────────────────────────
+    std::string clientTransport;  // empty = prefer local
+    app.add_option("--client-transport", clientTransport,
+        "Pick one of the daemon's advertised transports: local | tcp | tcp_ssl");
+    std::string clientTcpHost;
+    app.add_option("--client-tcp-host", clientTcpHost,
+        "Override the daemon's advertised host (e.g. 'localhost' when daemon bound 0.0.0.0 in docker)");
+    uint16_t clientTcpPort = 0;
+    app.add_option("--client-tcp-port", clientTcpPort,
+        "Override the daemon's advertised port (useful when port-forwarding or NAT changes the reachable port)");
+    bool clientNoVerifyPeer = false;
+    app.add_flag("--no-verify-peer", clientNoVerifyPeer,
+        "Disable TLS peer verification (dev only)");
+    std::string clientCodec;  // empty = accept whatever the daemon advertised
+    app.add_option("--client-codec", clientCodec,
+        "Require a specific wire codec (json | cbor); if the daemon advertised "
+        "a different codec for the picked transport, connect fails.");
+
     // ── Client subcommands ───────────────────────────────────────────────────
     // All client subcommands use allow_extras() so their positional args and
     // command-specific flags (--loaded, --event) are captured in remaining().
@@ -208,11 +256,22 @@ int main(int argc, char *argv[])
     auto* statsSub         = app.add_subcommand("stats", "Show module resource usage");
     auto* stopSub          = app.add_subcommand("stop", "Stop the daemon");
 
+    // Token-management subcommands. These operate directly on the config
+    // dir (no daemon connection required), so they can be used offline to
+    // prepare client credentials before the daemon even starts.
+    auto* issueTokenSub    = app.add_subcommand("issue-token",
+        "Issue a new client token under --name NAME");
+    auto* revokeTokenSub   = app.add_subcommand("revoke-token",
+        "Revoke a previously-issued client token");
+    auto* listTokensSub    = app.add_subcommand("list-tokens",
+        "List the names of issued client tokens");
+
     // Allow extras on all client subcommands so their positional args and
     // command-specific flags pass through to the Command objects unchanged
     for (auto* sub : {statusSub, loadModuleSub, unloadModuleSub, reloadModuleSub,
                       listModulesSub, moduleInfoSub, infoSub, callSub, moduleSub,
-                      watchSub, statsSub, stopSub}) {
+                      watchSub, statsSub, stopSub,
+                      issueTokenSub, revokeTokenSub, listTokensSub}) {
         sub->allow_extras();
     }
 
@@ -251,8 +310,65 @@ int main(int argc, char *argv[])
         QCoreApplication qapp(argc, argv);
         qapp.setApplicationName("logoscore");
         qapp.setApplicationVersion("1.0");
-        return Daemon::start(argc, argv, modulesDirs, persistencePath);
+
+        // Translate --transport flags into TransportInfo records. Anything
+        // not explicitly requested is dropped (local is implicitly always
+        // on, set up inside Daemon::start).
+        auto validateCodec = [](const std::string& c) {
+            return c == "json" || c == "cbor";
+        };
+
+        std::vector<TransportInfo> transportInfos;
+        for (const auto& proto : transportFlags) {
+            TransportInfo t;
+            t.protocol = proto;
+            if (proto == "tcp") {
+                t.host = tcpHost; t.port = tcpPort;
+                if (!validateCodec(tcpCodec)) {
+                    std::cerr << "Error: --tcp-codec must be 'json' or 'cbor', got: "
+                              << tcpCodec << std::endl;
+                    return 1;
+                }
+                t.codec = tcpCodec;
+            } else if (proto == "tcp_ssl") {
+                t.host = tcpSslHost; t.port = tcpSslPort;
+                t.caFile = sslCaFile;
+                t.verifyPeer = true;
+                if (!validateCodec(tcpSslCodec)) {
+                    std::cerr << "Error: --tcp-ssl-codec must be 'json' or 'cbor', got: "
+                              << tcpSslCodec << std::endl;
+                    return 1;
+                }
+                t.codec = tcpSslCodec;
+                if (sslCertFile.empty() || sslKeyFile.empty()) {
+                    std::cerr << "Error: --transport=tcp_ssl requires --ssl-cert and --ssl-key"
+                              << std::endl;
+                    return 1;
+                }
+            } else if (proto != "local") {
+                std::cerr << "Error: unknown --transport value: " << proto
+                          << " (expected local | tcp | tcp_ssl)" << std::endl;
+                return 1;
+            }
+            transportInfos.push_back(std::move(t));
+        }
+
+        return Daemon::start(argc, argv, modulesDirs, persistencePath, transportInfos);
     }
+
+    // Propagate client-side transport selection to RpcClient via env vars
+    // so subcommand dispatch (below) doesn't need new plumbing.
+    if (!clientTransport.empty())
+        qputenv("LOGOSCORE_CLIENT_TRANSPORT", clientTransport.c_str());
+    if (!clientTcpHost.empty())
+        qputenv("LOGOSCORE_CLIENT_TCP_HOST", clientTcpHost.c_str());
+    if (clientTcpPort != 0)
+        qputenv("LOGOSCORE_CLIENT_TCP_PORT",
+                QByteArray::number(static_cast<int>(clientTcpPort)));
+    if (clientNoVerifyPeer)
+        qputenv("LOGOSCORE_CLIENT_NO_VERIFY_PEER", "1");
+    if (!clientCodec.empty())
+        qputenv("LOGOSCORE_CLIENT_CODEC", clientCodec.c_str());
 
     // ── Client mode ──────────────────────────────────────────────────────────
     struct SubInfo { CLI::App* sub; QString name; };
@@ -269,6 +385,9 @@ int main(int argc, char *argv[])
         {watchSub, "watch"},
         {statsSub, "stats"},
         {stopSub, "stop"},
+        {issueTokenSub,  "issue-token"},
+        {revokeTokenSub, "revoke-token"},
+        {listTokensSub,  "list-tokens"},
     };
 
     for (auto& [sub, name] : clientSubs) {

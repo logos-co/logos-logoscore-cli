@@ -1,27 +1,36 @@
 #include "status_command.h"
 #include "../../daemon/connection_file.h"
 
+#include <QJsonObject>
+
+// No separate liveness probe. The status command IS the liveness check:
+// if `getStatus` fails (RPC timeout, connection refused, daemon not
+// listening on the endpoint we picked after --client-tcp-* overrides…),
+// we report `not_running`. Any success means the daemon is at least
+// reachable enough to answer.
+
 int StatusCommand::execute(const std::vector<std::string>& args)
 {
     (void)args;
 
-    // First check if connection file exists and PID is alive
-    ConnectionInfo connInfo = ConnectionFile::read();
-
-    if (!connInfo.valid) {
-        // Daemon not running - report status, exit 1
+    // File missing or malformed ⇒ no daemon to talk to.
+    if (!ConnectionFile::read().fileOk) {
         QJsonObject result;
         result["daemon"] = QJsonObject{{"status", "not_running"}};
         output().printStatus(result);
         return 1;
     }
 
-    // Connect to daemon
+    // Try to connect and ask the daemon directly. Both failure modes
+    // (can't set up client / RPC itself fails) mean "not running" as
+    // far as the user cares.
     int err = ensureConnected();
     if (err != 0) {
-        // If we can't connect but PID was alive, still report not_running
         QJsonObject result;
-        result["daemon"] = QJsonObject{{"status", "not_running"}};
+        result["daemon"] = QJsonObject{
+            {"status", "not_running"},
+            {"reason", client().lastError()},
+        };
         output().printStatus(result);
         return 1;
     }
@@ -31,6 +40,16 @@ int StatusCommand::execute(const std::vector<std::string>& args)
     if (status.contains("status") && status.value("status").toString() == "error") {
         output().printError(status.value("code").toString(),
                            status.value("message").toString());
+        return 1;
+    }
+
+    // Empty / missing "daemon" key means the RPC returned nothing
+    // useful — treat as "not running" so the CLI exits non-zero
+    // instead of silently claiming success on an unreachable daemon.
+    if (!status.contains("daemon")) {
+        QJsonObject result;
+        result["daemon"] = QJsonObject{{"status", "not_running"}};
+        output().printStatus(result);
         return 1;
     }
 

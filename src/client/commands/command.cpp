@@ -9,6 +9,9 @@
 #include "watch_command.h"
 #include "stats_command.h"
 #include "stop_command.h"
+#include "issue_token_command.h"
+#include "revoke_token_command.h"
+#include "list_tokens_command.h"
 
 Command::Command(Client& client, Output& output)
     : m_client(client), m_output(output)
@@ -44,7 +47,8 @@ QStringList knownSubcommands()
         "load-module", "unload-module", "reload-module",
         "list-modules", "module-info", "info",
         "call", "module",  // "module" for verbose call syntax
-        "watch", "stats", "stop"
+        "watch", "stats", "stop",
+        "issue-token", "revoke-token", "list-tokens"
     };
 }
 
@@ -70,6 +74,12 @@ std::unique_ptr<Command> createCommand(const QString& name, Client& client, Outp
         return std::make_unique<StatsCommand>(client, output);
     if (name == "stop")
         return std::make_unique<StopCommand>(client, output);
+    if (name == "issue-token")
+        return std::make_unique<IssueTokenCommand>(client, output);
+    if (name == "revoke-token")
+        return std::make_unique<RevokeTokenCommand>(client, output);
+    if (name == "list-tokens")
+        return std::make_unique<ListTokensCommand>(client, output);
 
     return nullptr;
 }

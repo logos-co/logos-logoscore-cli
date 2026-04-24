@@ -4,8 +4,8 @@
   inputs = {
     logos-nix.url = "github:logos-co/logos-nix";
     nixpkgs.follows = "logos-nix/nixpkgs";
-    logos-liblogos.url = "github:logos-co/logos-liblogos";
-    logos-module-client.url = "github:logos-co/logos-module-client";
+    logos-liblogos.url = "github:logos-co/logos-liblogos/support-non-local-remote-transports";
+    logos-module-client.url = "github:logos-co/logos-module-client/support-non-local-remote-transports";
     logos-capability-module.url = "github:logos-co/logos-capability-module";
     nix-bundle-logos-module-install.url = "github:logos-co/nix-bundle-logos-module-install";
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";

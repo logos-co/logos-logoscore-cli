@@ -1,10 +1,12 @@
 #include "client.h"
 #include "../config.h"
 #include "../daemon/connection_file.h"
+#include "client_connection.h"
 
 #include <logos_api.h>
 #include <logos_api_client.h>
 #include <logos_instance.h>
+#include <logos_transport_config.h>
 #include <token_manager.h>
 
 #include <QCoreApplication>
@@ -46,9 +48,9 @@ RpcClient::~RpcClient()
 
 bool RpcClient::connect()
 {
-    // Read connection file
+    // Read connection file (pure parse — doesn't probe the daemon).
     d->connInfo = ConnectionFile::read();
-    if (!d->connInfo.valid) {
+    if (!d->connInfo.fileOk) {
         m_lastError = "No running logoscore daemon. Start one with: logoscore -D";
         return false;
     }
@@ -70,6 +72,71 @@ bool RpcClient::connect()
 
     // Store token in TokenManager so the SDK can authenticate
     TokenManager::instance().saveToken("cli_client", d->token);
+
+    // Pick a transport from those the daemon advertised:
+    //   - $LOGOSCORE_CLIENT_TRANSPORT (set by main.cpp from --client-transport)
+    //     if present and matches one of the advertised;
+    //   - otherwise "local" if the daemon advertised it;
+    //   - otherwise error (no viable transport).
+    // Back-compat: if the daemon didn't advertise any `transports` block
+    // (older daemon), fall back to the default LocalSocket path.
+    if (!d->connInfo.transports.empty()) {
+        const std::string preferredCstr =
+            qEnvironmentVariable("LOGOSCORE_CLIENT_TRANSPORT", "local").toStdString();
+        const TransportInfo* chosen = nullptr;
+        for (const auto& t : d->connInfo.transports) {
+            if (t.protocol == preferredCstr) { chosen = &t; break; }
+        }
+        if (!chosen) {
+            QStringList avail;
+            for (const auto& t : d->connInfo.transports)
+                avail.append(QString::fromStdString(t.protocol));
+            m_lastError = QString("Transport '%1' not offered by daemon. Available: %2")
+                              .arg(QString::fromStdString(preferredCstr), avail.join(", "));
+            return false;
+        }
+
+        // Apply --client-tcp-host / --client-tcp-port / --no-verify-peer
+        // overrides. The endpoint the client actually dials may diverge
+        // from the daemon-advertised one — docker port-forwarding, NAT,
+        // and SSH tunnels all shift host:port from what daemon.json
+        // reports. Liveness is no longer pre-probed here: the first
+        // RPC (e.g. getStatus) surfaces connection failures with its
+        // own timeout, and sharing that one code path avoids lying to
+        // the user with a "probe ok, RPC fails" mismatch.
+        const TransportInfo effective =
+            ClientConnection::effectiveTransport(*chosen);
+
+        LogosTransportConfig cfg;
+        if (effective.protocol == "tcp")          cfg.protocol = LogosProtocol::Tcp;
+        else if (effective.protocol == "tcp_ssl") cfg.protocol = LogosProtocol::TcpSsl;
+        else                                      cfg.protocol = LogosProtocol::LocalSocket;
+        cfg.host       = effective.host;
+        cfg.port       = effective.port;
+        cfg.caFile     = effective.caFile;
+        cfg.verifyPeer = effective.verifyPeer;
+
+        // Codec: use whatever the daemon advertised for this transport,
+        // unless the caller pinned --client-codec. If the caller pinned a
+        // codec that doesn't match the daemon, abort — talking JSON at
+        // one end and CBOR at the other just produces a corrupted stream.
+        const std::string advertisedCodec =
+            chosen->codec.empty() ? std::string("json") : chosen->codec;
+        const std::string requiredCodec =
+            qEnvironmentVariable("LOGOSCORE_CLIENT_CODEC").toStdString();
+        if (!requiredCodec.empty() && requiredCodec != advertisedCodec) {
+            m_lastError = QString("Daemon's %1 transport uses codec '%2', but "
+                                  "--client-codec requested '%3'.")
+                              .arg(QString::fromStdString(chosen->protocol),
+                                   QString::fromStdString(advertisedCodec),
+                                   QString::fromStdString(requiredCodec));
+            return false;
+        }
+        cfg.codec = (advertisedCodec == "cbor")
+                  ? LogosWireCodec::Cbor
+                  : LogosWireCodec::Json;
+        LogosTransportConfigGlobal::setDefault(std::move(cfg));
+    }
 
     // Create LogosAPI for this CLI client
     d->api = new LogosAPI("cli_client");

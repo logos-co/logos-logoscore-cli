@@ -6,6 +6,7 @@
 
 #include <logos_api.h>
 #include <logos_api_provider.h>
+#include <logos_transport_config.h>
 #include <token_manager.h>
 #include "../core_service/core_service_impl.h"
 
@@ -48,7 +49,8 @@ void Daemon::setupSignalHandlers()
 }
 
 int Daemon::start(int argc, char* argv[], const std::vector<std::string>& modulesDirs,
-                  const std::string& persistencePath)
+                  const std::string& persistencePath,
+                  const std::vector<TransportInfo>& transports)
 {
     // 1. Generate instance ID BEFORE core init, so logos_host inherits it
     std::random_device rd;
@@ -96,22 +98,54 @@ int Daemon::start(int argc, char* argv[], const std::vector<std::string>& module
     logos_core_start();
 
     // 6. Register core_service as an in-process module via the C++ SDK.
-    //    This publishes it via Qt RemoteObjects so CLI clients can connect.
-    auto* coreServiceApi = new LogosAPI("core_service");
+    //    core_service can publish on multiple transports simultaneously:
+    //    a local QLocalSocket (back-compat) + any TCP / TCP+SSL listeners
+    //    specified via --transport. Modules continue to use the process-
+    //    global LocalSocket default — only core_service is exposed
+    //    externally.
+    LogosTransportSet coreTransports;
+    std::vector<TransportInfo> advertisedTransports;
+    auto pushAdvertised = [&](const TransportInfo& t) { advertisedTransports.push_back(t); };
+
+    // Always include the local-socket transport so on-host CLI keeps working.
+    {
+        LogosTransportConfig c;
+        c.protocol = LogosProtocol::LocalSocket;
+        coreTransports.push_back(std::move(c));
+        pushAdvertised({"local", "", 0, "", true});
+    }
+
+    for (const auto& t : transports) {
+        if (t.protocol == "local") continue;  // already added
+        LogosTransportConfig c;
+        c.host = t.host;
+        c.port = t.port;
+        c.caFile     = t.caFile;
+        c.verifyPeer = t.verifyPeer;
+        // codec: plain transports honor the user's pick; "json" is the
+        // only implementation today but the plumbing is end-to-end so
+        // adding "cbor" (or future codecs) is a single enum arm away.
+        if (t.codec == "cbor")      c.codec = LogosWireCodec::Cbor;
+        else                        c.codec = LogosWireCodec::Json;
+        if (t.protocol == "tcp")     c.protocol = LogosProtocol::Tcp;
+        else if (t.protocol == "tcp_ssl") c.protocol = LogosProtocol::TcpSsl;
+        else continue;
+        coreTransports.push_back(std::move(c));
+        pushAdvertised(t);
+    }
+
+    auto* coreServiceApi = new LogosAPI(QString("core_service"), coreTransports);
     auto* coreServiceImpl = new CoreServiceImpl();
 
-    // Initialize core_service with its LogosAPI so it can proxy calls
     coreServiceImpl->init(coreServiceApi);
-
-    // Publish core_service as a remote object
     auto* provider = coreServiceApi->getProvider();
     provider->registerObject("core_service", static_cast<LogosProviderObject*>(coreServiceImpl));
 
-    // Save the client token so core_service can authenticate CLI clients
     TokenManager::instance().saveToken("cli_client", QString::fromStdString(token));
 
-    // 7. Write connection file
-    if (!ConnectionFile::write(instanceId, token, pid, modulesDirs)) {
+    // 7. Write connection file — includes the advertised transports so
+    //    remote clients know how to reach us.
+    if (!ConnectionFile::write(instanceId, token, pid, modulesDirs, advertisedTransports)) {
         fprintf(stderr, "Failed to write connection file: %s\n", ConnectionFile::filePath().c_str());
         return 1;
     }

@@ -96,9 +96,11 @@ set(CLI_SOURCES
     # Daemon path
     src/daemon/daemon.cpp
     src/daemon/connection_file.cpp
+    src/daemon/token_store.cpp
 
     # Client path
     src/client/client.cpp
+    src/client/client_connection.cpp
     src/client/output.cpp
     src/client/commands/command.cpp
     src/client/commands/status_command.cpp
@@ -111,6 +113,9 @@ set(CLI_SOURCES
     src/client/commands/watch_command.cpp
     src/client/commands/stats_command.cpp
     src/client/commands/stop_command.cpp
+    src/client/commands/issue_token_command.cpp
+    src/client/commands/revoke_token_command.cpp
+    src/client/commands/list_tokens_command.cpp
 
     # Core service (in-process daemon module)
     src/core_service/core_service_impl.cpp

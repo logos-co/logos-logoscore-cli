@@ -1,7 +1,8 @@
 #include <gtest/gtest.h>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <cstdlib>
+#include <string>
 #include <unistd.h>
 #include "daemon/connection_file.h"
 #include "config.h"
@@ -55,28 +56,17 @@ TEST_F(ConnectionFileTest, WriteAndRead_RoundTrips)
 TEST_F(ConnectionFileTest, Read_InvalidWhenFileDoesNotExist)
 {
     ConnectionInfo info = ConnectionFile::read();
-    EXPECT_FALSE(info.valid);
+    EXPECT_FALSE(info.fileOk);
 }
 
-TEST_F(ConnectionFileTest, Read_ValidWhenPidIsAlive)
+TEST_F(ConnectionFileTest, Read_FileOkIndependentOfPid)
 {
-    // Use our own PID which is definitely alive
-    int64_t ourPid = getpid();
-    ConnectionFile::write("inst1", "tok1", ourPid, {});
-
-    ConnectionInfo info = ConnectionFile::read();
-    EXPECT_TRUE(info.valid);
-    EXPECT_EQ(info.pid, ourPid);
-}
-
-TEST_F(ConnectionFileTest, Read_InvalidWhenPidIsDead)
-{
-    // Use a PID that's very unlikely to be alive
-    // PID 99999999 shouldn't exist
+    // File parses cleanly even if the pid is bogus — fileOk is purely
+    // about "is the on-disk state parseable?", not liveness.
     ConnectionFile::write("inst2", "tok2", 99999999, {});
-
     ConnectionInfo info = ConnectionFile::read();
-    EXPECT_FALSE(info.valid);
+    EXPECT_TRUE(info.fileOk);
+    EXPECT_EQ(info.pid, 99999999);
 }
 
 TEST_F(ConnectionFileTest, Remove_DeletesFile)
@@ -89,20 +79,59 @@ TEST_F(ConnectionFileTest, Remove_DeletesFile)
     EXPECT_FALSE(fs::exists(ConnectionFile::filePath()));
 }
 
-TEST_F(ConnectionFileTest, IsStale_TrueWhenPidDead)
+TEST_F(ConnectionFileTest, Transports_RoundTripPerProtocol)
 {
-    ConnectionFile::write("inst4", "tok4", 99999999, {});
-    EXPECT_TRUE(ConnectionFile::isStale());
+    // One entry per distinct shape: local (no host/port/codec),
+    // tcp (host/port + codec), tcp_ssl (adds ca + verify_peer + codec).
+    std::vector<TransportInfo> ts;
+    ts.push_back({"local", "", 0, "", true, "json"});
+    ts.push_back({"tcp",   "127.0.0.1", 6001, "", true, "json"});
+    ts.push_back({"tcp_ssl", "0.0.0.0", 6443, "/tmp/ca.pem", true, "cbor"});
+
+    ASSERT_TRUE(ConnectionFile::write(
+        "instX", "tokX", static_cast<int64_t>(getpid()), {"/mods"}, ts));
+
+    ConnectionInfo info = ConnectionFile::read();
+    ASSERT_EQ(info.transports.size(), 3u);
+
+    EXPECT_EQ(info.transports[0].protocol, "local");
+    // Codec is meaningless for local but defaults to "json" on read.
+    EXPECT_EQ(info.transports[0].codec, "json");
+
+    EXPECT_EQ(info.transports[1].protocol, "tcp");
+    EXPECT_EQ(info.transports[1].host, "127.0.0.1");
+    EXPECT_EQ(info.transports[1].port, 6001);
+    EXPECT_EQ(info.transports[1].codec, "json");
+
+    EXPECT_EQ(info.transports[2].protocol, "tcp_ssl");
+    EXPECT_EQ(info.transports[2].port, 6443);
+    EXPECT_EQ(info.transports[2].caFile, "/tmp/ca.pem");
+    EXPECT_TRUE(info.transports[2].verifyPeer);
+    EXPECT_EQ(info.transports[2].codec, "cbor");
 }
 
-TEST_F(ConnectionFileTest, IsStale_FalseWhenPidAlive)
+TEST_F(ConnectionFileTest, Transports_OmittedDefaultsToEmpty)
 {
-    int64_t ourPid = getpid();
-    ConnectionFile::write("inst5", "tok5", ourPid, {});
-    EXPECT_FALSE(ConnectionFile::isStale());
+    // Writer without a transports vector: old callers still work and read
+    // back an empty transports list (not an error).
+    ASSERT_TRUE(ConnectionFile::write("i", "t",
+                                      static_cast<int64_t>(getpid()), {}));
+    ConnectionInfo info = ConnectionFile::read();
+    EXPECT_TRUE(info.transports.empty());
 }
 
-TEST_F(ConnectionFileTest, IsStale_TrueWhenNoFile)
+TEST_F(ConnectionFileTest, Transports_CodecDefaultsToJsonForTcp)
 {
-    EXPECT_TRUE(ConnectionFile::isStale());
+    // Older daemons that wrote transports without a codec field should
+    // read back as "json" (so newer clients don't break on older daemons).
+    std::vector<TransportInfo> ts;
+    TransportInfo t;
+    t.protocol = "tcp"; t.host = "127.0.0.1"; t.port = 6000;
+    t.codec = "";  // simulate missing codec
+    ts.push_back(t);
+    ASSERT_TRUE(ConnectionFile::write("i", "t",
+                                      static_cast<int64_t>(getpid()), {}, ts));
+    ConnectionInfo info = ConnectionFile::read();
+    ASSERT_EQ(info.transports.size(), 1u);
+    EXPECT_EQ(info.transports[0].codec, "json");
 }

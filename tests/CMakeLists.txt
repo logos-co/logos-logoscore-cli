@@ -4,6 +4,8 @@
 set(TEST_LIB_SOURCES
     ${CMAKE_SOURCE_DIR}/src/config.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/connection_file.cpp
+    ${CMAKE_SOURCE_DIR}/src/daemon/token_store.cpp
+    ${CMAKE_SOURCE_DIR}/src/client/client_connection.cpp
     ${CMAKE_SOURCE_DIR}/src/client/output.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/command.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/status_command.cpp
@@ -16,6 +18,9 @@ set(TEST_LIB_SOURCES
     ${CMAKE_SOURCE_DIR}/src/client/commands/watch_command.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/stats_command.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/stop_command.cpp
+    ${CMAKE_SOURCE_DIR}/src/client/commands/issue_token_command.cpp
+    ${CMAKE_SOURCE_DIR}/src/client/commands/revoke_token_command.cpp
+    ${CMAKE_SOURCE_DIR}/src/client/commands/list_tokens_command.cpp
 )
 
 add_library(logoscore_testlib STATIC ${TEST_LIB_SOURCES})
@@ -27,15 +32,18 @@ target_link_libraries(logoscore_testlib PUBLIC
     CLI11::CLI11
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::RemoteObjects
+    nlohmann_json::nlohmann_json
 )
 
 # Unit tests
 add_executable(unit_tests
     test_config.cpp
     test_connection_file.cpp
+    test_client_connection.cpp
     test_output.cpp
     test_commands.cpp
     test_mode_detection.cpp
+    test_token_store.cpp
 )
 
 target_include_directories(unit_tests PRIVATE
