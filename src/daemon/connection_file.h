@@ -12,12 +12,6 @@ struct TransportInfo {
     std::string protocol;   // "local" | "tcp" | "tcp_ssl"
     std::string host;       // bind address (e.g. "0.0.0.0" or "127.0.0.1")
     uint16_t    port = 0;
-    // tcp_ssl: server reads cert + key from local disk. These are
-    // populated only on the daemon side from --ssl-cert / --ssl-key
-    // and are deliberately NOT serialized to daemon.json — clients
-    // don't need them, and key paths in particular are local secrets.
-    std::string certFile;
-    std::string keyFile;
     // tcp_ssl: CA cert for verification. May appear in daemon.json
     // because clients need it to verify the server's chain.
     std::string caFile;
@@ -27,6 +21,15 @@ struct TransportInfo {
     // Defaults to "json" to keep the existing behavior; additional values
     // like "cbor" become available as new codecs are added to the SDK.
     std::string codec = "json";
+    // tcp_ssl: server reads cert + key from local disk. These are
+    // populated only on the daemon side from --ssl-cert / --ssl-key
+    // and are deliberately NOT serialized to daemon.json — clients
+    // don't need them, and key paths in particular are local secrets.
+    // Placed at the end of the struct so existing brace-init call sites
+    // (e.g. `TransportInfo{"tcp", "127.0.0.1", 6000, "", true, "json"}`)
+    // keep compiling; they just get default-constructed cert/key.
+    std::string certFile;
+    std::string keyFile;
 };
 
 struct ConnectionInfo {

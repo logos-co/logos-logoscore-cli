@@ -112,7 +112,12 @@ int Daemon::start(int argc, char* argv[], const std::vector<std::string>& module
         LogosTransportConfig c;
         c.protocol = LogosProtocol::LocalSocket;
         coreTransports.push_back(std::move(c));
-        pushAdvertised({"local", "", 0, "", true});
+        // `local` advertises just the protocol — no host/port/cert/key/ca.
+        // Construct field-by-field rather than via brace-init so adding new
+        // fields to TransportInfo doesn't silently corrupt the ordering.
+        TransportInfo localInfo;
+        localInfo.protocol = "local";
+        pushAdvertised(localInfo);
     }
 
     for (const auto& t : transports) {
