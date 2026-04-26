@@ -14,9 +14,10 @@
 //   - tokens/<name>.json : convenience file given to each client so they can
 //                          `--token-file $PATH` instead of memorising the token
 //
-// Tokens are stored hashed at rest (SHA-256) so a read of tokens.db leaks
-// names + issue timestamps, never the token itself; revoking requires only
-// the name. The per-client files are the ONLY place the raw token lives.
+// Tokens are stored as a SHA-256 hex digest at rest, so a read of tokens.db
+// leaks names + issue timestamps + opaque digests — never the token itself;
+// revoking requires only the name. The per-client files are the ONLY place
+// the raw token lives.
 //
 // This store is standalone: the `issue-token` / `revoke-token` / `list-tokens`
 // subcommands operate on it directly, without needing a running daemon. A

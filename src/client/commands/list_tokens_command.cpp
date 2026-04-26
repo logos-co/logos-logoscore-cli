@@ -4,6 +4,7 @@
 #include "../../daemon/token_store.h"
 
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QString>
 

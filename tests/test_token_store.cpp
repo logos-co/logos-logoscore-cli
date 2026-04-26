@@ -2,6 +2,8 @@
 
 #include "daemon/token_store.h"
 
+#include <unistd.h>
+
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>

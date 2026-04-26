@@ -318,9 +318,9 @@ List all tokens currently issued against this config dir.
 logoscore list-tokens
 ```
 
-Shows name, issued-at timestamp, and a token fingerprint (the stored hash) —
-never the plaintext token, which only lives in the `tokens/<name>.json` file
-at the moment of issuance. Lost a token? Rotate it with `issue-token --replace`.
+Shows the token name and issued-at timestamp only — never the plaintext token,
+which only lives in the `tokens/<name>.json` file at the moment of issuance.
+Lost a token? Rotate it with `issue-token --replace`.
 
 ---
 

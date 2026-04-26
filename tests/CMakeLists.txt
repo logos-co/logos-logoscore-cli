@@ -33,6 +33,7 @@ target_link_libraries(logoscore_testlib PUBLIC
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::RemoteObjects
     nlohmann_json::nlohmann_json
+    OpenSSL::Crypto
 )
 
 # Unit tests

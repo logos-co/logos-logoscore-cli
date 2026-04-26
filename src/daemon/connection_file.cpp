@@ -106,7 +106,12 @@ ConnectionInfo ConnectionFile::read()
             TransportInfo t;
             t.protocol   = j.value("protocol", std::string{});
             t.host       = j.value("host", std::string{});
-            t.port       = static_cast<uint16_t>(j.value("port", 0));
+            // Validate the port through a wide int before narrowing —
+            // a JSON value of e.g. 70000 cast straight to uint16_t would
+            // silently wrap to 4464 and we'd then dial an unrelated port.
+            const int rawPort = j.value("port", 0);
+            if (rawPort < 0 || rawPort > 0xFFFF) continue;
+            t.port       = static_cast<uint16_t>(rawPort);
             t.caFile     = j.value("ca_file", std::string{});
             t.verifyPeer = j.value("verify_peer", true);
             t.codec      = j.value("codec", std::string{"json"});

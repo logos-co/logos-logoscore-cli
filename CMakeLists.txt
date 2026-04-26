@@ -70,6 +70,11 @@ set_target_properties(logos_module_client PROPERTIES
 # ── nlohmann_json (header-only) ───────────────────────────────────────────────
 find_package(nlohmann_json REQUIRED)
 
+# ── OpenSSL (TokenStore::hashToken uses SHA-256 to digest auth tokens at
+# rest, replacing the previous 64-bit FNV-1a — collision-resistant by
+# design so two distinct tokens can never validate to the same name).
+find_package(OpenSSL REQUIRED)
+
 # ── stduuid (header-only) ────────────────────────────────────────────────────
 find_package(stduuid REQUIRED)
 
@@ -137,6 +142,7 @@ target_link_libraries(logoscore PRIVATE
     nlohmann_json::nlohmann_json
     stduuid
     CLI11::CLI11
+    OpenSSL::Crypto
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::RemoteObjects
 )

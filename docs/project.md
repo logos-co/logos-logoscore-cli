@@ -187,8 +187,13 @@ main.cpp
     5. Validate codec: fail fast if --client-codec disagrees with the codec
        the daemon advertised for the chosen transport (prevents mixed-codec
        corruption)
-    6. Install resolved LogosTransportConfig as the process-wide default
-    7. Create LogosAPIClient targeting "core_service"
+    6. Keep the resolved LogosTransportConfig for this connection attempt
+       (do *not* install it as a process-wide default — the SDK's
+       LogosAPIProvider reads the global default to bind its own server
+       socket, so flipping the default to e.g. tcp_ssl on the client side
+       would try to bind a TLS server with no cert/key and abort)
+    7. Create LogosAPIClient targeting "core_service" with that explicit
+       transport config (LogosAPI itself stays on the local-socket default)
     8. Authenticate with token
   → Command::execute(args)
     1. Call LOGOS_METHOD on core_service via LogosAPIClient
@@ -445,14 +450,17 @@ that divergence into `daemon.json`.
 | Method | Description |
 |--------|-------------|
 | `TokenStore(configDir)` | Opens `<configDir>/tokens.db`. |
-| `issueToken(name, replace) -> optional<string>` | Mint a new token, record its hash under `name`, write `tokens/<name>.json` with the raw token + endpoint info, return the raw token. Fails (returns nullopt) if `name` already exists and `replace` is false. |
+| `issueToken(name, replace) -> optional<string>` | Mint a new token, record its digest under `name`, write `tokens/<name>.json` with the raw token + endpoint info, return the raw token. Fails (returns nullopt) if `name` already exists and `replace` is false. |
 | `revokeToken(name) -> bool` | Remove the `name` entry from `tokens.db` and delete `tokens/<name>.json`. |
-| `listTokens() -> vector<IssuedToken>` | Enumerate `{name, hash, issued_at}` — never plaintext. |
-| `lookupByToken(token) -> optional<Entry>` | Daemon-side: validate an incoming token against the stored hashes. |
+| `listTokens() -> vector<IssuedToken>` | Enumerate `{name, issued_at}` — never plaintext, never the digest. |
+| `lookupByToken(token) -> optional<Entry>` | Daemon-side: validate an incoming token against the stored digests. |
 
-The hash is a sha256 digest — used as an opaque stable ID, not a security
-guarantee. The only place the raw token ever lives is in `tokens/<name>.json`
-at the moment of issuance; treat that file like a private key.
+The on-disk digest is a SHA-256 hex string — collision-resistant by design so
+two distinct tokens can never validate to the same name. It's used internally
+for lookup/validation only; it's not exposed via `IssuedToken`. The only place
+the raw token ever lives is in `tokens/<name>.json` at the moment of issuance;
+treat that file like a private key. tokens.db and the per-client files are
+written with mode 0600.
 
 **How the client finds the daemon:**
 
