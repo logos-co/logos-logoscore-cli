@@ -2,7 +2,7 @@
 #include <cstdlib>
 #include <string>
 #include "client/client_connection.h"
-#include "daemon/connection_file.h"
+#include "daemon/daemon_state.h"
 
 // RAII helper: set/unset an env var for the duration of a test and put
 // the previous value back (or remove it) on destruction. Keeps tests

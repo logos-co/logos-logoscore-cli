@@ -61,7 +61,22 @@ logoscore daemon --modules-dir ./modules
 logoscore -D -m ./modules > logs.txt &
 ```
 
-The daemon writes a connection file to `~/.logoscore/daemon.json` on startup and removes it on shutdown.
+The daemon writes its state file to `~/.logoscore/daemon/daemon.json` on startup and removes it on shutdown. It also auto-emits a local-client config under `~/.logoscore/client/` (`client.json` + `auto.json`) so client commands work out of the box from the same machine.
+
+Layout:
+
+```
+~/.logoscore/
+├── daemon/
+│   ├── daemon.json        # daemon-owned: full daemon config + advertised endpoints + hashed tokens
+│   └── tokens/
+│       └── <name>.json    # raw, operator-copyable per `issue-token <name>`. 0600 perms.
+└── client/
+    ├── client.json        # client-owned: dial spec + token_file
+    └── auto.json          # raw token; daemon-emitted at boot for the local client
+```
+
+The daemon never reads `client/`; the client never reads `daemon/`. For remote clients on a different host, copy a single `daemon/tokens/<name>.json` file to the target host's `client/` dir and reference it via `token_file` in `client.json`.
 
 #### Client Commands
 
@@ -117,47 +132,70 @@ logoscore stats
 
 #### Authentication
 
-For local usage, token management is automatic — the daemon writes a token to `~/.logoscore/daemon.json` and clients read it.
+For local same-host use, token management is automatic. At boot the daemon
+auto-issues a token named `auto` (with `local_only=true`, so it can't be used
+over TCP), writes the hash into `daemon/daemon.json`, and emits the raw value
+into `client/auto.json` alongside a local-default `client/client.json`. Local
+client commands just work.
 
 For remote or programmatic access:
 
 ```bash
 # Via environment variable
 LOGOSCORE_TOKEN=<token> logoscore list-modules --json
-
-# Via config file
-echo '{"token": "<token>"}' > ~/.logoscore/config.json
 ```
 
-Token resolution order: `LOGOSCORE_TOKEN` env var → `<configDir>/config.json` → `<configDir>/daemon.json`.
+Token resolution order: `LOGOSCORE_TOKEN` env var → `<configDir>/client/<token_file>` (the path is whatever `client.json` says — defaults to `auto.json`).
 
 ##### Named client tokens
 
-For multi-client setups (e.g. a daemon serving several remote clients, or CI that
-wants to rotate credentials), issue named tokens. Each named token is stored in
-the daemon's `tokens.db` and written to a per-client file (`tokens/<name>.json`)
-that's safe to hand a specific client:
+For multi-client setups (a daemon serving several remote clients, CI rotating
+credentials, etc.), issue named tokens. Each entry persists as a `{name, hash,
+issued_at, expires_at, local_only}` row in `daemon/daemon.json["tokens"]`; the
+raw value is written to `daemon/tokens/<name>.json` (mode 0600) at issue time
+so the operator can hand it off:
 
 ```bash
-# Issue a token for "alice" (server-side: writes tokens/alice.json)
+# Issue a token for "alice"
 logoscore issue-token --name alice
-logoscore issue-token --name alice --replace       # rotate
+logoscore issue-token --name alice --replace            # rotate
+logoscore issue-token --name ci    --expires 30d        # expires after 30 days
+logoscore issue-token --name probe --local-only         # only valid over LocalSocket
 
-# List all issued tokens (hashes, names, issued_at)
+# List all issued tokens (names, issued_at, expires_at, local_only flag)
 logoscore list-tokens
 
-# Revoke by name — the next call using that token fails with an auth error
+# Revoke by name — next request with that token fails auth
 logoscore revoke-token alice
 ```
 
-`tokens/<name>.json` contains the plaintext token plus the endpoint info needed
-to connect; distribute it the same way you would a private key. Revocation is
-server-authoritative — the daemon removes the entry from `tokens.db` and any
-in-flight or future request presenting that token is rejected.
+After copying `daemon/tokens/alice.json` to the client host, the operator may
+delete the daemon-side raw file (`rm daemon/tokens/alice.json`); validation
+keeps working because the hash is what the daemon checks. Operator-issued
+tokens take effect on the next daemon restart (SIGHUP-driven reload is a
+follow-up).
+
+##### Plaintext-TCP guard
+
+Plaintext `tcp` on a non-loopback host puts tokens on the wire in cleartext.
+The daemon refuses to bind such a listener unless `--insecure-tcp` is
+explicitly passed:
+
+```bash
+# Refused — would expose tokens.
+logoscore -D --transport=tcp --tcp-host=0.0.0.0 --tcp-port=6000
+
+# Use TLS instead.
+logoscore -D --transport=tcp_ssl --tcp-ssl-host=0.0.0.0 --tcp-ssl-port=6443 \
+            --ssl-cert=/path/cert.pem --ssl-key=/path/key.pem
+
+# Or, for trusted-network test setups only:
+logoscore -D --transport=tcp --tcp-host=0.0.0.0 --tcp-port=6000 --insecure-tcp
+```
 
 #### Parallel Daemons (`--config-dir`)
 
-`--config-dir <path>` overrides the default `~/.logoscore` location for `daemon.json`, `config.json`, and the module persistence tree. This lets multiple `logoscore` daemons run side-by-side against isolated state. Client commands must be invoked with the same `--config-dir` as the daemon they target.
+`--config-dir <path>` overrides the default `~/.logoscore` location for the entire `daemon/` and `client/` subtree (and the module persistence tree). This lets multiple `logoscore` daemons run side-by-side against isolated state. Client commands must be invoked with the same `--config-dir` as the daemon they target.
 
 ```bash
 # Two parallel daemons with isolated config/state

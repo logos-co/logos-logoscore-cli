@@ -1,11 +1,13 @@
 # ── Unit tests (no external runtime needed) ──────────────────────────────────
 
-# Testable library: config, connection_file, output, commands (with mock client)
+# Testable library: config, daemon_state, output, commands (with mock client)
 set(TEST_LIB_SOURCES
     ${CMAKE_SOURCE_DIR}/src/config.cpp
-    ${CMAKE_SOURCE_DIR}/src/daemon/connection_file.cpp
+    ${CMAKE_SOURCE_DIR}/src/daemon/daemon_state.cpp
+    ${CMAKE_SOURCE_DIR}/src/daemon/port_allocator.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/token_store.cpp
     ${CMAKE_SOURCE_DIR}/src/client/client_connection.cpp
+    ${CMAKE_SOURCE_DIR}/src/client/client_state.cpp
     ${CMAKE_SOURCE_DIR}/src/client/output.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/command.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/status_command.cpp
@@ -39,12 +41,13 @@ target_link_libraries(logoscore_testlib PUBLIC
 # Unit tests
 add_executable(unit_tests
     test_config.cpp
-    test_connection_file.cpp
+    test_daemon_state.cpp
     test_client_connection.cpp
     test_output.cpp
     test_commands.cpp
     test_mode_detection.cpp
     test_token_store.cpp
+    test_port_allocator.cpp
 )
 
 target_include_directories(unit_tests PRIVATE

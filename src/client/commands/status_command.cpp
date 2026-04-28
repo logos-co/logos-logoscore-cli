@@ -1,5 +1,5 @@
 #include "status_command.h"
-#include "../../daemon/connection_file.h"
+#include "../client_state.h"
 
 #include <QJsonObject>
 
@@ -13,10 +13,12 @@ int StatusCommand::execute(const std::vector<std::string>& args)
 {
     (void)args;
 
-    // File missing or malformed ⇒ no daemon to talk to.
-    if (!ConnectionFile::read().fileOk) {
+    // No client config ⇒ nothing to dial. (Different from
+    // "daemon not running" — the daemon may be up, we just don't
+    // have a client.json pointing at it.)
+    if (!ClientStateFile::read().fileOk) {
         QJsonObject result;
-        result["daemon"] = QJsonObject{{"status", "not_running"}};
+        result["daemon"] = QJsonObject{{"status", "not_configured"}};
         output().printStatus(result);
         return 1;
     }

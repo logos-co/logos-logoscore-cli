@@ -1,6 +1,7 @@
 #include <CLI/CLI.hpp>
 #include <QCoreApplication>
 #include <QDebug>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -10,7 +11,7 @@
 #include "config.h"
 #include "paths.h"
 #include "daemon/daemon.h"
-#include "daemon/connection_file.h"
+#include "daemon/daemon_state.h"
 #include "client/client.h"
 #include "client/output.h"
 #include "client/commands/command.h"
@@ -139,8 +140,47 @@ static int runInlineMode(int argc, char* argv[],
     return QCoreApplication::exec();
 }
 
+// Pre-scan argv for `--config-dir` so we can apply the override (and
+// resolve the corresponding `<configDir>/config.json` path) *before*
+// CLI11 parses anything else. Returns the override path or empty if
+// not present. Recognises both `--config-dir X` (two tokens) and
+// `--config-dir=X` (single token); mirrors what CLI11 would parse.
+static std::string preScanConfigDir(int argc, char* argv[])
+{
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--config-dir" && i + 1 < argc) return argv[i + 1];
+        const std::string prefix = "--config-dir=";
+        if (a.rfind(prefix, 0) == 0) return a.substr(prefix.size());
+    }
+    return {};
+}
+
 int main(int argc, char *argv[])
 {
+    // Pre-scan argv for `--config-dir` so the override applies before
+    // any Config::* call. The CLI11 parse below picks the same flag up
+    // again and re-applies it, but we need it earlier than that —
+    // anything that touches Config::configDir during option parsing
+    // (e.g. logging) would otherwise key off the wrong directory.
+    {
+        std::string preDir = preScanConfigDir(argc, argv);
+        if (!preDir.empty()) {
+            std::error_code ec;
+            const std::filesystem::path absCfgPath =
+                std::filesystem::absolute(preDir, ec);
+            if (!ec)
+                Config::setConfigDir(QString::fromStdString(absCfgPath.string()));
+        }
+    }
+
+    // The legacy <configDir>/config.json (JsonConfig) was a parallel
+    // mechanism for stuffing daemon and client transport options into
+    // a single user-edited file. It's gone now: daemon-side options
+    // round-trip through daemon/daemon.json; client-side options
+    // through client/client.json. CLI flags directly populate those
+    // states.
+
     // ── CLI11 setup ──────────────────────────────────────────────────────────
     CLI::App app{"logoscore - Logos Core runtime CLI"};
     app.set_version_flag("--version", "logoscore version 1.0");
@@ -187,34 +227,48 @@ int main(int argc, char *argv[])
         "Override config directory (default: ~/.logoscore; also LOGOSCORE_CONFIG_DIR)");
 
     // ── Transport flags (daemon side) ────────────────────────────────────────
-    // --transport is repeatable: each appearance enables another listener.
-    // `local` is always implicitly present, so the CLI on the same host
-    // keeps working without any extra flags. Adding --transport=tcp or
-    // --transport=tcp_ssl opens an additional listener at the given
-    // host/port for remote clients (e.g. daemon in docker, CLI on host).
-    std::vector<std::string> transportFlags;
-    app.add_option("--transport", transportFlags,
-        "Enable a transport for core_service: local | tcp | tcp_ssl (repeatable)");
+    // Per-module transport configuration. Each `--module-transport`
+    // adds one listener to the named module. Format:
+    //
+    //     NAME=PROTOCOL[,k=v[,k=v...]]
+    //
+    // PROTOCOL is `local`, `tcp`, or `tcp_ssl`. Recognized k=v pairs:
+    //
+    //     host         (tcp / tcp_ssl)
+    //     port         (tcp / tcp_ssl; 0 = auto-allocate ephemeral)
+    //     codec        (tcp / tcp_ssl; "json" default | "cbor")
+    //     ca           (tcp_ssl; CA cert path for client verification)
+    //     cert,key     (tcp_ssl; server cert + key paths)
+    //     verify_peer  (tcp_ssl; "true"|"false", default true)
+    //
+    // Repeatable. Each module gets its own list — there is no
+    // "core_service is the source, capability_module inherits" magic
+    // any more. Operators are expected to configure each module
+    // explicitly, matching the on-disk shape of daemon.json.
+    //
+    // Default when omitted: each well-known module
+    // (`core_service`, `capability_module`) gets a single `local`
+    // listener.
+    //
+    // Examples:
+    //     logoscore -D \
+    //         --module-transport core_service=local \
+    //         --module-transport core_service=tcp,host=0.0.0.0,port=6000,codec=json \
+    //         --module-transport capability_module=local \
+    //         --module-transport capability_module=tcp,host=0.0.0.0,port=6001,codec=json
+    std::vector<std::string> moduleTransportFlags;
+    app.add_option("--module-transport", moduleTransportFlags,
+        "Configure a module's transport: NAME=PROTOCOL[,k=v...] (repeatable)");
 
-    std::string tcpHost = "127.0.0.1";
-    uint16_t    tcpPort = 0;
-    std::string tcpCodec = "json";
-    app.add_option("--tcp-host", tcpHost, "TCP bind address (default 127.0.0.1)");
-    app.add_option("--tcp-port", tcpPort, "TCP port (0 = auto-assign)");
-    app.add_option("--tcp-codec", tcpCodec,
-        "Wire codec for the TCP listener: json (default) | cbor");
-
-    std::string tcpSslHost = "127.0.0.1";
-    uint16_t    tcpSslPort = 0;
-    std::string tcpSslCodec = "json";
-    std::string sslCaFile, sslCertFile, sslKeyFile;
-    app.add_option("--tcp-ssl-host", tcpSslHost, "TCP+SSL bind address");
-    app.add_option("--tcp-ssl-port", tcpSslPort, "TCP+SSL port (0 = auto-assign)");
-    app.add_option("--tcp-ssl-codec", tcpSslCodec,
-        "Wire codec for the TCP+SSL listener: json (default) | cbor");
-    app.add_option("--ssl-ca",   sslCaFile,   "CA file (TCP+SSL)");
-    app.add_option("--ssl-cert", sslCertFile, "Server cert (TCP+SSL)");
-    app.add_option("--ssl-key",  sslKeyFile,  "Server private key (TCP+SSL)");
+    // Plaintext-TCP safety net: refuse to bind plaintext `tcp` on a
+    // non-loopback host unless this flag is set. Without it, a daemon
+    // configured with `--module-transport core_service=tcp,host=0.0.0.0`
+    // would put tokens on the wire in cleartext on every RPC. The
+    // escape hatch exists for trusted-network test setups; production
+    // use should pass tcp_ssl or wrap with a TLS terminator.
+    bool insecureTcp = false;
+    app.add_flag("--insecure-tcp", insecureTcp,
+        "Allow plaintext tcp on non-loopback hosts (tokens travel cleartext)");
 
     // ── Transport flags (client side) ────────────────────────────────────────
     std::string clientTransport;  // empty = prefer local
@@ -311,66 +365,175 @@ int main(int argc, char *argv[])
         qapp.setApplicationName("logoscore");
         qapp.setApplicationVersion("1.0");
 
-        // Translate --transport flags into TransportInfo records. Anything
-        // not explicitly requested is dropped (local is implicitly always
-        // on, set up inside Daemon::start).
+        // Plaintext-TCP guard: a `tcp` listener on a non-loopback host
+        // sends tokens in cleartext. Refuse to start unless the
+        // operator explicitly opted in.
+        auto isLoopback = [](const std::string& h) {
+            return h == "127.0.0.1" || h == "::1" || h == "localhost";
+        };
         auto validateCodec = [](const std::string& c) {
             return c == "json" || c == "cbor";
         };
 
-        std::vector<TransportInfo> transportInfos;
-        for (const auto& proto : transportFlags) {
+        // Parse --module-transport NAME=PROTOCOL[,k=v...] flags into
+        // a per-module map. Each flag adds one listener to the named
+        // module. There is deliberately no implicit core_service /
+        // capability_module relationship — each module's transport
+        // list is built solely from its own flags, then defaulted
+        // to a single LocalSocket entry below for the well-known
+        // modules if the operator didn't configure them.
+        std::map<std::string, std::vector<TransportInfo>> moduleTransportsMap;
+        for (const auto& spec : moduleTransportFlags) {
+            const auto eq = spec.find('=');
+            if (eq == std::string::npos || eq == 0 || eq == spec.size() - 1) {
+                std::cerr << "Error: --module-transport expects "
+                          << "'NAME=PROTOCOL[,k=v...]', got: '" << spec
+                          << "'" << std::endl;
+                return 1;
+            }
+            const std::string moduleName = spec.substr(0, eq);
+            const std::string body = spec.substr(eq + 1);
+
+            // Split body on commas. The first part is the protocol;
+            // the rest are key=value pairs. Splitting comma-separated
+            // is safe — neither host names nor port numbers nor codec
+            // names contain commas; cert paths on POSIX don't either.
+            std::vector<std::string> parts;
+            for (size_t i = 0; i < body.size(); ) {
+                auto comma = body.find(',', i);
+                parts.push_back(body.substr(i, comma == std::string::npos
+                                                  ? std::string::npos
+                                                  : comma - i));
+                if (comma == std::string::npos) break;
+                i = comma + 1;
+            }
+            if (parts.empty() || parts[0].empty()) {
+                std::cerr << "Error: --module-transport '" << spec
+                          << "' missing protocol" << std::endl;
+                return 1;
+            }
+
             TransportInfo t;
-            t.protocol = proto;
-            if (proto == "tcp") {
-                t.host = tcpHost; t.port = tcpPort;
-                if (!validateCodec(tcpCodec)) {
-                    std::cerr << "Error: --tcp-codec must be 'json' or 'cbor', got: "
-                              << tcpCodec << std::endl;
-                    return 1;
-                }
-                t.codec = tcpCodec;
-            } else if (proto == "tcp_ssl") {
-                t.host = tcpSslHost; t.port = tcpSslPort;
-                t.caFile = sslCaFile;
+            t.protocol = parts[0];
+
+            // Defaults for tcp / tcp_ssl when the operator omits
+            // them. host="127.0.0.1" matches the daemon-side bind
+            // convention used by older flags and keeps a bare
+            // `--module-transport core_service=tcp` working out of
+            // the box on a single host.
+            if (t.protocol == "tcp" || t.protocol == "tcp_ssl") {
+                t.host = "127.0.0.1";
+                t.codec = "json";
                 t.verifyPeer = true;
-                if (!validateCodec(tcpSslCodec)) {
-                    std::cerr << "Error: --tcp-ssl-codec must be 'json' or 'cbor', got: "
-                              << tcpSslCodec << std::endl;
+            }
+
+            for (size_t i = 1; i < parts.size(); ++i) {
+                const auto& kv = parts[i];
+                const auto kvSep = kv.find('=');
+                if (kvSep == std::string::npos) {
+                    std::cerr << "Error: --module-transport '" << spec
+                              << "' has malformed kv pair '" << kv
+                              << "' (expected k=v)" << std::endl;
                     return 1;
                 }
-                t.codec = tcpSslCodec;
-                if (sslCertFile.empty() || sslKeyFile.empty()) {
-                    std::cerr << "Error: --transport=tcp_ssl requires --ssl-cert and --ssl-key"
+                const std::string k = kv.substr(0, kvSep);
+                const std::string v = kv.substr(kvSep + 1);
+                if      (k == "host")  t.host = v;
+                else if (k == "codec") t.codec = v;
+                else if (k == "ca")    t.caFile = v;
+                else if (k == "cert")  t.certFile = v;
+                else if (k == "key")   t.keyFile = v;
+                else if (k == "verify_peer") t.verifyPeer = (v == "true" || v == "1");
+                else if (k == "port") {
+                    int parsedPort = 0;
+                    try { parsedPort = std::stoi(v); }
+                    catch (...) {
+                        std::cerr << "Error: --module-transport port '" << v
+                                  << "' is not a valid integer" << std::endl;
+                        return 1;
+                    }
+                    if (parsedPort < 0 || parsedPort > 0xFFFF) {
+                        std::cerr << "Error: --module-transport port '" << v
+                                  << "' must be in [0, 65535]" << std::endl;
+                        return 1;
+                    }
+                    t.port = static_cast<uint16_t>(parsedPort);
+                } else {
+                    std::cerr << "Error: --module-transport unknown key '"
+                              << k << "' in '" << spec << "'" << std::endl;
+                    return 1;
+                }
+            }
+
+            // Per-protocol validation.
+            if (t.protocol == "local") {
+                // host/port/codec/cert ignored for local.
+            } else if (t.protocol == "tcp") {
+                if (!validateCodec(t.codec)) {
+                    std::cerr << "Error: --module-transport tcp codec '"
+                              << t.codec << "' must be 'json' or 'cbor'"
                               << std::endl;
                     return 1;
                 }
-                t.certFile = sslCertFile;
-                t.keyFile  = sslKeyFile;
-            } else if (proto != "local") {
-                std::cerr << "Error: unknown --transport value: " << proto
-                          << " (expected local | tcp | tcp_ssl)" << std::endl;
+                if (!isLoopback(t.host) && !insecureTcp) {
+                    std::cerr << "Error: --module-transport for '" << moduleName
+                              << "' binds plaintext tcp on non-loopback host '"
+                              << t.host << "'. Use protocol=tcp_ssl, or pass "
+                              << "--insecure-tcp if you really mean it."
+                              << std::endl;
+                    return 1;
+                }
+            } else if (t.protocol == "tcp_ssl") {
+                if (!validateCodec(t.codec)) {
+                    std::cerr << "Error: --module-transport tcp_ssl codec '"
+                              << t.codec << "' must be 'json' or 'cbor'"
+                              << std::endl;
+                    return 1;
+                }
+                if (t.certFile.empty() || t.keyFile.empty()) {
+                    std::cerr << "Error: --module-transport tcp_ssl for '"
+                              << moduleName << "' requires cert= and key="
+                              << std::endl;
+                    return 1;
+                }
+            } else {
+                std::cerr << "Error: --module-transport unknown protocol '"
+                          << t.protocol << "' (expected local | tcp | tcp_ssl)"
+                          << std::endl;
                 return 1;
             }
-            transportInfos.push_back(std::move(t));
+
+            moduleTransportsMap[moduleName].push_back(std::move(t));
         }
 
-        return Daemon::start(argc, argv, modulesDirs, persistencePath, transportInfos);
+        // Default the well-known modules to LocalSocket-only when the
+        // operator didn't configure them. Without this, a bare
+        // `logoscore -D` would start a daemon with no listeners at
+        // all and clients would have nothing to dial.
+        for (const std::string& wellKnown : {"core_service", "capability_module"}) {
+            if (moduleTransportsMap.find(wellKnown) == moduleTransportsMap.end()) {
+                TransportInfo t;
+                t.protocol = "local";
+                moduleTransportsMap[wellKnown].push_back(std::move(t));
+            }
+        }
+
+        return Daemon::start(argc, argv, modulesDirs, persistencePath,
+                             moduleTransportsMap);
     }
 
-    // Propagate client-side transport selection to RpcClient via env vars
-    // so subcommand dispatch (below) doesn't need new plumbing.
-    if (!clientTransport.empty())
-        qputenv("LOGOSCORE_CLIENT_TRANSPORT", clientTransport.c_str());
-    if (!clientTcpHost.empty())
-        qputenv("LOGOSCORE_CLIENT_TCP_HOST", clientTcpHost.c_str());
-    if (clientTcpPort != 0)
-        qputenv("LOGOSCORE_CLIENT_TCP_PORT",
-                QByteArray::number(static_cast<int>(clientTcpPort)));
-    if (clientNoVerifyPeer)
-        qputenv("LOGOSCORE_CLIENT_NO_VERIFY_PEER", "1");
-    if (!clientCodec.empty())
-        qputenv("LOGOSCORE_CLIENT_CODEC", clientCodec.c_str());
+    // Client-side transport flags are deliberately unused below: the
+    // dial spec lives in client/client.json, not in CLI flags. A
+    // future refinement (deferred from this PR) regenerates client.json
+    // when `--client-transport` and friends are passed; for now,
+    // operators edit client.json directly or use the daemon-emitted
+    // local-client artifacts. The flags remain declared so help text
+    // surfaces them, but they don't gate anything yet.
+    (void)clientTransport;
+    (void)clientTcpHost;
+    (void)clientTcpPort;
+    (void)clientNoVerifyPeer;
+    (void)clientCodec;
 
     // ── Client mode ──────────────────────────────────────────────────────────
     struct SubInfo { CLI::App* sub; QString name; };

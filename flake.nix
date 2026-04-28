@@ -4,20 +4,28 @@
   inputs = {
     logos-nix.url = "github:logos-co/logos-nix";
     nixpkgs.follows = "logos-nix/nixpkgs";
+    # Direct SDK input so the CLI binary can link logos_sdk and use its
+    # public symbols (e.g. logos::transportSetToJsonString) without
+    # relying on the symbol surviving liblogos_core's link-time
+    # dead-strip. liblogos's own SDK pin still drives transitive deps.
+    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk/support-non-local-remote-transports";
     logos-liblogos.url = "github:logos-co/logos-liblogos/support-non-local-remote-transports";
+    logos-liblogos.inputs.logos-cpp-sdk.follows = "logos-cpp-sdk";
     logos-module-client.url = "github:logos-co/logos-module-client/support-non-local-remote-transports";
+    logos-module-client.inputs.logos-cpp-sdk.follows = "logos-cpp-sdk";
     logos-capability-module.url = "github:logos-co/logos-capability-module";
     nix-bundle-logos-module-install.url = "github:logos-co/nix-bundle-logos-module-install";
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-liblogos, logos-module-client, logos-capability-module, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
+  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-liblogos, logos-module-client, logos-capability-module, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f {
         inherit system;
         pkgs = import nixpkgs { inherit system; };
+        cppSdk = logos-cpp-sdk.packages.${system}.default;
         liblogos = logos-liblogos.packages.${system}.logos-liblogos;
         liblogosLib = logos-liblogos.packages.${system}.logos-liblogos-lib;
         liblogosPortable = logos-liblogos.packages.${system}.portable;
@@ -31,7 +39,7 @@
       });
     in
     {
-      packages = forAllSystems ({ pkgs, system, liblogos, liblogosLib, liblogosPortable, moduleClient, moduleClientLib, capabilityModuleLib, installDev, installPortable, dirBundler, appBundler }:
+      packages = forAllSystems ({ pkgs, system, cppSdk, liblogos, liblogosLib, liblogosPortable, moduleClient, moduleClientLib, capabilityModuleLib, installDev, installPortable, dirBundler, appBundler }:
         let
           pname = "logos-logoscore-cli";
           version = "0.1.0";
@@ -76,12 +84,24 @@
               pkgs.stduuid
               pkgs.cli11
               pkgs.gtest
+              # SDK transitive deps. The SDK's CMake Config does
+              # find_dependency(Boost / OpenSSL / nlohmann_json) so
+              # downstream consumers (us) need them on the package
+              # search path at configure time.
+              pkgs.boost
+              pkgs.openssl
             ];
 
             cmakeFlags = [
               "-GNinja"
               "-DLOGOS_LIBLOGOS_ROOT=${liblogos}"
               "-DLOGOS_MODULE_CLIENT_ROOT=${moduleClient}"
+              # Direct path to the SDK: CMake's find_package(logos-cpp-sdk)
+              # picks up the imported target so logoscore can link
+              # logos_sdk explicitly (needed for symbols like
+              # logos::transportSetToJsonString which liblogos doesn't
+              # itself reference and would otherwise be dead-stripped).
+              "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
             ];
           };
 
@@ -172,12 +192,17 @@
               pkgs.gtest
               liblogosLib
               moduleClientLib
+              # SDK transitive deps: same set the .#default build needs,
+              # because this derivation also compiles the logoscore CLI.
+              pkgs.boost
+              pkgs.openssl
             ];
 
             cmakeFlags = [
               "-GNinja"
               "-DLOGOS_LIBLOGOS_ROOT=${liblogos}"
               "-DLOGOS_MODULE_CLIENT_ROOT=${moduleClient}"
+              "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
             ];
 
             installPhase = ''
@@ -247,12 +272,16 @@
               pkgs.gtest
               pkgs.stduuid
               pkgs.cli11
+              # SDK transitive deps: same set the .#default build needs.
+              pkgs.boost
+              pkgs.openssl
             ];
 
             cmakeFlags = [
               "-GNinja"
               "-DLOGOS_LIBLOGOS_ROOT=${liblogosPortable}"
               "-DLOGOS_MODULE_CLIENT_ROOT=${moduleClient}"
+              "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
             ];
           };
 

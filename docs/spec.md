@@ -66,7 +66,7 @@ logoscore [global-flags] <command> [command-flags] [args...]
 |------|-------|-------------|
 | `--json` | `-j` | Output as JSON. Default when stdout is not a TTY. |
 | `--modules-dir <path>` | `-m` | Module search directory (daemon mode only, repeatable). |
-| `--config-dir <path>` | | Override the config directory (default: `~/.logoscore`; also `LOGOSCORE_CONFIG_DIR`). Client commands must pass the same value as the daemon they target. |
+| `--config-dir <path>` | | Override the config directory (default: `~/.logoscore`; also `LOGOSCORE_CONFIG_DIR`). Client commands must pass the same value as the daemon they target. The same dir is read for `config.json` (see [JSON config](#json-config-configdirconfigjson)). |
 | `--quiet` | `-q` | Suppress non-essential output. |
 | `--verbose` | `-v` | Show debug/info/warning logs (suppressed by default). |
 | `--help` | `-h` | Show help. |
@@ -110,6 +110,48 @@ it errors out rather than guessing.
 The client-side overrides also propagate via `LOGOSCORE_CLIENT_*` env vars, so
 subprocesses (e.g. the Python wrapper, or `logoscore watch` that spawns a
 watcher) inherit them.
+
+The transport pick is **per module**: `--client-transport=tcp` (or
+`LOGOSCORE_CLIENT_TRANSPORT=tcp`) applies to every module the daemon
+advertised, but a per-module override
+`LOGOSCORE_CLIENT_TRANSPORT_<MODULE_UPPER>=<protocol>` (hyphens
+fold to underscores) takes precedence. Example:
+
+```
+LOGOSCORE_CLIENT_TRANSPORT=tcp \
+LOGOSCORE_CLIENT_TRANSPORT_CAPABILITY_MODULE=local \
+logoscore status
+```
+
+— core_service is dialled over TCP, capability_module over the local
+socket. Useful when one module is reachable on the local file system
+(e.g. mounted from inside a container) but the other isn't.
+
+#### JSON config (`<configDir>/config.json`)
+
+Long invocations can move into the same `config.json` that already
+backs the optional `token` field. Parsed automatically on every
+invocation; pick a non-default file by pointing `--config-dir` at
+its parent directory:
+
+```json
+{
+  "transport": "tcp",
+  "tcp":     { "host": "0.0.0.0", "port": 0 },
+  "ssl":     { "ca": "/p/ca", "cert": "/p/c", "key": "/p/k" },
+  "modules": {
+    "capability_module": { "transport": "tcp", "tcp": { "port": 6001 } }
+  },
+  "client": {
+    "transport": "tcp",
+    "modules": { "capability_module": { "transport": "local" } }
+  }
+}
+```
+
+CLI flags always win — JSON values seed the C++ defaults that CLI11
+then overrides. Missing file is silent (most users don't write one);
+malformed JSON surfaces a stderr diagnostic.
 
 ---
 
@@ -398,30 +440,50 @@ docker run -e LOGOSCORE_TOKEN=$TOKEN myimage logoscore list-modules --json
 
 ### Connection File
 
-The daemon writes `<configDir>/daemon.json` on startup:
+The daemon writes `<configDir>/daemon.json` on startup (schema version 2):
 
 ```json
 {
+  "version": 2,
   "instance_id": "a3f1c8d20b4e",
   "token": "550e8400-e29b-41d4-a716-446655440000",
   "pid": 12345,
   "started_at": "2026-03-23T14:00:00Z",
   "modules_dirs": ["/path/to/modules"],
-  "transports": [
-    { "protocol": "local" },
-    { "protocol": "tcp",     "host": "0.0.0.0", "port": 6000, "codec": "json" },
-    { "protocol": "tcp_ssl", "host": "0.0.0.0", "port": 6443,
-      "codec": "cbor", "ca_file": "/etc/logoscore/ca.pem",
-      "verify_peer": true }
-  ]
+  "modules": {
+    "core_service": {
+      "transports": [
+        { "protocol": "local" },
+        { "protocol": "tcp",     "host": "0.0.0.0", "port": 6000, "codec": "json" },
+        { "protocol": "tcp_ssl", "host": "0.0.0.0", "port": 6443,
+          "codec": "cbor", "ca_file": "/etc/logoscore/ca.pem",
+          "verify_peer": true }
+      ]
+    },
+    "capability_module": {
+      "transports": [
+        { "protocol": "local" },
+        { "protocol": "tcp", "host": "127.0.0.1", "port": 6001, "codec": "json" }
+      ]
+    }
+  }
 }
 ```
 
+- `version` — schema version. Readers refuse anything other than `2` and
+  ask the caller to restart the daemon to regenerate.
 - `instance_id` is a 12-char UUID prefix the client uses with `LogosInstance::id()`
   to reconstruct the same registry URL the daemon published (`local:logos_core_service_<id>`).
-- `transports` is the list of endpoints the daemon opened. Empty / absent
-  means the old-style default of one local-socket transport. Clients pick one
-  based on `--client-transport` (or `local` by default if offered).
+- `modules` is keyed by module name. Each entry's `transports` array
+  lists the endpoints the daemon opened *for that module*. The CLI
+  picks one per module based on `LOGOSCORE_CLIENT_TRANSPORT_<MODULE>`
+  / `LOGOSCORE_CLIENT_TRANSPORT` / `--client-transport` (default
+  `local`).
+- `capability_module` is advertised separately (and on its own port for
+  TCP/TCP+SSL) so clients can dial it directly for the SDK's
+  auto-`requestModule` token-fetch flow without falling back to a
+  20-second LocalSocket timeout when the daemon is in another OS
+  namespace.
 - `token` is the automatically-issued CLI client token. Named tokens
   (`issue-token`) live in `tokens.db` + `tokens/<name>.json` and aren't
   advertised here.

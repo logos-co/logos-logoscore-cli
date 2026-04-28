@@ -2,6 +2,7 @@
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QStandardPaths>
 #include <cstdlib>
 
@@ -25,8 +26,7 @@ QString Config::configDir()
 {
     // Precedence: explicit setter (from --config-dir) → LOGOSCORE_CONFIG_DIR
     // env var → ~/.logoscore. Parallel logoscore instances pick distinct
-    // config dirs so their daemon.json / config.json / data/ trees don't
-    // clash.
+    // config trees so their daemon/ and client/ subdirs don't clash.
     const QString& override = configDirOverride();
     if (!override.isEmpty())
         return override;
@@ -38,14 +38,16 @@ QString Config::configDir()
     return QDir::homePath() + "/.logoscore";
 }
 
-QString Config::configFilePath()
-{
-    return configDir() + "/config.json";
-}
+QString Config::daemonDir()         { return configDir() + "/daemon"; }
+QString Config::daemonConfigPath()  { return daemonDir() + "/daemon.json"; }
+QString Config::daemonTokensDir()   { return daemonDir() + "/tokens"; }
 
-QString Config::connectionFilePath()
+QString Config::clientDir()         { return configDir() + "/client"; }
+QString Config::clientConfigPath()  { return clientDir() + "/client.json"; }
+
+QString Config::clientTokenPath(const QString& filename)
 {
-    return configDir() + "/daemon.json";
+    return clientDir() + "/" + filename;
 }
 
 QString Config::tokenFromEnv()
@@ -54,58 +56,12 @@ QString Config::tokenFromEnv()
     return token ? QString::fromUtf8(token) : QString();
 }
 
-QString Config::tokenFromConfigFile()
-{
-    QFile file(configFilePath());
-    if (!file.open(QIODevice::ReadOnly))
-        return {};
-
-    QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
-    file.close();
-
-    if (doc.isObject())
-        return doc.object().value("token").toString();
-    return {};
-}
-
-QString Config::tokenFromConnectionFile()
-{
-    QFile file(connectionFilePath());
-    if (!file.open(QIODevice::ReadOnly))
-        return {};
-
-    QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
-    file.close();
-
-    if (doc.isObject())
-        return doc.object().value("token").toString();
-    return {};
-}
-
 QString Config::getToken()
 {
-    // Priority 1: environment variable
-    QString token = tokenFromEnv();
-    if (!token.isEmpty())
-        return token;
-
-    // Priority 2: config file
-    token = tokenFromConfigFile();
-    if (!token.isEmpty())
-        return token;
-
-    // Priority 3: connection file
-    return tokenFromConnectionFile();
-}
-
-QJsonObject Config::load()
-{
-    QFile file(configFilePath());
-    if (!file.open(QIODevice::ReadOnly))
-        return {};
-
-    QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
-    file.close();
-
-    return doc.isObject() ? doc.object() : QJsonObject();
+    // Priority 1: environment variable. Priority 2: the raw-token file
+    // referenced by client/client.json's `token_file` field — that's
+    // resolved inside ClientState since it requires parsing client.json.
+    // This helper only handles the env override; ClientState falls back
+    // to it when its own resolution misses.
+    return tokenFromEnv();
 }

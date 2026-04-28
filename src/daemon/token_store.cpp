@@ -1,4 +1,5 @@
 #include "token_store.h"
+#include "daemon_state.h"
 
 #include <nlohmann/json.hpp>
 #include <openssl/sha.h>
@@ -21,16 +22,6 @@ using json = nlohmann::json;
 
 namespace {
 
-std::string utcIso8601() {
-    auto now = std::chrono::system_clock::now();
-    auto tt = std::chrono::system_clock::to_time_t(now);
-    struct tm utc{};
-    gmtime_r(&tt, &utc);
-    std::ostringstream ss;
-    ss << std::put_time(&utc, "%Y-%m-%dT%H:%M:%SZ");
-    return ss.str();
-}
-
 // 32 bytes of URL-safe base64-ish entropy, fine for client tokens.
 std::string generateToken() {
     std::random_device rd;
@@ -44,10 +35,10 @@ std::string generateToken() {
     return s;
 }
 
-// Token names map directly to filesystem paths under $CONFIG_DIR/tokens/.
-// Allow only a strict subset that can't traverse out (no `/`, no `..`,
-// no leading `.`) — without this, a name like "../etc/passwd" would let
-// issueToken/revokeToken touch arbitrary files on disk.
+// Token names map directly to filesystem paths under
+// $CONFIG_DIR/daemon/tokens/. Allow only a strict subset that can't
+// traverse out — without this, "../etc/passwd" would let issueToken
+// or revokeToken touch arbitrary files on disk.
 bool isSafeName(const std::string& name) {
     if (name.empty() || name.size() > 64) return false;
     if (name.front() == '.' || name.front() == '-') return false;
@@ -61,19 +52,29 @@ bool isSafeName(const std::string& name) {
     return true;
 }
 
+bool isExpired(const std::string& expiresAt) {
+    if (expiresAt.empty()) return false;
+    // Parse ISO 8601 UTC (e.g. "2026-12-31T23:59:59Z"). Anything that
+    // doesn't parse as exactly that shape is treated as non-expiring
+    // rather than rejected — the CLI is responsible for validation
+    // when the operator types the date; this path is the safety net.
+    struct tm tm{};
+    if (!strptime(expiresAt.c_str(), "%Y-%m-%dT%H:%M:%SZ", &tm)) return false;
+    // timegm interprets `tm` as UTC.
+    time_t deadline = timegm(&tm);
+    return std::chrono::system_clock::to_time_t(
+               std::chrono::system_clock::now()) >= deadline;
+}
+
 } // anonymous namespace
 
-// ── hashToken ──────────────────────────────────────────────────────────────
+// -- hashToken --------------------------------------------------------------
 //
-// SHA-256 hex digest. Used as the lookup key in tokens.db so that an
-// attacker who reads the on-disk db can't recover plaintext tokens, and
-// — more importantly — so that two distinct tokens can never map to the
-// same db entry. The previous 64-bit FNV-1a was non-cryptographic and
-// allowed birthday-style collisions which, in an authentication path,
-// would let one token validate as a different name. Cryptographic
-// collision resistance closes that hole; the file-system permissions
-// (mode 0700 dir, 0600 files) remain the primary defense against
-// disk exfiltration.
+// SHA-256 hex digest. Used as the lookup key in daemon.json["tokens"] so an
+// attacker who reads daemon.json can't recover plaintext tokens, and so
+// that two distinct tokens can never map to the same entry. File-system
+// permissions (mode 0700 dir, 0600 files) remain the primary defense
+// against disk exfiltration.
 std::string TokenStore::hashToken(const std::string& token)
 {
     unsigned char digest[SHA256_DIGEST_LENGTH];
@@ -85,124 +86,67 @@ std::string TokenStore::hashToken(const std::string& token)
     return ss.str();
 }
 
-// ── Construction ───────────────────────────────────────────────────────────
+// -- Construction -----------------------------------------------------------
 
 TokenStore::TokenStore(std::string configDir)
     : m_configDir(std::move(configDir))
-    , m_dbPath(m_configDir + "/tokens.db")
-    , m_tokensDir(m_configDir + "/tokens")
+    , m_daemonDir(m_configDir + "/daemon")
+    , m_tokensDir(m_daemonDir + "/tokens")
 {
     std::error_code ec;
     fs::create_directories(m_tokensDir, ec);
+    // Belt-and-braces dir perms (0700) so umask can't widen.
+    if (!ec) ::chmod(m_tokensDir.c_str(), S_IRWXU);
 }
 
-// ── issue / revoke / list ──────────────────────────────────────────────────
+namespace {
 
-std::optional<std::string>
-TokenStore::issueToken(const std::string& name, bool replace)
+// Helper: load the current DaemonState. Used by issue/revoke for
+// read-modify-write of the `tokens` array.
+//
+// Note: we deliberately don't gate on `fileOk` here. `fileOk` in
+// DaemonStateFile::read means "a running daemon is announcing itself"
+// (instance_id present); but `issue-token` runs as a standalone CLI
+// before the daemon ever starts and writes a state with no
+// instance_id. We still want subsequent issue/revoke calls to see the
+// tokens that earlier ones wrote, so we trust whatever parsed cleanly
+// (schemaVersion == kDaemonStateSchemaVersion) regardless of fileOk.
+DaemonState loadOrInit()
 {
-    if (!isSafeName(name)) return std::nullopt;
-
-    auto db = loadDb();
-    auto existing = std::find_if(db.begin(), db.end(),
-        [&](const auto& kv) { return kv.second.name == name; });
-    if (existing != db.end()) {
-        if (!replace) return std::nullopt;
-        // Replace: drop the existing entry now (separate from iteration —
-        // the previous range-for-then-erase pattern modified the vector
-        // mid-iteration, which is undefined behaviour even with the
-        // immediate break that followed).
-        db.erase(std::remove_if(db.begin(), db.end(),
-                                [&](const auto& kv) { return kv.second.name == name; }),
-                 db.end());
+    DaemonState s = DaemonStateFile::read();
+    if (s.schemaVersion != kDaemonStateSchemaVersion) {
+        // No file on disk, or unparseable. Start with a blank state
+        // so issueToken can persist; the subsequent write fills in
+        // daemon.json so future invocations round-trip the `tokens`
+        // array.
+        s = DaemonState{};
     }
-
-    std::string token = generateToken();
-    Entry e{name, utcIso8601()};
-    db.emplace_back(hashToken(token), std::move(e));
-
-    if (!saveDb(db)) return std::nullopt;
-    return token;
+    return s;
 }
 
-bool TokenStore::revokeToken(const std::string& name)
+bool persistTokens(DaemonState& s)
 {
-    if (!isSafeName(name)) return false;
-
-    auto db = loadDb();
-    const auto before = db.size();
-    db.erase(std::remove_if(db.begin(), db.end(),
-                            [&](const auto& kv) { return kv.second.name == name; }),
-             db.end());
-    if (db.size() == before) return false;
-    // Don't claim revocation succeeded if the on-disk db couldn't be
-    // rewritten — otherwise the caller reports success while the token
-    // is still valid in tokens.db on disk, and we'd then delete the
-    // client file leaving the user no way to recover.
-    if (!saveDb(db)) return false;
-
-    // Best-effort remove the client file (not fatal on failure).
-    std::error_code ec;
-    fs::remove(fs::path(clientFilePath(name)), ec);
-    return true;
+    // Refresh ephemeral fields if not already set. issue-token without
+    // a running daemon shouldn't claim its pid or boot timestamp.
+    if (s.startedAt.empty()) s.startedAt = currentUtcIso8601();
+    return DaemonStateFile::write(s);
 }
 
-std::vector<IssuedToken> TokenStore::listTokens() const
+bool writeRawTokenFile(const std::string& path,
+                       const std::string& name,
+                       const std::string& token,
+                       const std::string& issuedAt)
 {
-    std::vector<IssuedToken> out;
-    for (auto& [_hash, e] : loadDb()) {
-        out.push_back({e.name, e.issuedAt});
-    }
-    return out;
-}
-
-std::optional<std::string>
-TokenStore::lookupByToken(const std::string& token) const
-{
-    const std::string h = hashToken(token);
-    for (const auto& [hash, e] : loadDb()) {
-        if (hash == h) return e.name;
-    }
-    return std::nullopt;
-}
-
-// ── Client file (tokens/<name>.json) ───────────────────────────────────────
-
-std::string TokenStore::clientFilePath(const std::string& name) const
-{
-    // Callers should already have validated `name` via isSafeName before
-    // reaching here; the path-traversal guard is mirrored in issueToken /
-    // revokeToken. Anything that slips through still gets a path that's
-    // textually under m_tokensDir, but not normalised — defensive check
-    // below in writeClientFile keeps us inside the directory.
-    return m_tokensDir + "/" + name + ".json";
-}
-
-bool TokenStore::writeClientFile(const std::string& name,
-                                 const std::string& token,
-                                 const std::string& endpointPath) const
-{
-    if (!isSafeName(name)) return false;
-
     json j;
+    j["version"] = 1;
     j["name"] = name;
     j["token"] = token;
-    j["endpoint"] = endpointPath;
+    j["issued_at"] = issuedAt;
 
     std::error_code ec;
-    fs::create_directories(m_tokensDir, ec);
+    fs::create_directories(fs::path(path).parent_path(), ec);
     if (ec) return false;
 
-    // Belt-and-braces: even if isSafeName() somehow lets a traversal
-    // through, weldcanonical paths and refuse to write outside the
-    // tokens dir. Use weakly_canonical because the target file may not
-    // exist yet at this point.
-    const fs::path target = fs::weakly_canonical(fs::path(clientFilePath(name)));
-    const fs::path root   = fs::weakly_canonical(fs::path(m_tokensDir));
-    const auto rel = fs::relative(target, root, ec);
-    if (ec || rel.empty() || *rel.begin() == "..") return false;
-
-    const std::string path = clientFilePath(name);
     std::ofstream ofs(path, std::ios::trunc);
     if (!ofs) return false;
     ofs << j.dump(4) << "\n";
@@ -210,52 +154,99 @@ bool TokenStore::writeClientFile(const std::string& name,
     ofs.close();
     // Tokens are credentials; force restrictive perms regardless of
     // umask so we never accidentally create world/group-readable
-    // credential files. POSIX-only — fine, the daemon doesn't run on
-    // Windows.
+    // credential files.
     ::chmod(path.c_str(), S_IRUSR | S_IWUSR);
     return true;
 }
 
-// ── Persistence ────────────────────────────────────────────────────────────
+} // namespace
 
-std::vector<std::pair<std::string, TokenStore::Entry>>
-TokenStore::loadDb() const
+// -- issue / revoke / list --------------------------------------------------
+
+std::optional<std::string>
+TokenStore::issueToken(const std::string& name,
+                       const std::string& expiresAt,
+                       bool localOnly,
+                       bool replace)
 {
-    std::vector<std::pair<std::string, Entry>> out;
-    std::ifstream ifs(m_dbPath);
-    if (!ifs) return out;
+    if (!isSafeName(name)) return std::nullopt;
 
-    json obj;
-    try { obj = json::parse(ifs); }
-    catch (...) { return out; }
-    if (!obj.is_object()) return out;
+    DaemonState s = loadOrInit();
+    auto it = std::find_if(s.tokens.begin(), s.tokens.end(),
+        [&](const TokenEntry& e) { return e.name == name; });
+    if (it != s.tokens.end()) {
+        if (!replace) return std::nullopt;
+        s.tokens.erase(it);
+    }
 
-    for (auto it = obj.begin(); it != obj.end(); ++it) {
-        if (!it.value().is_object()) continue;
-        Entry e;
-        e.name     = it.value().value("name", std::string{});
-        e.issuedAt = it.value().value("issued_at", std::string{});
-        out.emplace_back(it.key(), std::move(e));
+    const std::string raw = generateToken();
+    const std::string issuedAt = currentUtcIso8601();
+
+    TokenEntry e;
+    e.name      = name;
+    e.hash      = hashToken(raw);
+    e.issuedAt  = issuedAt;
+    e.expiresAt = expiresAt;
+    e.localOnly = localOnly;
+    s.tokens.push_back(e);
+
+    if (!persistTokens(s)) return std::nullopt;
+    if (!writeRawTokenFile(rawTokenFilePath(name), name, raw, issuedAt))
+        return std::nullopt;
+
+    return raw;
+}
+
+bool TokenStore::revokeToken(const std::string& name)
+{
+    if (!isSafeName(name)) return false;
+
+    DaemonState s = loadOrInit();
+    const auto before = s.tokens.size();
+    s.tokens.erase(
+        std::remove_if(s.tokens.begin(), s.tokens.end(),
+                       [&](const TokenEntry& e) { return e.name == name; }),
+        s.tokens.end());
+    if (s.tokens.size() == before) return false;
+    if (!persistTokens(s)) return false;
+
+    // Best-effort remove the operator-copyable raw file. It may already
+    // be gone (the operator deleted it post-copy, by design).
+    std::error_code ec;
+    fs::remove(fs::path(rawTokenFilePath(name)), ec);
+    return true;
+}
+
+std::vector<IssuedToken> TokenStore::listTokens() const
+{
+    std::vector<IssuedToken> out;
+    DaemonState s = DaemonStateFile::read();
+    out.reserve(s.tokens.size());
+    for (const auto& e : s.tokens) {
+        std::error_code ec;
+        const bool present = fs::exists(fs::path(rawTokenFilePath(e.name)), ec);
+        out.push_back({e.name, e.issuedAt, e.expiresAt, e.localOnly, present});
     }
     return out;
 }
 
-bool TokenStore::saveDb(
-    const std::vector<std::pair<std::string, Entry>>& db) const
+std::optional<std::string>
+TokenStore::lookupByToken(const std::string& token,
+                          const std::string& transportProtocol) const
 {
-    json obj = json::object();
-    for (const auto& [hash, e] : db) {
-        obj[hash] = { {"name", e.name}, {"issued_at", e.issuedAt} };
+    const std::string h = hashToken(token);
+    DaemonState s = DaemonStateFile::read();
+    for (const auto& e : s.tokens) {
+        if (e.hash != h) continue;
+        if (isExpired(e.expiresAt))                 return std::nullopt;
+        if (e.localOnly && transportProtocol != "local")
+            return std::nullopt;
+        return e.name;
     }
-    std::error_code ec;
-    fs::create_directories(fs::path(m_dbPath).parent_path(), ec);
-    std::ofstream ofs(m_dbPath, std::ios::trunc);
-    if (!ofs) return false;
-    ofs << obj.dump(4) << "\n";
-    if (!ofs.good()) return false;
-    ofs.close();
-    // tokens.db carries the digest of every active token — set 0600
-    // so umask can't widen it accidentally.
-    ::chmod(m_dbPath.c_str(), S_IRUSR | S_IWUSR);
-    return true;
+    return std::nullopt;
+}
+
+std::string TokenStore::rawTokenFilePath(const std::string& name) const
+{
+    return m_tokensDir + "/" + name + ".json";
 }
