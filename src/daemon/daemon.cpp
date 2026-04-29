@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <optional>
 #include <random>
 #include <string>
 #include <vector>
@@ -66,7 +67,12 @@ namespace {
 // No "inheritance" here. Each module's transports are independent;
 // nothing about core_service's set leaks into capability_module's.
 // The CLI's `--module-transport` flags drive the input directly.
-LogosTransportSet buildTransportSet(
+//
+// Returns std::nullopt if any non-local listener fails to acquire a
+// port. The caller is expected to abort daemon startup — silently
+// advertising port=0 in daemon.json (the previous behaviour) is
+// worse: clients pick up an unreachable endpoint and time out.
+std::optional<LogosTransportSet> buildTransportSet(
     const std::vector<TransportInfo>& infos,
     const std::string& moduleName)
 {
@@ -80,6 +86,7 @@ LogosTransportSet buildTransportSet(
                 fprintf(stderr,
                         "[%s] Failed to allocate ephemeral port for %s\n",
                         moduleName.c_str(), src.protocol.c_str());
+                return std::nullopt;
             }
         }
 
@@ -190,11 +197,25 @@ int Daemon::start(int argc, char* argv[], const std::vector<std::string>& module
                    : it->second;
     };
 
-    LogosTransportSet coreTransports = buildTransportSet(
+    auto coreTransportsOpt = buildTransportSet(
         getModuleInfos("core_service"), "core_service");
+    if (!coreTransportsOpt) {
+        fprintf(stderr,
+                "Daemon startup aborted: failed to build core_service transport set "
+                "(see prior log lines for which listener failed).\n");
+        return 1;
+    }
+    LogosTransportSet coreTransports = std::move(*coreTransportsOpt);
 
-    LogosTransportSet capabilityTransports = buildTransportSet(
+    auto capabilityTransportsOpt = buildTransportSet(
         getModuleInfos("capability_module"), "capability_module");
+    if (!capabilityTransportsOpt) {
+        fprintf(stderr,
+                "Daemon startup aborted: failed to build capability_module transport set "
+                "(see prior log lines for which listener failed).\n");
+        return 1;
+    }
+    LogosTransportSet capabilityTransports = std::move(*capabilityTransportsOpt);
 
     // Register capability_module's transports with the runtime BEFORE
     // logos_core_start launches the child subprocess. The child reads

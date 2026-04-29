@@ -190,9 +190,26 @@ TokenStore::issueToken(const std::string& name,
     e.localOnly = localOnly;
     s.tokens.push_back(e);
 
-    if (!persistTokens(s)) return std::nullopt;
+    // Write order matters for atomicity:
+    //   1. raw file FIRST — its absence is recoverable (operator can
+    //      `revoke-token <name>` then re-issue), and there's no
+    //      authentication impact while it's missing.
+    //   2. daemon.json with the new hash entry SECOND — only after
+    //      the raw file is on disk. If we wrote daemon.json first
+    //      and then raw-file write failed, the hash entry would be
+    //      stranded: validators would accept the token but no
+    //      operator-readable copy of the raw value exists.
+    //
+    // If step 1 fails, abort cleanly: nothing was committed.
+    // If step 2 fails, roll back the raw file we just wrote so
+    // we don't leave an unreferenced credential file behind.
     if (!writeRawTokenFile(rawTokenFilePath(name), name, raw, issuedAt))
         return std::nullopt;
+    if (!persistTokens(s)) {
+        std::error_code ec;
+        fs::remove(fs::path(rawTokenFilePath(name)), ec);
+        return std::nullopt;
+    }
 
     return raw;
 }

@@ -1,6 +1,5 @@
 #include "client.h"
 #include "../config.h"
-#include "client_connection.h"
 #include "client_state.h"
 
 #include <logos_api.h>

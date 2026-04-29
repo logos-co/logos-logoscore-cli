@@ -1,9 +1,5 @@
 #include "config.h"
 #include <QDir>
-#include <QFile>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QStandardPaths>
 #include <cstdlib>
 
 namespace {

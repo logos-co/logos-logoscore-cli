@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <ctime>
 #include <iomanip>
+#include <limits>
 #include <regex>
 #include <sstream>
 
@@ -37,14 +38,35 @@ std::optional<std::string> resolveExpires(const std::string& s)
     static const std::regex relRe(R"(^(\d+)([smhd])$)");
     std::smatch m;
     if (std::regex_match(s, m, relRe)) {
-        const long n = std::stol(m[1].str());
+        // The regex bounds the digit-run, but a value like
+        // "999999999999999999999d" is still well-formed under the
+        // regex and overflows long. std::stol throws std::out_of_range
+        // for those, which would otherwise propagate up and crash
+        // the CLI. Map any parse / range failure to nullopt and let
+        // the caller surface a clean INVALID_EXPIRES error.
+        long n = 0;
+        try {
+            n = std::stol(m[1].str());
+        } catch (const std::exception&) {
+            return std::nullopt;
+        }
         const char suffix = m[2].str()[0];
         long seconds = 0;
+        // Compute seconds with overflow-safe multiplication: bail if
+        // `n * factor` would exceed LONG_MAX. (Once we fold into a
+        // chrono::seconds the math wraps to a small offset and we
+        // emit a misleading deadline.)
+        auto checkedMul = [](long a, long b, long& out) {
+            if (a < 0 || b <= 0) return false;
+            if (a > std::numeric_limits<long>::max() / b) return false;
+            out = a * b;
+            return true;
+        };
         switch (suffix) {
         case 's': seconds = n; break;
-        case 'm': seconds = n * 60; break;
-        case 'h': seconds = n * 3600; break;
-        case 'd': seconds = n * 86400; break;
+        case 'm': if (!checkedMul(n, 60, seconds))    return std::nullopt; break;
+        case 'h': if (!checkedMul(n, 3600, seconds))  return std::nullopt; break;
+        case 'd': if (!checkedMul(n, 86400, seconds)) return std::nullopt; break;
         default:  return std::nullopt;
         }
         const auto now = std::chrono::system_clock::now()

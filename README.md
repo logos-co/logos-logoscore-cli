@@ -183,14 +183,14 @@ explicitly passed:
 
 ```bash
 # Refused — would expose tokens.
-logoscore -D --transport=tcp --tcp-host=0.0.0.0 --tcp-port=6000
+logoscore -D --module-transport core_service=tcp,host=0.0.0.0,port=6000
 
 # Use TLS instead.
-logoscore -D --transport=tcp_ssl --tcp-ssl-host=0.0.0.0 --tcp-ssl-port=6443 \
-            --ssl-cert=/path/cert.pem --ssl-key=/path/key.pem
+logoscore -D \
+    --module-transport core_service=tcp_ssl,host=0.0.0.0,port=6443,cert=/path/cert.pem,key=/path/key.pem
 
 # Or, for trusted-network test setups only:
-logoscore -D --transport=tcp --tcp-host=0.0.0.0 --tcp-port=6000 --insecure-tcp
+logoscore -D --module-transport core_service=tcp,host=0.0.0.0,port=6000 --insecure-tcp
 ```
 
 #### Parallel Daemons (`--config-dir`)
@@ -215,63 +215,52 @@ Resolution order: `--config-dir` → `LOGOSCORE_CONFIG_DIR` env var → `~/.logo
 
 #### Transports
 
-By default the daemon only exposes `core_service` over a local Unix socket (via
-QLocalSocket), which means clients must run on the same host. To reach a daemon
-from another machine, a container, or across NAT, open a network transport:
+By default the daemon binds each well-known module (`core_service`,
+`capability_module`) to a local Unix socket only — clients must run on the
+same host. To reach the daemon from another machine, a container, or
+across NAT, configure a network listener per module via `--module-transport`:
+
+```
+--module-transport NAME=PROTOCOL[,k=v[,k=v...]]
+```
+
+`NAME` is the module (`core_service` or `capability_module`); `PROTOCOL`
+is `local`, `tcp`, or `tcp_ssl`. The optional `k=v` pairs configure the
+protocol: `host`, `port`, `codec` (`json` default | `cbor`), and
+`ca` / `cert` / `key` / `verify_peer` for `tcp_ssl`. The flag is
+repeatable — each appearance adds one more listener to the named module.
 
 ```bash
-# TCP — plaintext, good for localhost or trusted networks
+# TCP — plaintext, good for localhost or trusted networks. Both modules
+# need their own listener so the host-side client can dial each.
 logoscore -D -m ./modules \
-    --transport=tcp --tcp-host=0.0.0.0 --tcp-port=6000
+    --module-transport core_service=local \
+    --module-transport core_service=tcp,host=127.0.0.1,port=6000 \
+    --module-transport capability_module=local \
+    --module-transport capability_module=tcp,host=127.0.0.1,port=6001
 
-# TCP + TLS — wire-encrypted; requires cert/key/CA PEM files
+# TCP + TLS — wire-encrypted; cert + key required, CA optional.
 logoscore -D -m ./modules \
-    --transport=tcp_ssl --tcp-ssl-host=0.0.0.0 --tcp-ssl-port=6443 \
-    --ssl-cert=/etc/logoscore/cert.pem \
-    --ssl-key=/etc/logoscore/key.pem \
-    --ssl-ca=/etc/logoscore/ca.pem
+    --module-transport core_service=local \
+    --module-transport "core_service=tcp_ssl,host=0.0.0.0,port=6443,cert=/etc/logoscore/cert.pem,key=/etc/logoscore/key.pem,ca=/etc/logoscore/ca.pem" \
+    --module-transport capability_module=local \
+    --module-transport "capability_module=tcp_ssl,host=0.0.0.0,port=6444,cert=/etc/logoscore/cert.pem,key=/etc/logoscore/key.pem,ca=/etc/logoscore/ca.pem"
 
-# Multi-transport: publish on several at once. `--transport` is repeatable;
-# each advertises a separate endpoint in daemon.json and clients pick one.
-logoscore -D -m ./modules \
-    --transport=local \
-    --transport=tcp_ssl --tcp-ssl-port=6443 \
-    --ssl-cert=... --ssl-key=... --ssl-ca=...
+# Defaults: omit --module-transport entirely and the well-known modules
+# get a single `local` listener each. Most local-development setups just
+# want this.
+logoscore -D -m ./modules
 ```
 
-Per-transport codec (`--tcp-codec` / `--tcp-ssl-codec`) picks the wire format:
-`json` (default, debuggable) or `cbor` (compact).
+##### Client-side dial spec
 
-##### Client-side transport overrides
-
-Clients pick which transport to dial and can override the endpoint the daemon
-advertised — useful when the reachable address differs from what the daemon
-bound to (docker `-p` port-forwarding, NAT, SSH tunnels):
-
-```
-  --client-transport <name>      Which advertised transport to use (local|tcp|tcp_ssl).
-                                 Default: local if offered, otherwise error.
-  --client-tcp-host <host>       Dial this host instead of the advertised one.
-  --client-tcp-port <port>       Dial this port instead of the advertised one.
-  --client-codec <json|cbor>     Require this codec. Aborts if it doesn't match
-                                 what the daemon advertised (avoids mixed-codec
-                                 corruption). Default: whatever daemon chose.
-  --no-verify-peer               Skip TLS peer verification (development only).
-```
-
-Example — connect from a host to a daemon running in docker with `-p 8080:6000`:
-
-```bash
-# On the daemon's host: start inside a container
-docker run -p 8080:6000 logoscore:latest \
-    daemon --transport=tcp --tcp-host=0.0.0.0 --tcp-port=6000 -m /mods
-
-# From the client host: the daemon.json advertises 6000 (container-internal);
-# we dial the host-mapped 8080 instead.
-logoscore --client-transport=tcp --client-tcp-port=8080 status
-```
-
-Same flags work on all client subcommands: `load-module`, `call`, `watch`, etc.
+The client never reads `daemon/daemon.json` — it dials whatever
+`<configDir>/client/client.json` says. The daemon auto-emits one for the
+local same-host case at boot (LocalSocket pointing at the daemon's
+freshly-issued `auto.json` token). For remote clients (docker `-p`
+port-forwarding, NAT, SSH tunnels) hand-write `client.json` with the
+right host:port for each module — see the layout block at the top of
+this section.
 
 #### Agent / Script Example
 

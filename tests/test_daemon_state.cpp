@@ -13,18 +13,40 @@ namespace fs = std::filesystem;
 class DaemonStateTest : public ::testing::Test {
 protected:
     std::string origHome;
+    std::string origConfigDir;
+    bool        origConfigDirSet = false;
     std::string testDir;
 
     void SetUp() override {
         testDir = (fs::temp_directory_path() / ("logoscore_test_state_" + std::to_string(getpid()))).string();
         fs::create_directories(testDir + "/.logoscore");
+
+        // Cover all three layers Config::configDir() consults so the
+        // tests can never escape into the user's real ~/.logoscore.
+        // HOME alone isn't sufficient: an env-var override
+        // (LOGOSCORE_CONFIG_DIR) or a process-wide setter from a
+        // sibling test would shadow it. Save+restore each layer.
         const char* home = std::getenv("HOME");
         origHome = home ? home : "";
         setenv("HOME", testDir.c_str(), 1);
+
+        const char* cd = std::getenv("LOGOSCORE_CONFIG_DIR");
+        origConfigDirSet = cd != nullptr;
+        origConfigDir = origConfigDirSet ? cd : "";
+        unsetenv("LOGOSCORE_CONFIG_DIR");
+
+        // Process-wide override (set by --config-dir in main.cpp). A
+        // previous test in the same binary may have left one behind.
+        Config::setConfigDir(QString());
     }
 
     void TearDown() override {
         setenv("HOME", origHome.c_str(), 1);
+        if (origConfigDirSet)
+            setenv("LOGOSCORE_CONFIG_DIR", origConfigDir.c_str(), 1);
+        else
+            unsetenv("LOGOSCORE_CONFIG_DIR");
+        Config::setConfigDir(QString());
         std::error_code ec;
         fs::remove_all(testDir, ec);
     }

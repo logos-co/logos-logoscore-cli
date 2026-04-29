@@ -117,7 +117,6 @@ set(CLI_SOURCES
 
     # Client path
     src/client/client.cpp
-    src/client/client_connection.cpp
     src/client/client_state.cpp
     src/client/output.cpp
     src/client/commands/command.cpp

@@ -1,7 +1,6 @@
 #include <CLI/CLI.hpp>
 #include <QCoreApplication>
 #include <QDebug>
-#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
