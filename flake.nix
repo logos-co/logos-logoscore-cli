@@ -78,18 +78,19 @@
             ];
 
             buildInputs = [
-              pkgs.qt6.qtbase
-              pkgs.qt6.qtremoteobjects
-              pkgs.nlohmann_json
+              # cppSdk propagates Qt6, Boost, OpenSSL, and nlohmann_json
+              # through `propagatedBuildInputs` on its symlinkJoin, so
+              # we don't list them explicitly here. CMake's
+              # `find_package(logos-cpp-sdk)` then re-runs
+              # `find_dependency(...)` against those propagated entries
+              # at configure time and stitches them into the imported
+              # target. If the SDK's propagation set ever shrinks,
+              # missing find_package calls in our own CMakeLists
+              # (OpenSSL, nlohmann_json, …) will surface clearly.
+              cppSdk
               pkgs.stduuid
               pkgs.cli11
               pkgs.gtest
-              # SDK transitive deps. The SDK's CMake Config does
-              # find_dependency(Boost / OpenSSL / nlohmann_json) so
-              # downstream consumers (us) need them on the package
-              # search path at configure time.
-              pkgs.boost
-              pkgs.openssl
             ];
 
             cmakeFlags = [
@@ -192,10 +193,10 @@
               pkgs.gtest
               liblogosLib
               moduleClientLib
-              # SDK transitive deps: same set the .#default build needs,
-              # because this derivation also compiles the logoscore CLI.
-              pkgs.boost
-              pkgs.openssl
+              # cppSdk propagates Qt6, Boost, OpenSSL, nlohmann_json
+              # via its symlinkJoin's propagatedBuildInputs — see the
+              # `build` derivation above for the rationale.
+              cppSdk
             ];
 
             cmakeFlags = [
@@ -266,15 +267,13 @@
             ];
 
             buildInputs = [
-              pkgs.qt6.qtbase
-              pkgs.qt6.qtremoteobjects
-              pkgs.nlohmann_json
+              # cppSdk propagates Qt6, Boost, OpenSSL, nlohmann_json
+              # via its symlinkJoin's propagatedBuildInputs — see the
+              # `build` derivation above for the rationale.
+              cppSdk
               pkgs.gtest
               pkgs.stduuid
               pkgs.cli11
-              # SDK transitive deps: same set the .#default build needs.
-              pkgs.boost
-              pkgs.openssl
             ];
 
             cmakeFlags = [
