@@ -40,17 +40,34 @@ protected:
         fs::remove_all(dir, ec);
     }
 
-    TokenStore makeStore() { return TokenStore(dir.string()); }
+    TokenStore makeStore() { return TokenStore(); }
+
+    // Test helper: assert issue succeeded and return the raw token.
+    // Most tests don't care about the new error-code surface; they
+    // want "give me a token" semantics.
+    static std::string mustIssue(
+        TokenStore& store,
+        const std::string& name,
+        const std::string& expiresAt = {},
+        bool localOnly = false,
+        bool replace = false)
+    {
+        auto r = store.issueToken(name, expiresAt, localOnly, replace);
+        EXPECT_EQ(r.status, TokenStore::IssueStatus::Ok)
+            << "expected Ok issuing token '" << name
+            << "', got status=" << static_cast<int>(r.status);
+        return r.token;
+    }
 };
 
 TEST_F(TokenStoreTest, IssueThenLookupByToken)
 {
     TokenStore store = makeStore();
-    auto t = store.issueToken("alice");
-    ASSERT_TRUE(t.has_value());
-    EXPECT_FALSE(t->empty());
+    auto r = store.issueToken("alice");
+    ASSERT_EQ(r.status, TokenStore::IssueStatus::Ok);
+    EXPECT_FALSE(r.token.empty());
 
-    auto who = store.lookupByToken(*t, "local");
+    auto who = store.lookupByToken(r.token, "local");
     ASSERT_TRUE(who.has_value());
     EXPECT_EQ(*who, "alice");
 
@@ -60,37 +77,57 @@ TEST_F(TokenStoreTest, IssueThenLookupByToken)
 TEST_F(TokenStoreTest, IssueDuplicateFailsWithoutReplace)
 {
     TokenStore store = makeStore();
-    ASSERT_TRUE(store.issueToken("alice").has_value());
-    EXPECT_FALSE(store.issueToken("alice").has_value());
+    EXPECT_EQ(store.issueToken("alice").status, TokenStore::IssueStatus::Ok);
+    EXPECT_EQ(store.issueToken("alice").status,
+              TokenStore::IssueStatus::AlreadyExists);
+}
+
+TEST_F(TokenStoreTest, Issue_InvalidNameRejected)
+{
+    TokenStore store = makeStore();
+    // Path-traversal attempt — must surface as InvalidName, not
+    // AlreadyExists / IoError.
+    EXPECT_EQ(store.issueToken("../etc/passwd").status,
+              TokenStore::IssueStatus::InvalidName);
+    EXPECT_EQ(store.issueToken("").status,
+              TokenStore::IssueStatus::InvalidName);
 }
 
 TEST_F(TokenStoreTest, IssueReplaceRotatesToken)
 {
     TokenStore store = makeStore();
-    const auto first = store.issueToken("alice").value();
-    auto second = store.issueToken("alice", /*expiresAt=*/{}, /*localOnly=*/false, /*replace=*/true);
-    ASSERT_TRUE(second.has_value());
-    EXPECT_NE(first, *second);
+    const auto first = mustIssue(store, "alice");
+    auto second = store.issueToken("alice", /*expiresAt=*/{},
+                                   /*localOnly=*/false, /*replace=*/true);
+    ASSERT_EQ(second.status, TokenStore::IssueStatus::Ok);
+    EXPECT_NE(first, second.token);
 
     EXPECT_FALSE(store.lookupByToken(first, "local").has_value());
-    EXPECT_EQ(store.lookupByToken(*second, "local").value(), "alice");
+    EXPECT_EQ(store.lookupByToken(second.token, "local").value(), "alice");
 }
 
 TEST_F(TokenStoreTest, Revoke)
 {
     TokenStore store = makeStore();
-    const auto tok = store.issueToken("bob").value();
-    EXPECT_TRUE(store.revokeToken("bob"));
+    const auto tok = mustIssue(store, "bob");
+    EXPECT_EQ(store.revokeToken("bob"), TokenStore::RevokeStatus::Ok);
     EXPECT_FALSE(store.lookupByToken(tok, "local").has_value());
-    EXPECT_FALSE(store.revokeToken("bob"));
+    EXPECT_EQ(store.revokeToken("bob"), TokenStore::RevokeStatus::NotFound);
+}
+
+TEST_F(TokenStoreTest, Revoke_InvalidNameRejected)
+{
+    TokenStore store = makeStore();
+    EXPECT_EQ(store.revokeToken("../etc/passwd"),
+              TokenStore::RevokeStatus::InvalidName);
 }
 
 TEST_F(TokenStoreTest, ListIncludesEveryIssuedName)
 {
     TokenStore store = makeStore();
-    store.issueToken("alice");
-    store.issueToken("bob");
-    store.issueToken("carol");
+    mustIssue(store, "alice");
+    mustIssue(store, "bob");
+    mustIssue(store, "carol");
 
     auto entries = store.listTokens();
     std::vector<std::string> names;
@@ -102,7 +139,7 @@ TEST_F(TokenStoreTest, ListIncludesEveryIssuedName)
 TEST_F(TokenStoreTest, RawTokenFile_ContainsRawToken)
 {
     TokenStore store = makeStore();
-    const auto tok = store.issueToken("alice").value();
+    const auto tok = mustIssue(store, "alice");
     const auto path = store.rawTokenFilePath("alice");
     std::ifstream ifs(path);
     ASSERT_TRUE(ifs) << "expected raw token file at " << path;
@@ -118,7 +155,7 @@ TEST_F(TokenStoreTest, RawFileMissing_ValidationStillSucceeds)
     // the daemon side, validation must continue to work — the hash
     // entry in tokens.json is what authenticates from then on.
     TokenStore store = makeStore();
-    const auto tok = store.issueToken("alice").value();
+    const auto tok = mustIssue(store, "alice");
     const auto raw = store.rawTokenFilePath("alice");
     ASSERT_TRUE(fs::exists(raw));
     fs::remove(raw);
@@ -132,7 +169,7 @@ TEST_F(TokenStoreTest, PersistenceRoundTrip)
     std::string tok;
     {
         TokenStore store = makeStore();
-        tok = store.issueToken("alice").value();
+        tok = mustIssue(store, "alice");
     }
     TokenStore store2 = makeStore();
     auto who = store2.lookupByToken(tok, "local");
@@ -153,7 +190,7 @@ TEST_F(TokenStoreTest, HashIsStable)
 TEST_F(TokenStoreTest, LocalOnly_RejectedOverNonLocal)
 {
     TokenStore store = makeStore();
-    const auto tok = store.issueToken("auto", /*expiresAt=*/{}, /*localOnly=*/true).value();
+    const auto tok = mustIssue(store, "auto", /*expiresAt=*/{}, /*localOnly=*/true);
 
     EXPECT_TRUE(store.lookupByToken(tok, "local").has_value());
     EXPECT_FALSE(store.lookupByToken(tok, "tcp").has_value());
@@ -163,7 +200,7 @@ TEST_F(TokenStoreTest, LocalOnly_RejectedOverNonLocal)
 TEST_F(TokenStoreTest, NotLocalOnly_AcceptedOverEveryTransport)
 {
     TokenStore store = makeStore();
-    const auto tok = store.issueToken("alice").value();
+    const auto tok = mustIssue(store, "alice");
 
     EXPECT_TRUE(store.lookupByToken(tok, "local").has_value());
     EXPECT_TRUE(store.lookupByToken(tok, "tcp").has_value());
@@ -175,7 +212,7 @@ TEST_F(TokenStoreTest, Expired_Rejected)
     TokenStore store = makeStore();
     // 1-second deadline in the past.
     const auto pastDeadline = std::string("2000-01-01T00:00:00Z");
-    const auto tok = store.issueToken("bob", pastDeadline).value();
+    const auto tok = mustIssue(store, "bob", pastDeadline);
     EXPECT_FALSE(store.lookupByToken(tok, "local").has_value());
 }
 
@@ -184,8 +221,30 @@ TEST_F(TokenStoreTest, NotExpired_Accepted)
     TokenStore store = makeStore();
     // Far-future deadline.
     const auto futureDeadline = std::string("2099-12-31T23:59:59Z");
-    const auto tok = store.issueToken("bob", futureDeadline).value();
+    const auto tok = mustIssue(store, "bob", futureDeadline);
     EXPECT_TRUE(store.lookupByToken(tok, "local").has_value());
+}
+
+TEST_F(TokenStoreTest, ExpiresAt_MalformedFailsClosed)
+{
+    // Hand-edit / corruption / partial-write of tokens.json that
+    // leaves expires_at unparseable. The lookup path must reject the
+    // entry rather than silently treat it as non-expiring (fail
+    // closed). Issue a fresh token with a valid expiry, then patch
+    // tokens.json on disk to a bad value and re-read.
+    TokenStore store = makeStore();
+    const auto tok = mustIssue(store, "dave",
+        std::string("2099-01-01T00:00:00Z"));
+    ASSERT_TRUE(store.lookupByToken(tok, "local").has_value());
+
+    auto entries = TokensFile::read();
+    ASSERT_EQ(entries.size(), 1u);
+    entries[0].expiresAt = "not-a-real-date";
+    ASSERT_TRUE(TokensFile::write(entries));
+
+    EXPECT_FALSE(store.lookupByToken(tok, "local").has_value())
+        << "malformed expires_at must reject the token, not pass through "
+           "as non-expiring";
 }
 
 // -- TokensFile direct round-trip -----------------------------------------

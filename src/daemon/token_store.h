@@ -81,26 +81,64 @@ struct IssuedToken {
 
 class TokenStore {
 public:
-    explicit TokenStore(std::string configDir);
+    // Constructor takes no arguments — paths come from the
+    // process-global Config (Config::daemonTokensDir() for the raw
+    // per-token files, Config::daemonTokensPath() for the hashed
+    // index). A previous design accepted an explicit configDir, but
+    // TokensFile already routes through Config::*, so divergence
+    // between the two would silently split raw files from hashes
+    // into different trees. Tests can still isolate state by setting
+    // LOGOSCORE_CONFIG_DIR or calling Config::setConfigDir() in
+    // their fixtures.
+    TokenStore();
 
-    // Generate a fresh random token, add it under `name`. Returns the raw
-    // token string on success. Persists `{name, hash, issued_at,
-    // expires_at, local_only}` to daemon/tokens.json AND writes
-    // the raw token to daemon/tokens/<name>.json.
+    // Outcome of `issueToken`. CLI dispatch keys off `status`; the
+    // `token` field is populated only on `Ok`. Distinguishing
+    // `AlreadyExists` from `IoError` matters because operators see
+    // very different fixes — re-run with `--replace` vs check
+    // disk/permissions.
+    enum class IssueStatus {
+        Ok,
+        InvalidName,    // name failed isSafeName (slashes, traversal, ...)
+        AlreadyExists,  // name has a row in tokens.json and replace==false
+        IoError,        // raw-file or tokens.json write failed
+    };
+    struct IssueResult {
+        IssueStatus status;
+        std::string token;   // only valid when status == Ok
+    };
+
+    // Generate a fresh random token, add it under `name`. Persists
+    // `{name, hash, issued_at, expires_at, local_only}` to
+    // daemon/tokens.json AND writes the raw token to
+    // daemon/tokens/<name>.json on success.
     //
     // `expiresAt` may be empty (non-expiring) or an ISO 8601 absolute
     // deadline. `localOnly` constrains the token to the LocalSocket
     // transport at validation time. If `replace` is false and `name`
-    // already has an entry in tokens.json, returns std::nullopt.
-    std::optional<std::string> issueToken(const std::string& name,
-                                          const std::string& expiresAt = {},
-                                          bool localOnly = false,
-                                          bool replace = false);
+    // already exists, returns `AlreadyExists`. I/O failures (perm
+    // denied, disk full, etc.) return `IoError` so the CLI can
+    // surface a different exit code than "name collision".
+    IssueResult issueToken(const std::string& name,
+                           const std::string& expiresAt = {},
+                           bool localOnly = false,
+                           bool replace = false);
+
+    // Outcome of `revokeToken`. Same separation rationale as
+    // `IssueResult`: CLI shouldn't mask a permission/disk failure
+    // as "no such token".
+    enum class RevokeStatus {
+        Ok,
+        InvalidName,
+        NotFound,
+        IoError,
+    };
 
     // Remove the token for `name` from daemon/tokens.json and
-    // unlink daemon/tokens/<name>.json (best-effort). Returns true if
-    // an entry was removed from tokens.json.
-    bool revokeToken(const std::string& name);
+    // unlink daemon/tokens/<name>.json (best-effort). Raw-file
+    // unlink failures are NOT IoError — by design the operator may
+    // have already deleted that file post-copy.
+    RevokeStatus revokeToken(const std::string& name);
 
     // List every entry in daemon/tokens.json. Hashes are not
     // returned. `rawFilePresent` is filled in by stat()ing each
@@ -128,10 +166,6 @@ public:
     // going through the file path.
     static std::string hashToken(const std::string& token);
 
-private:
-    std::string m_configDir;     // <CONFIG_DIR>
-    std::string m_daemonDir;     // <CONFIG_DIR>/daemon
-    std::string m_tokensDir;     // <CONFIG_DIR>/daemon/tokens
 };
 
 #endif // LOGOSCORE_TOKEN_STORE_H

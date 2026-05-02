@@ -43,8 +43,14 @@ static std::vector<std::string> parseParams(const std::string& paramsStr) {
                 quoteChar = c;
                 hasQuoted = true;
             } else if (c == ',') {
-                pushArg();
+                // Set `seenComma` BEFORE flushing so the segment we
+                // just consumed (which may be empty for a leading
+                // comma like `,a` or back-to-back `,,`) gets pushed
+                // as an explicit empty arg. Setting after pushArg
+                // would drop the *first* empty position in those
+                // cases — e.g. `,a` becomes ["a"] instead of ["", "a"].
                 seenComma = true;
+                pushArg();
             } else {
                 current += c;
             }

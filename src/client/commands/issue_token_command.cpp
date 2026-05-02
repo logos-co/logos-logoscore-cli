@@ -124,13 +124,29 @@ int IssueTokenCommand::execute(const std::vector<std::string>& args)
         return 1;
     }
 
-    TokenStore store(Config::configDir().toStdString());
-    auto maybeToken = store.issueToken(name, *resolvedExpiry, localOnly, replace);
-    if (!maybeToken) {
-        output().printError("TOKEN_EXISTS",
-            QString("Token '%1' already exists. Use --replace to overwrite.")
-                .arg(QString::fromStdString(name)));
-        return 3;
+    TokenStore store;
+    const auto outcome = store.issueToken(name, *resolvedExpiry, localOnly, replace);
+    switch (outcome.status) {
+        case TokenStore::IssueStatus::Ok:
+            break;
+        case TokenStore::IssueStatus::InvalidName:
+            output().printError("INVALID_NAME",
+                QString("Token name '%1' is invalid (must be 1-64 chars, "
+                        "alnum/dot/dash/underscore, no traversal).")
+                    .arg(QString::fromStdString(name)));
+            return 1;
+        case TokenStore::IssueStatus::AlreadyExists:
+            output().printError("TOKEN_EXISTS",
+                QString("Token '%1' already exists. Use --replace to overwrite.")
+                    .arg(QString::fromStdString(name)));
+            return 3;
+        case TokenStore::IssueStatus::IoError:
+            output().printError("IO_ERROR",
+                QString("Failed to persist token '%1' to disk. Check "
+                        "permissions/free space under %2.")
+                    .arg(QString::fromStdString(name),
+                         Config::daemonTokensDir()));
+            return 1;
     }
 
     const QString rawPath = QString::fromStdString(store.rawTokenFilePath(name));
@@ -138,7 +154,7 @@ int IssueTokenCommand::execute(const std::vector<std::string>& args)
     QJsonObject result;
     result["status"]    = "ok";
     result["name"]      = QString::fromStdString(name);
-    result["token"]     = QString::fromStdString(*maybeToken);
+    result["token"]     = QString::fromStdString(outcome.token);
     result["file"]      = rawPath;
     result["local_only"] = localOnly;
     if (!resolvedExpiry->empty())
@@ -149,7 +165,7 @@ int IssueTokenCommand::execute(const std::vector<std::string>& args)
     } else {
         output().printRaw(QString("Issued token for '%1'").arg(QString::fromStdString(name)));
         output().printRaw(QString("  file:  %1").arg(rawPath));
-        output().printRaw(QString("  token: %1").arg(QString::fromStdString(*maybeToken)));
+        output().printRaw(QString("  token: %1").arg(QString::fromStdString(outcome.token)));
         if (!resolvedExpiry->empty())
             output().printRaw(QString("  expires_at: %1").arg(QString::fromStdString(*resolvedExpiry)));
         if (localOnly)

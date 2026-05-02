@@ -56,7 +56,13 @@ std::optional<ClientModuleTransport> transportFromJson(const json& j)
     if (!j.is_object()) return std::nullopt;
     ClientModuleTransport t;
     t.protocol = j.value("transport", std::string{});
-    if (t.protocol.empty()) return std::nullopt;
+    // Strict allowlist — a typo in client/config.json's `transport`
+    // would otherwise default downstream to LocalSocket and the
+    // client would silently dial the wrong endpoint instead of
+    // failing the parse with a clear schema error.
+    if (t.protocol != "local"
+     && t.protocol != "tcp"
+     && t.protocol != "tcp_ssl") return std::nullopt;
     if (t.protocol != "local") {
         t.host = j.value("host", std::string{});
         const int rawPort = j.value("port", 0);

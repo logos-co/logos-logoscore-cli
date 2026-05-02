@@ -463,7 +463,20 @@ int main(int argc, char *argv[])
                 else if (k == "ca")    t.caFile = v;
                 else if (k == "cert")  t.certFile = v;
                 else if (k == "key")   t.keyFile = v;
-                else if (k == "verify_peer") t.verifyPeer = (v == "true" || v == "1");
+                else if (k == "verify_peer") {
+                    // Strict allowlist: a typo like `verify_peer=treu`
+                    // would otherwise silently match the false branch
+                    // and disable TLS peer verification, weakening
+                    // security without any visible signal.
+                    if      (v == "true"  || v == "1") t.verifyPeer = true;
+                    else if (v == "false" || v == "0") t.verifyPeer = false;
+                    else {
+                        std::cerr << "Error: --module-transport verify_peer '"
+                                  << v << "' must be one of true|false|1|0"
+                                  << std::endl;
+                        return 1;
+                    }
+                }
                 else if (k == "port") {
                     int parsedPort = 0;
                     try { parsedPort = std::stoi(v); }

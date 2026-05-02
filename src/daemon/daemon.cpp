@@ -268,17 +268,20 @@ int Daemon::start(int argc, char* argv[],
     const bool tokensFileWasMissing =
         !std::filesystem::exists(Config::daemonTokensPath().toStdString());
 
-    TokenStore tokenStore(Config::configDir().toStdString());
-    auto autoTokenRaw = tokenStore.issueToken("auto", /*expiresAt=*/{},
-                                              /*localOnly=*/true,
-                                              /*replace=*/true);
-    if (!autoTokenRaw) {
-        fprintf(stderr, "Failed to auto-issue local client token\n");
+    TokenStore tokenStore;
+    const auto autoTokenOutcome = tokenStore.issueToken("auto",
+                                                        /*expiresAt=*/{},
+                                                        /*localOnly=*/true,
+                                                        /*replace=*/true);
+    if (autoTokenOutcome.status != TokenStore::IssueStatus::Ok) {
+        fprintf(stderr, "Failed to auto-issue local client token (status=%d)\n",
+                static_cast<int>(autoTokenOutcome.status));
         return 1;
     }
+    const std::string autoTokenRaw = autoTokenOutcome.token;
 
     TokenManager::instance().saveToken("cli_client",
-                                       QString::fromStdString(*autoTokenRaw));
+                                       QString::fromStdString(autoTokenRaw));
 
     // 9. Write the live-instance state file. Carries the resolved
     //    transport endpoints (post-bind, with real ports), instanceId/
@@ -332,7 +335,7 @@ int Daemon::start(int argc, char* argv[],
     //     pointing at "auto.json" stays consistent with the freshly-issued
     //     auto token.
     if (!DaemonRuntimeStateFile::writeLocalClientArtifacts(
-            instanceId, *autoTokenRaw, state.startedAt, tokensFileWasMissing)) {
+            instanceId, autoTokenRaw, state.startedAt, tokensFileWasMissing)) {
         fprintf(stderr, "Warning: failed to write local client artifacts under %s\n",
                 Config::clientDir().toStdString().c_str());
     }

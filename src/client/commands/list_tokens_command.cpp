@@ -10,7 +10,7 @@
 
 int ListTokensCommand::execute(const std::vector<std::string>& /*args*/)
 {
-    TokenStore store(Config::configDir().toStdString());
+    TokenStore store;
     const auto issued = store.listTokens();
 
     QJsonArray arr;

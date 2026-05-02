@@ -55,7 +55,15 @@ std::optional<TransportInfo> transportFromJson(const json& j)
     if (!j.is_object()) return std::nullopt;
     TransportInfo t;
     t.protocol = j.value("protocol", std::string{});
-    if (t.protocol.empty()) return std::nullopt;
+    // Strict allowlist. An unknown protocol ("local2", "tcps", etc.)
+    // would otherwise default to LocalSocket downstream, silently
+    // misconfiguring the daemon (a typo in config.json would mean no
+    // TCP listener appears, with no visible diagnostic). Fail the
+    // parse so callers see "schema-invalid" instead of "looked fine,
+    // no listener bound".
+    if (t.protocol != "local"
+     && t.protocol != "tcp"
+     && t.protocol != "tcp_ssl") return std::nullopt;
     t.host = j.value("host", std::string{});
     const int rawPort = j.value("port", 0);
     if (rawPort < 0 || rawPort > 0xFFFF) return std::nullopt;
@@ -133,9 +141,14 @@ DaemonConfig daemonConfigFromJson(const json& obj)
     return cfg;
 }
 
-// Atomic write helper used for both config.json and state.json.
-// Writes to <path>.tmp, fsyncs implicitly via close, applies 0600,
-// then renames into place. Returns false on any I/O step.
+// Atomic *replace* helper used for both config.json and state.json.
+// Writes to <path>.tmp, applies 0600, then renames into place. The
+// rename is the atomic step — readers either see the pre-write file
+// or the new one, never a half-written state. We do NOT fsync, so
+// this isn't durable across power loss (close() flushes only
+// userspace buffers; OS page cache is still in flight). Callers that
+// need durability would need an explicit fsync(fd) on the temp file
+// plus a dir fsync after rename. Returns false on any I/O step.
 bool atomicWriteJson(const fs::path& path, const json& obj)
 {
     std::error_code ec;

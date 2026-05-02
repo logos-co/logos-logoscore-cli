@@ -110,9 +110,13 @@ bool TokensFile::write(const std::vector<TokenEntry>& tokens)
     for (const auto& t : tokens) arr.push_back(tokenEntryToJson(t));
     obj["tokens"] = std::move(arr);
 
-    // Atomic write: full content to <path>.tmp, fsync, rename to final.
-    // Avoids leaving a truncated tokens.json behind if the process is
-    // interrupted mid-write.
+    // Atomic *replace*: write full content to <path>.tmp, then rename
+    // to final. The rename is the atomic step — readers either see the
+    // pre-write file or the new one, never a half-written state.
+    // We do NOT fsync, so this isn't durable across power loss
+    // (close() flushes only userspace buffers; OS page cache is still
+    // in flight). Callers that need durability would need an explicit
+    // fsync(fd) on the temp file plus a dir fsync after rename.
     const fs::path tmp = path.string() + ".tmp";
     {
         std::ofstream ofs(tmp, std::ios::trunc);
@@ -170,13 +174,17 @@ bool isSafeName(const std::string& name) {
 }
 
 bool isExpired(const std::string& expiresAt) {
+    // Empty == "never expires" — the only documented way to opt out of
+    // expiry. Any non-empty value must parse cleanly; if it doesn't,
+    // we fail closed (treat the entry as expired) rather than fail
+    // open. Expiry is a security control, and a malformed `expires_at`
+    // (hand-edit, partial write, corruption) shouldn't silently
+    // upgrade a token to non-expiring. The CLI's `issue-token`
+    // validates the input when the operator types it; this path is
+    // the on-disk safety net.
     if (expiresAt.empty()) return false;
-    // Parse ISO 8601 UTC (e.g. "2026-12-31T23:59:59Z"). Anything that
-    // doesn't parse as exactly that shape is treated as non-expiring
-    // rather than rejected — the CLI is responsible for validation
-    // when the operator types the date; this path is the safety net.
     struct tm tm{};
-    if (!strptime(expiresAt.c_str(), "%Y-%m-%dT%H:%M:%SZ", &tm)) return false;
+    if (!strptime(expiresAt.c_str(), "%Y-%m-%dT%H:%M:%SZ", &tm)) return true;
     // timegm interprets `tm` as UTC.
     time_t deadline = timegm(&tm);
     return std::chrono::system_clock::to_time_t(
@@ -205,15 +213,17 @@ std::string TokenStore::hashToken(const std::string& token)
 
 // -- Construction -----------------------------------------------------------
 
-TokenStore::TokenStore(std::string configDir)
-    : m_configDir(std::move(configDir))
-    , m_daemonDir(m_configDir + "/daemon")
-    , m_tokensDir(m_daemonDir + "/tokens")
+TokenStore::TokenStore()
 {
+    // Both the raw-token dir and the hashed tokens.json live under
+    // the process-global Config dir. Materialize the dir up front so
+    // issueToken can write into it without first having to
+    // create_directories itself.
+    const std::string tokensDir = Config::daemonTokensDir().toStdString();
     std::error_code ec;
-    fs::create_directories(m_tokensDir, ec);
+    fs::create_directories(tokensDir, ec);
     // Belt-and-braces dir perms (0700) so umask can't widen.
-    if (!ec) ::chmod(m_tokensDir.c_str(), S_IRWXU);
+    if (!ec) ::chmod(tokensDir.c_str(), S_IRWXU);
 }
 
 namespace {
@@ -249,19 +259,19 @@ bool writeRawTokenFile(const std::string& path,
 
 // -- issue / revoke / list --------------------------------------------------
 
-std::optional<std::string>
+TokenStore::IssueResult
 TokenStore::issueToken(const std::string& name,
                        const std::string& expiresAt,
                        bool localOnly,
                        bool replace)
 {
-    if (!isSafeName(name)) return std::nullopt;
+    if (!isSafeName(name)) return {IssueStatus::InvalidName, {}};
 
     auto tokens = TokensFile::read();
     auto it = std::find_if(tokens.begin(), tokens.end(),
         [&](const TokenEntry& e) { return e.name == name; });
     if (it != tokens.end()) {
-        if (!replace) return std::nullopt;
+        if (!replace) return {IssueStatus::AlreadyExists, {}};
         tokens.erase(it);
     }
 
@@ -290,19 +300,19 @@ TokenStore::issueToken(const std::string& name,
     // If step 2 fails, roll back the raw file we just wrote so
     // we don't leave an unreferenced credential file behind.
     if (!writeRawTokenFile(rawTokenFilePath(name), name, raw, issuedAt))
-        return std::nullopt;
+        return {IssueStatus::IoError, {}};
     if (!TokensFile::write(tokens)) {
         std::error_code ec;
         fs::remove(fs::path(rawTokenFilePath(name)), ec);
-        return std::nullopt;
+        return {IssueStatus::IoError, {}};
     }
 
-    return raw;
+    return {IssueStatus::Ok, raw};
 }
 
-bool TokenStore::revokeToken(const std::string& name)
+TokenStore::RevokeStatus TokenStore::revokeToken(const std::string& name)
 {
-    if (!isSafeName(name)) return false;
+    if (!isSafeName(name)) return RevokeStatus::InvalidName;
 
     auto tokens = TokensFile::read();
     const auto before = tokens.size();
@@ -310,14 +320,16 @@ bool TokenStore::revokeToken(const std::string& name)
         std::remove_if(tokens.begin(), tokens.end(),
                        [&](const TokenEntry& e) { return e.name == name; }),
         tokens.end());
-    if (tokens.size() == before) return false;
-    if (!TokensFile::write(tokens)) return false;
+    if (tokens.size() == before) return RevokeStatus::NotFound;
+    if (!TokensFile::write(tokens)) return RevokeStatus::IoError;
 
     // Best-effort remove the operator-copyable raw file. It may already
-    // be gone (the operator deleted it post-copy, by design).
+    // be gone (the operator deleted it post-copy, by design) — that's
+    // not an error: the in-memory hash list is the source of truth and
+    // we've just removed the entry there.
     std::error_code ec;
     fs::remove(fs::path(rawTokenFilePath(name)), ec);
-    return true;
+    return RevokeStatus::Ok;
 }
 
 std::vector<IssuedToken> TokenStore::listTokens() const
@@ -351,5 +363,5 @@ TokenStore::lookupByToken(const std::string& token,
 
 std::string TokenStore::rawTokenFilePath(const std::string& name) const
 {
-    return m_tokensDir + "/" + name + ".json";
+    return Config::daemonTokensDir().toStdString() + "/" + name + ".json";
 }
