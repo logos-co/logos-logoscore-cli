@@ -284,29 +284,42 @@ int main(int argc, char *argv[])
         "Allow plaintext tcp on non-loopback hosts (tokens travel cleartext)");
 
     // ── Transport flags (client side) ────────────────────────────────────────
+    //
+    // Each flag has a matching `LOGOSCORE_CLIENT_*` env-var fallback,
+    // so callers that drive logoscore as a subprocess (e.g. the Python
+    // wrapper) can configure the dial spec without manipulating CLI
+    // strings. CLI flag still wins over the env var when both are set
+    // — same precedence as anywhere else in the program.
     std::string clientTransport;  // empty = prefer local
     auto* clientTransportOpt = app.add_option("--client-transport", clientTransport,
         "Pick one of the daemon's advertised transports: local | tcp | tcp_ssl");
+    clientTransportOpt->envname("LOGOSCORE_CLIENT_TRANSPORT");
     std::string clientTcpHost;
     auto* clientTcpHostOpt = app.add_option("--client-tcp-host", clientTcpHost,
         "Override the daemon's advertised host (e.g. 'localhost' when daemon bound 0.0.0.0 in docker)");
+    clientTcpHostOpt->envname("LOGOSCORE_CLIENT_TCP_HOST");
     uint16_t clientTcpPort = 0;
     auto* clientTcpPortOpt = app.add_option("--client-tcp-port", clientTcpPort,
         "Override the daemon's advertised port (useful when port-forwarding or NAT changes the reachable port)");
+    clientTcpPortOpt->envname("LOGOSCORE_CLIENT_TCP_PORT");
     bool clientNoVerifyPeer = false;
     auto* clientNoVerifyPeerOpt = app.add_flag("--no-verify-peer", clientNoVerifyPeer,
         "Disable TLS peer verification (dev only)");
+    clientNoVerifyPeerOpt->envname("LOGOSCORE_CLIENT_NO_VERIFY_PEER");
     std::string clientCodec;  // empty = accept whatever the daemon advertised
     auto* clientCodecOpt = app.add_option("--client-codec", clientCodec,
         "Require a specific wire codec (json | cbor); if the daemon advertised "
         "a different codec for the picked transport, connect fails.");
+    clientCodecOpt->envname("LOGOSCORE_CLIENT_CODEC");
     std::string clientTokenFile;
     auto* clientTokenFileOpt = app.add_option("--token-file", clientTokenFile,
         "Filename inside client/ to use for authentication (must already exist; "
         "no copy semantics)");
+    clientTokenFileOpt->envname("LOGOSCORE_CLIENT_TOKEN_FILE");
     std::string clientSslCa;
     auto* clientSslCaOpt = app.add_option("--ssl-ca", clientSslCa,
         "CA cert path used to verify the daemon's TLS chain (tcp_ssl only)");
+    clientSslCaOpt->envname("LOGOSCORE_CLIENT_SSL_CA");
 
     // ── Client subcommands ───────────────────────────────────────────────────
     // All client subcommands use allow_extras() so their positional args and
