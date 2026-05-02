@@ -107,7 +107,15 @@ json daemonConfigToJson(const DaemonConfig& cfg)
 
 // Inverse of daemonConfigToJson — used by both config.json and
 // state.json readers (the latter parses the `resolved` block).
-DaemonConfig daemonConfigFromJson(const json& obj)
+//
+// Returns std::nullopt when any embedded transport entry fails the
+// strict-allowlist check in `transportFromJson` (e.g. an unknown
+// `protocol` value, or an out-of-range port). Silent skip would
+// turn a typo in config.json into a quietly-disabled listener — the
+// daemon would come up with a partial transport set, no diagnostic.
+// Failing the parse forces the operator to see the error and fix
+// the file.
+std::optional<DaemonConfig> daemonConfigFromJson(const json& obj)
 {
     DaemonConfig cfg;
     cfg.modulesDirs     = obj.value("modules_dirs", std::vector<std::string>{});
@@ -124,7 +132,15 @@ DaemonConfig daemonConfigFromJson(const json& obj)
             if (!arr.is_array()) continue;
             std::vector<TransportInfo> transports;
             for (const auto& j : arr) {
-                if (auto t = transportFromJson(j)) transports.push_back(*t);
+                auto t = transportFromJson(j);
+                if (!t) {
+                    std::cerr << "DaemonConfig: invalid transport entry under "
+                              << "modules." << moduleName
+                              << " — refusing to load partial config."
+                              << std::endl;
+                    return std::nullopt;
+                }
+                transports.push_back(*t);
             }
             if (!transports.empty())
                 cfg.modules.emplace(moduleName, std::move(transports));
@@ -255,8 +271,19 @@ DaemonRuntimeState DaemonRuntimeStateFile::read()
     state.pid          = obj.value("pid", int64_t(-1));
     state.startedAt    = obj.value("started_at", "");
     state.configSource = obj.value("config_source", "");
-    if (obj.contains("resolved") && obj["resolved"].is_object())
-        state.resolved = daemonConfigFromJson(obj["resolved"]);
+    if (obj.contains("resolved") && obj["resolved"].is_object()) {
+        auto resolved = daemonConfigFromJson(obj["resolved"]);
+        if (!resolved) {
+            // Same fail-the-parse contract as DaemonConfigFile::read:
+            // an invalid embedded transport entry means we can't trust
+            // any of the resolved block. Return an empty (fileOk=false)
+            // state so callers don't act on partial data.
+            std::cerr << "DaemonRuntimeState: refusing to load partial "
+                      << "resolved block from " << filePath() << std::endl;
+            return DaemonRuntimeState{};
+        }
+        state.resolved = std::move(*resolved);
+    }
 
     state.fileOk = !state.instanceId.empty();
     return state;

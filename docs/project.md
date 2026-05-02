@@ -212,8 +212,11 @@ module via the SDK's RPC mechanism, using whatever dial spec
 only worked for local daemons — it's meaningless for a daemon in a container
 or across NAT. The first RPC (commonly `status`) surfaces connect failures
 through the same timeout/error path as any other method, so there's one error
-story. `DaemonStateFile::read().fileOk` now just reflects "file exists and
-parses" — the on-disk precondition, not liveness.
+story. `DaemonRuntimeStateFile::read().fileOk` now just reflects "file exists
+and parses" — the on-disk precondition, not liveness. The `status` command
+*does* opportunistically `kill(pid, 0)` against `state.json`'s pid for fast
+same-host stale-state detection, but that's a short-circuit before falling
+through to the same RPC path.
 
 ### Inline Path (`logoscore -m -l -c`)
 
@@ -468,9 +471,9 @@ QVariant CoreServiceImpl::callMethod(const QString& method, const QVariantList& 
 
 | Method | Description |
 |--------|-------------|
-| `TokenStore(configDir)` | Owns the `<configDir>/daemon/` subtree. Seeds itself from `tokens.json["tokens"]`. |
-| `issueToken(name, replace, expires, localOnly) -> optional<string>` | Mint a new token, record `{name, hash, issued_at, expires_at, local_only}`, write `daemon/tokens/<name>.json` with the raw token, return the raw token. Fails (returns nullopt) if `name` already exists and `replace` is false. |
-| `revokeToken(name) -> bool` | Remove the `name` entry from `tokens.json["tokens"]` and delete `daemon/tokens/<name>.json`. |
+| `TokenStore()` | Default-constructed; paths come from `Config::*` (the process-global config dir). Seeds itself from `tokens.json["tokens"]`. Tests isolate state via `LOGOSCORE_CONFIG_DIR` / `Config::setConfigDir`. |
+| `issueToken(name, expires, localOnly, replace) -> IssueResult { status, token }` | Mint a new token. `status` is one of `Ok` / `InvalidName` / `AlreadyExists` / `IoError`; `token` is set only on `Ok`. The CLI keys exit-code distinct error categories off this status so operators don't see "name collision" for permission failures. |
+| `revokeToken(name) -> RevokeStatus` | Remove the `name` entry from `tokens.json["tokens"]` and delete `daemon/tokens/<name>.json`. Returns `Ok` / `InvalidName` / `NotFound` / `IoError`. |
 | `listTokens() -> vector<IssuedToken>` | Enumerate `{name, issued_at, expires_at, local_only}` — never plaintext, never the digest. |
 | `lookupByToken(token) -> optional<Entry>` | Daemon-side: validate an incoming token against the in-memory digest map (also enforces `expires_at` and `local_only`). |
 
@@ -559,10 +562,13 @@ QVariant Client::loadModule(const QString& name) {
 
 | Method | Description |
 |--------|-------------|
-| `Config::getToken() -> QString` | Resolve token: env var → `<configDir>/client/<token_file>` (path read from `client/config.json`) |
-| `Config::loadClientSpec() -> ClientSpec` | Load `<configDir>/client/config.json` (dial spec + `instance_id` + `token_file`) |
+| `Config::getToken() -> QString` | Token resolution: only `LOGOSCORE_TOKEN` env var. Filesystem fallback (`client/<token_file>`) lives in `ClientStateFile::readTokenFile` since it requires parsing the client config. |
 | `Config::configDir() -> QString` | Resolve config dir: explicit setter (`--config-dir`) → `LOGOSCORE_CONFIG_DIR` env → `~/.logoscore` |
 | `Config::setConfigDir(QString)` | Process-wide override set from `main` when `--config-dir` is passed |
+| `Config::daemonConfigPath() / daemonStatePath() / daemonTokensPath() / daemonTokensDir()` | Daemon-side path helpers under `<configDir>/daemon/` |
+| `Config::clientConfigPath() / clientDir() / clientTokenPath(filename)` | Client-side path helpers under `<configDir>/client/` |
+
+The client dial spec lives in `client/config.json` and is loaded via `ClientStateFile::read()` (not `Config`). See the **ClientStateFile** section above for the schema and parsing contract.
 
 **Token resolution order:**
 1. `LOGOSCORE_TOKEN` environment variable

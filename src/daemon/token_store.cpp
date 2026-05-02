@@ -3,6 +3,7 @@
 #include "../config.h"
 
 #include <nlohmann/json.hpp>
+#include <openssl/rand.h>
 #include <openssl/sha.h>
 
 #include <sys/stat.h>
@@ -17,7 +18,6 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <random>
 #include <sstream>
 
 namespace fs = std::filesystem;
@@ -143,16 +143,68 @@ bool TokensFile::write(const std::vector<TokenEntry>& tokens)
 
 namespace {
 
-// 32 bytes of URL-safe base64-ish entropy, fine for client tokens.
+// 256 bits of cryptographically-secure entropy, rendered as 43 chars
+// of URL-safe base64-ish alphabet (no padding).
+//
+// Implementation notes:
+//   - `RAND_bytes` is OpenSSL's CSPRNG; on a properly-seeded system
+//     it draws from the OS getrandom/urandom pool and produces output
+//     that's safe to use as an authentication secret.
+//   - We pull 32 raw bytes (= 256 bits) and emit one alphabet char
+//     per 6 bits, like base64. The trailing 4 bits are discarded
+//     (kBits % 6 == 4) — that's fine, we end up with 252 bits of
+//     entropy in 42 chars + 4 leftover bits in the 43rd, well above
+//     the ~128-bit threshold for a token that authenticates clients.
+//   - The previous implementation used `std::mt19937_64` (not a
+//     CSPRNG, predictable from a few outputs) and modulo-64 sampling
+//     (introduces bias since 2^64 % 64 == 0 only by accident; the
+//     uniform_int_distribution it fed was over the full uint64_t
+//     range, where 64 *does* divide evenly, but the construction was
+//     fragile). Crypto-grade RNG removes both concerns.
 std::string generateToken() {
-    std::random_device rd;
-    std::mt19937_64 gen(rd());
-    std::uniform_int_distribution<uint64_t> dist;
     static const char alpha[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+    constexpr int kRawBytes  = 32;  // 256 bits
+    constexpr int kOutChars  = 43;  // ceil(256 / 6)
+
+    unsigned char raw[kRawBytes];
+    if (RAND_bytes(raw, kRawBytes) != 1) {
+        // RAND_bytes failure is essentially "the OS RNG isn't
+        // seeded", which on Linux/macOS only happens in pathological
+        // boot-time scenarios. Returning an empty string here causes
+        // issueToken's downstream write of the raw file to produce a
+        // visibly-broken file, which the caller's atomicity check
+        // rolls back; the operator sees the issue immediately
+        // instead of receiving a low-entropy token.
+        return std::string();
+    }
+
     std::string s;
-    s.reserve(43);
-    for (int i = 0; i < 43; ++i) s.push_back(alpha[dist(gen) % 64]);
+    s.reserve(kOutChars);
+    // Walk the 256 bits in 6-bit chunks. We unpack the byte buffer
+    // into a rolling bit accumulator rather than doing arithmetic
+    // tricks per char so the loop reads as "extract 6 bits, emit one
+    // alphabet character, repeat".
+    uint32_t acc = 0;
+    int      bits = 0;
+    int      emitted = 0;
+    for (int i = 0; i < kRawBytes && emitted < kOutChars; ++i) {
+        acc = (acc << 8) | raw[i];
+        bits += 8;
+        while (bits >= 6 && emitted < kOutChars) {
+            const uint32_t chunk = (acc >> (bits - 6)) & 0x3F;
+            s.push_back(alpha[chunk]);
+            bits -= 6;
+            ++emitted;
+        }
+    }
+    // Trailing bits (< 6) become one more char, padded right with
+    // zeros — same shape base64-without-padding produces.
+    if (emitted < kOutChars && bits > 0) {
+        const uint32_t chunk = (acc << (6 - bits)) & 0x3F;
+        s.push_back(alpha[chunk]);
+    }
     return s;
 }
 

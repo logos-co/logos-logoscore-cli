@@ -109,8 +109,22 @@ ClientState ClientStateFile::read()
         for (auto it = obj["daemon"].begin(); it != obj["daemon"].end(); ++it) {
             const std::string& moduleName = it.key();
             if (moduleName.empty()) continue;
-            if (auto t = transportFromJson(it.value()))
-                state.daemon.emplace(moduleName, *t);
+            auto t = transportFromJson(it.value());
+            if (!t) {
+                // Strict-parse contract: a typo in client/config.json
+                // (e.g. transport=tcp_ssll) would otherwise silently
+                // drop the entry, leaving the dial set incomplete and
+                // surfacing as an obscure "no entry for core_service"
+                // error later. Fail the whole parse so the caller
+                // sees fileOk=false and reports the broken config
+                // up front.
+                std::cerr << "ClientState: invalid transport entry under "
+                          << "daemon." << moduleName << " in " << filePath()
+                          << " — refusing to load partial config."
+                          << std::endl;
+                return ClientState{};
+            }
+            state.daemon.emplace(moduleName, *t);
         }
     }
 
