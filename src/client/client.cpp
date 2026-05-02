@@ -48,18 +48,21 @@ RpcClient::~RpcClient()
 bool RpcClient::connect()
 {
     // Read client config (pure parse — doesn't probe the daemon).
-    // The client never opens daemon/daemon.json: the daemon's
-    // advertised endpoints + secrets aren't ours to inspect. We dial
-    // whatever client/client.json says, with whatever token lives in
-    // client/<token_file>. The daemon's own LocalSocket-discovery via
-    // LOGOS_INSTANCE_ID still works for the local-client artifacts
-    // case (auto-emitted by daemon at boot).
+    // The client never opens daemon/state.json or daemon/config.json:
+    // the daemon's runtime state and operator preferences aren't ours
+    // to inspect. We dial whatever client/config.json says, with
+    // whatever token lives in client/<token_file>. ClientStateFile::read
+    // also serves an in-process override set by main.cpp when CLI
+    // client-config flags were passed without --persist-config — the
+    // dial spec then reflects flags + config.json + defaults for this
+    // run only.
     d->clientState = ClientStateFile::read();
     if (!d->clientState.fileOk) {
         m_lastError = "No client config at " +
             QString::fromStdString(ClientStateFile::filePath()) +
-            ". If a daemon is running locally, restart it; otherwise "
-            "write client/client.json + the matching token file by hand.";
+            ". Either run the daemon locally first (it auto-emits a "
+            "config), pass client flags + --persist-config, or write "
+            "client/config.json + the matching token file by hand.";
         return false;
     }
 
@@ -78,9 +81,9 @@ bool RpcClient::connect()
 
     // For LocalSocket dialing, the SDK derives the registry name from
     // `local:logos_<module>_<instance_id>`, so we need the daemon's
-    // instance id. The daemon's auto-emitted client.json carries it;
+    // instance id. The daemon's auto-emitted client/config.json carries it;
     // remote clients (TCP / TCP-SSL) don't need it. The client never
-    // opens daemon.json — by design.
+    // opens daemon-side files — by design.
     if (!d->clientState.instanceId.empty()) {
         d->instanceId = QString::fromStdString(d->clientState.instanceId);
         qputenv("LOGOS_INSTANCE_ID", d->instanceId.toUtf8());
@@ -106,7 +109,7 @@ bool RpcClient::connect()
     // core_service is mandatory.
     auto coreIt = d->clientState.daemon.find("core_service");
     if (coreIt == d->clientState.daemon.end()) {
-        m_lastError = "client.json: 'daemon.core_service' is required.";
+        m_lastError = "client/config.json: 'daemon.core_service' is required.";
         return false;
     }
     const LogosTransportConfig coreServiceCfg = toCfg(coreIt->second);
@@ -118,7 +121,7 @@ bool RpcClient::connect()
 
     // Wire up capability_module's per-module transport. Required by the
     // SDK's auto-`requestModule` flow inside LogosAPIClient. If
-    // client.json omits it, fall through to LocalSocket — same as the
+    // client/config.json omits it, fall through to LocalSocket — same as the
     // SDK's global default.
     if (auto capIt = d->clientState.daemon.find("capability_module");
         capIt != d->clientState.daemon.end()) {
@@ -126,11 +129,11 @@ bool RpcClient::connect()
     }
 
     // Get a client handle to the daemon's core_service module.
-    // client.json's per-module entry is the dial spec, full stop —
+    // client/config.json's per-module entry is the dial spec, full stop —
     // no env-var overrides, no daemon-advertised list to pick from.
     // If the operator wants a different transport, they re-run
     // `logoscore <subcommand> --client-transport ...` which
-    // regenerates client.json (step 7).
+    // regenerates client/config.json (step 7).
     d->coreService = d->api->getClient("core_service", coreServiceCfg);
     if (!d->coreService) {
         m_lastError = "Failed to get core_service client handle.";
@@ -214,9 +217,9 @@ QJsonObject RpcClient::getStatus()
         return ret.toJsonObject();
 
     // If the RPC failed, we don't have detailed daemon info to fall
-    // back on — the client never opens daemon.json by design, so pid /
+    // back on — the client never opens daemon-side files by design, so pid /
     // started_at / advertised modules are not in our hands. Surface
-    // what we know (the instance_id from client.json, if local) and
+    // what we know (the instance_id from client/config.json, if local) and
     // tag the response as RPC-degraded so callers exit non-zero.
     QJsonObject status;
     QJsonObject daemon;

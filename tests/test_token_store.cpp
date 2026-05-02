@@ -26,9 +26,9 @@ protected:
         dir = fs::temp_directory_path() / ("tokenstore-" + std::to_string(::getpid()) +
                                            "-" + std::to_string(rand()));
         fs::create_directories(dir);
-        // Route DaemonStateFile (which TokenStore now persists into) at
-        // our temp dir. TokenStore's own ctor takes a configDir but the
-        // underlying state file uses Config::daemonConfigPath().
+        // Route TokensFile (which TokenStore persists into) at our
+        // temp dir. TokenStore's ctor takes a configDir but the
+        // underlying file uses Config::daemonTokensPath().
         origConfigDir = qEnvironmentVariable("LOGOSCORE_CONFIG_DIR").toStdString();
         qputenv("LOGOSCORE_CONFIG_DIR", dir.string().c_str());
         Config::setConfigDir(QString());
@@ -116,7 +116,7 @@ TEST_F(TokenStoreTest, RawFileMissing_ValidationStillSucceeds)
 {
     // After the operator copies the raw file to a client and rm's it on
     // the daemon side, validation must continue to work — the hash
-    // entry in daemon.json is what authenticates from then on.
+    // entry in tokens.json is what authenticates from then on.
     TokenStore store = makeStore();
     const auto tok = store.issueToken("alice").value();
     const auto raw = store.rawTokenFilePath("alice");
@@ -186,4 +186,47 @@ TEST_F(TokenStoreTest, NotExpired_Accepted)
     const auto futureDeadline = std::string("2099-12-31T23:59:59Z");
     const auto tok = store.issueToken("bob", futureDeadline).value();
     EXPECT_TRUE(store.lookupByToken(tok, "local").has_value());
+}
+
+// -- TokensFile direct round-trip -----------------------------------------
+//
+// Verifies the standalone tokens.json shape: read returns an empty
+// vector when the file is missing, write+read preserves every field
+// (including the null-vs-set expires_at distinction), and reading a
+// file with a wrong schema version yields an empty vector rather
+// than crashing or returning malformed entries.
+
+TEST_F(TokenStoreTest, TokensFile_MissingReturnsEmpty)
+{
+    EXPECT_TRUE(TokensFile::read().empty());
+}
+
+TEST_F(TokenStoreTest, TokensFile_RoundTripPreservesEveryField)
+{
+    std::vector<TokenEntry> in;
+    in.push_back({"auto",  "deadbeef", "2026-04-28T00:00:00Z", "",                       true});
+    in.push_back({"alice", "abc123",   "2026-04-28T01:00:00Z", "2027-01-01T00:00:00Z",  false});
+    ASSERT_TRUE(TokensFile::write(in));
+
+    auto out = TokensFile::read();
+    ASSERT_EQ(out.size(), 2u);
+    EXPECT_EQ(out[0].name, "auto");
+    EXPECT_EQ(out[0].hash, "deadbeef");
+    EXPECT_TRUE(out[0].expiresAt.empty());
+    EXPECT_TRUE(out[0].localOnly);
+    EXPECT_EQ(out[1].name, "alice");
+    EXPECT_EQ(out[1].expiresAt, "2027-01-01T00:00:00Z");
+    EXPECT_FALSE(out[1].localOnly);
+}
+
+TEST_F(TokenStoreTest, TokensFile_RejectsUnknownSchemaVersion)
+{
+    // Hand-write a tokens.json with a version we don't accept; the
+    // reader must not crash and must return zero entries (so a
+    // running daemon's accepted-token set effectively becomes empty
+    // and the operator gets a clear stderr message).
+    fs::path p(TokensFile::filePath());
+    fs::create_directories(p.parent_path());
+    std::ofstream(p) << R"({"version":99,"tokens":[]})" << "\n";
+    EXPECT_TRUE(TokensFile::read().empty());
 }

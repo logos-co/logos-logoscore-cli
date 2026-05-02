@@ -61,22 +61,45 @@ logoscore daemon --modules-dir ./modules
 logoscore -D -m ./modules > logs.txt &
 ```
 
-The daemon writes its state file to `~/.logoscore/daemon/daemon.json` on startup and removes it on shutdown. It also auto-emits a local-client config under `~/.logoscore/client/` (`client.json` + `auto.json`) so client commands work out of the box from the same machine.
+The daemon writes a runtime-state file (`~/.logoscore/daemon/state.json`) on startup, after transports actually bind, and removes it on clean shutdown. It also auto-emits a local-client config under `~/.logoscore/client/` (`config.json` + `auto.json`) so client commands work out of the box from the same machine.
 
 Layout:
 
 ```
 ~/.logoscore/
 ├── daemon/
-│   ├── daemon.json        # daemon-owned: full daemon config + advertised endpoints + hashed tokens
+│   ├── config.json        # operator preferences (written ONLY when --persist-config is passed)
+│   ├── state.json         # live-instance resolved state (created at boot, removed at shutdown)
+│   ├── tokens.json        # hashed-at-rest accepted-token list (survives restarts)
 │   └── tokens/
 │       └── <name>.json    # raw, operator-copyable per `issue-token <name>`. 0600 perms.
 └── client/
-    ├── client.json        # client-owned: dial spec + token_file
+    ├── config.json        # client-owned: dial spec + token_file (write only on --persist-config)
     └── auto.json          # raw token; daemon-emitted at boot for the local client
 ```
 
-The daemon never reads `client/`; the client never reads `daemon/`. For remote clients on a different host, copy a single `daemon/tokens/<name>.json` file to the target host's `client/` dir and reference it via `token_file` in `client.json`.
+Each daemon-side file has one writer and a clear lifetime:
+- **`config.json`** — operator-typed preferences (transport choices, modules dirs, SSL paths). Values reflect intent: `port: 0` stays `0` (auto-pick a free port). Only written when the operator explicitly passes `--persist-config`.
+- **`state.json`** — what this specific daemon process resolved (instance_id, pid, started_at, *actually-bound* port). Created at boot, deleted at shutdown.
+- **`tokens.json`** — the hashed-at-rest accepted-token list. Independent of the running daemon's lifetime.
+
+The daemon never reads `client/`; the client never reads `daemon/config.json` or `daemon/tokens.json`. (`status` consults `daemon/state.json` for a fast same-host liveness check via `kill(pid, 0)`, but never opens daemon-only secrets.) For remote clients on a different host, copy a single `daemon/tokens/<name>.json` file to the target host's `client/` dir and reference it via `token_file` in `client/config.json`.
+
+#### `--persist-config`
+
+CLI flags affect this run only by default. To bake them into the next launch — daemon or client side — pass `--persist-config`:
+
+```bash
+# Run the daemon with TCP listeners; this run only.
+logoscore -D --module-transport core_service=tcp,port=0
+
+# Same flags + persist them. config.json is written; next no-flag launch
+# reproduces the TCP behavior. `port: 0` stays `0` in config.json (intent
+# preserved); the actual bound port lives in state.json.
+logoscore -D --module-transport core_service=tcp,port=0 --persist-config
+```
+
+Boot precedence is `defaults < config.json < CLI args`, with per-flag override detection: a CLI flag overrides only its own field, everything else falls through. Without `--persist-config`, no file is written.
 
 #### Client Commands
 
@@ -134,9 +157,11 @@ logoscore stats
 
 For local same-host use, token management is automatic. At boot the daemon
 auto-issues a token named `auto` (with `local_only=true`, so it can't be used
-over TCP), writes the hash into `daemon/daemon.json`, and emits the raw value
-into `client/auto.json` alongside a local-default `client/client.json`. Local
-client commands just work.
+over TCP), writes the hash into `daemon/tokens.json`, and emits the raw value
+into `client/auto.json`. On the *first* boot into an empty config dir it
+also writes a default `client/config.json` so local client commands work
+out of the box; subsequent boots leave an existing `client/config.json`
+alone (so an operator-written remote-client config isn't clobbered).
 
 For remote or programmatic access:
 
@@ -145,13 +170,13 @@ For remote or programmatic access:
 LOGOSCORE_TOKEN=<token> logoscore list-modules --json
 ```
 
-Token resolution order: `LOGOSCORE_TOKEN` env var → `<configDir>/client/<token_file>` (the path is whatever `client.json` says — defaults to `auto.json`).
+Token resolution order: `LOGOSCORE_TOKEN` env var → `<configDir>/client/<token_file>` (the path is whatever `client/config.json` says — defaults to `auto.json`).
 
 ##### Named client tokens
 
 For multi-client setups (a daemon serving several remote clients, CI rotating
 credentials, etc.), issue named tokens. Each entry persists as a `{name, hash,
-issued_at, expires_at, local_only}` row in `daemon/daemon.json["tokens"]`; the
+issued_at, expires_at, local_only}` row in `daemon/tokens.json["tokens"]`; the
 raw value is written to `daemon/tokens/<name>.json` (mode 0600) at issue time
 so the operator can hand it off:
 
@@ -254,13 +279,14 @@ logoscore -D -m ./modules
 
 ##### Client-side dial spec
 
-The client never reads `daemon/daemon.json` — it dials whatever
-`<configDir>/client/client.json` says. The daemon auto-emits one for the
-local same-host case at boot (LocalSocket pointing at the daemon's
-freshly-issued `auto.json` token). For remote clients (docker `-p`
-port-forwarding, NAT, SSH tunnels) hand-write `client.json` with the
-right host:port for each module — see the layout block at the top of
-this section.
+The client never reads daemon-only files (`daemon/config.json`,
+`daemon/tokens.json`) — it dials whatever `<configDir>/client/config.json`
+says. The daemon auto-emits one for the local same-host case at boot
+(LocalSocket pointing at the daemon's freshly-issued `auto.json` token).
+For remote clients (docker `-p` port-forwarding, NAT, SSH tunnels)
+hand-write `client/config.json` with the right host:port for each
+module — or pass `--client-tcp-host`, `--client-tcp-port`, etc. on the
+CLI plus `--persist-config` to have it generated.
 
 #### Agent / Script Example
 

@@ -1,13 +1,29 @@
 #include "status_command.h"
 #include "../client_state.h"
+#include "../../daemon/daemon_state.h"
 
 #include <QJsonObject>
 
-// No separate liveness probe. The status command IS the liveness check:
-// if `getStatus` fails (RPC timeout, connection refused, daemon not
-// listening on the endpoint we picked after --client-tcp-* overrides…),
-// we report `not_running`. Any success means the daemon is at least
-// reachable enough to answer.
+#include <signal.h>
+#include <errno.h>
+
+// Two checks before falling through to RPC liveness:
+//
+//   1. ClientStateFile — if the operator hasn't configured a client
+//      (no client/config.json), there's nothing to dial. Distinct
+//      from "daemon not running" — the daemon may be up, we just
+//      don't have a config pointing at it.
+//
+//   2. Local daemon/state.json — short-circuit "no live daemon" for
+//      the same-host case. If state.json is present but its pid is
+//      not alive (`kill(pid, 0) == ESRCH`), the previous daemon
+//      hard-crashed and left a stale file behind; we surface that
+//      directly instead of timing out an RPC. If state.json is
+//      missing, we fall through to RPC — the daemon could still be
+//      a remote one whose state.json never appears on our host.
+//
+// On success past both: try RPC. Any success means the daemon is at
+// least reachable enough to answer.
 
 int StatusCommand::execute(const std::vector<std::string>& args)
 {
@@ -15,12 +31,33 @@ int StatusCommand::execute(const std::vector<std::string>& args)
 
     // No client config ⇒ nothing to dial. (Different from
     // "daemon not running" — the daemon may be up, we just don't
-    // have a client.json pointing at it.)
+    // have a client config pointing at it.)
     if (!ClientStateFile::read().fileOk) {
         QJsonObject result;
         result["daemon"] = QJsonObject{{"status", "not_configured"}};
         output().printStatus(result);
         return 1;
+    }
+
+    // Local-daemon staleness check. State.json on disk + dead pid
+    // means the previous daemon crashed before it could clean up.
+    // Surface that directly so the operator gets a fast, accurate
+    // signal instead of waiting on an RPC timeout. Missing state.json
+    // is *not* an error — it could mean a remote daemon (no state on
+    // our host) or no daemon at all (RPC will confirm).
+    {
+        const DaemonRuntimeState rs = DaemonRuntimeStateFile::read();
+        if (rs.fileOk && rs.pid > 0 && ::kill(static_cast<pid_t>(rs.pid), 0) != 0
+                                    && errno == ESRCH) {
+            QJsonObject result;
+            result["daemon"] = QJsonObject{
+                {"status", "not_running"},
+                {"reason", "stale state file (daemon crashed; pid no longer alive)"},
+                {"pid",    qlonglong(rs.pid)},
+            };
+            output().printStatus(result);
+            return 1;
+        }
     }
 
     // Try to connect and ask the daemon directly. Both failure modes

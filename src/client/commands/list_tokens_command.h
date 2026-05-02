@@ -3,9 +3,10 @@
 
 #include "command.h"
 
-// `logoscore list-tokens` — names + issued_at timestamps from tokens.db.
-// Raw tokens are never shown (they're only persisted in tokens/<name>.json
-// on issuance; afterwards they only exist hashed in the db).
+// `logoscore list-tokens` — names + issued_at timestamps from
+// daemon/tokens.json. Raw tokens are never shown (they're only
+// persisted in daemon/tokens/<name>.json on issuance; afterwards
+// they only exist hashed in tokens.json).
 class ListTokensCommand : public Command {
 public:
     using Command::Command;

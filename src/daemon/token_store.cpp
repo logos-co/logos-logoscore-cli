@@ -1,5 +1,6 @@
 #include "token_store.h"
 #include "daemon_state.h"
+#include "../config.h"
 
 #include <nlohmann/json.hpp>
 #include <openssl/sha.h>
@@ -11,14 +12,130 @@
 #include <chrono>
 #include <cstdint>
 #include <ctime>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
 #include <random>
 #include <sstream>
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
+
+// -- TokensFile -------------------------------------------------------------
+//
+// Standalone JSON document that holds the hashed-at-rest token array.
+// Atomic writes (write-temp + rename) so a crash mid-write can't leave
+// the daemon's accepted-token set in a half-baked state. Read returns
+// {} if the file is missing or unparseable — callers treat both as
+// "no tokens yet".
+
+std::string TokensFile::filePath()
+{
+    return Config::daemonTokensPath().toStdString();
+}
+
+namespace {
+
+json tokenEntryToJson(const TokenEntry& e)
+{
+    json j;
+    j["name"]      = e.name;
+    j["hash"]      = e.hash;
+    j["issued_at"] = e.issuedAt;
+    // Persist `expires_at` as null when unset so the on-disk shape is
+    // uniform across entries.
+    if (e.expiresAt.empty()) j["expires_at"] = nullptr;
+    else                     j["expires_at"] = e.expiresAt;
+    j["local_only"] = e.localOnly;
+    return j;
+}
+
+std::optional<TokenEntry> tokenEntryFromJson(const json& j)
+{
+    if (!j.is_object()) return std::nullopt;
+    TokenEntry e;
+    e.name     = j.value("name", std::string{});
+    e.hash     = j.value("hash", std::string{});
+    e.issuedAt = j.value("issued_at", std::string{});
+    if (e.name.empty() || e.hash.empty()) return std::nullopt;
+    if (j.contains("expires_at") && !j.at("expires_at").is_null())
+        e.expiresAt = j.value("expires_at", std::string{});
+    e.localOnly = j.value("local_only", false);
+    return e;
+}
+
+} // namespace
+
+std::vector<TokenEntry> TokensFile::read()
+{
+    std::vector<TokenEntry> out;
+
+    std::ifstream ifs(filePath());
+    if (!ifs) return out;
+
+    json obj;
+    try { obj = json::parse(ifs); }
+    catch (...) { return out; }
+
+    const int v = obj.value("version", 0);
+    if (v != kTokensFileSchemaVersion) {
+        std::cerr << "TokensFile: unsupported schema version " << v
+                  << " in " << filePath()
+                  << " — reissue tokens to regenerate (expected version "
+                  << kTokensFileSchemaVersion << ")." << std::endl;
+        return out;
+    }
+
+    if (obj.contains("tokens") && obj["tokens"].is_array()) {
+        out.reserve(obj["tokens"].size());
+        for (const auto& j : obj["tokens"]) {
+            if (auto t = tokenEntryFromJson(j)) out.push_back(*t);
+        }
+    }
+    return out;
+}
+
+bool TokensFile::write(const std::vector<TokenEntry>& tokens)
+{
+    fs::path path(filePath());
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+    if (ec) return false;
+
+    json obj;
+    obj["version"] = kTokensFileSchemaVersion;
+    json arr = json::array();
+    for (const auto& t : tokens) arr.push_back(tokenEntryToJson(t));
+    obj["tokens"] = std::move(arr);
+
+    // Atomic write: full content to <path>.tmp, fsync, rename to final.
+    // Avoids leaving a truncated tokens.json behind if the process is
+    // interrupted mid-write.
+    const fs::path tmp = path.string() + ".tmp";
+    {
+        std::ofstream ofs(tmp, std::ios::trunc);
+        if (!ofs) return false;
+        ofs << obj.dump(4) << "\n";
+        ofs.close();
+        if (!ofs) return false;
+    }
+    // 0600 before rename — once the file is at its final path, file
+    // perms apply via the rename; doing it on the temp avoids any
+    // window where a wider mode is visible at the destination.
+    ::chmod(tmp.c_str(), S_IRUSR | S_IWUSR);
+    std::error_code rec;
+    fs::rename(tmp, path, rec);
+    if (rec) {
+        // Best-effort cleanup of the temp file on failure; the rename
+        // didn't take, so the destination is unchanged.
+        std::error_code ignored;
+        fs::remove(tmp, ignored);
+        return false;
+    }
+    return true;
+}
 
 namespace {
 
@@ -70,8 +187,8 @@ bool isExpired(const std::string& expiresAt) {
 
 // -- hashToken --------------------------------------------------------------
 //
-// SHA-256 hex digest. Used as the lookup key in daemon.json["tokens"] so an
-// attacker who reads daemon.json can't recover plaintext tokens, and so
+// SHA-256 hex digest. Used as the lookup key in tokens.json["tokens"] so an
+// attacker who reads tokens.json can't recover plaintext tokens, and so
 // that two distinct tokens can never map to the same entry. File-system
 // permissions (mode 0700 dir, 0600 files) remain the primary defense
 // against disk exfiltration.
@@ -100,37 +217,6 @@ TokenStore::TokenStore(std::string configDir)
 }
 
 namespace {
-
-// Helper: load the current DaemonState. Used by issue/revoke for
-// read-modify-write of the `tokens` array.
-//
-// Note: we deliberately don't gate on `fileOk` here. `fileOk` in
-// DaemonStateFile::read means "a running daemon is announcing itself"
-// (instance_id present); but `issue-token` runs as a standalone CLI
-// before the daemon ever starts and writes a state with no
-// instance_id. We still want subsequent issue/revoke calls to see the
-// tokens that earlier ones wrote, so we trust whatever parsed cleanly
-// (schemaVersion == kDaemonStateSchemaVersion) regardless of fileOk.
-DaemonState loadOrInit()
-{
-    DaemonState s = DaemonStateFile::read();
-    if (s.schemaVersion != kDaemonStateSchemaVersion) {
-        // No file on disk, or unparseable. Start with a blank state
-        // so issueToken can persist; the subsequent write fills in
-        // daemon.json so future invocations round-trip the `tokens`
-        // array.
-        s = DaemonState{};
-    }
-    return s;
-}
-
-bool persistTokens(DaemonState& s)
-{
-    // Refresh ephemeral fields if not already set. issue-token without
-    // a running daemon shouldn't claim its pid or boot timestamp.
-    if (s.startedAt.empty()) s.startedAt = currentUtcIso8601();
-    return DaemonStateFile::write(s);
-}
 
 bool writeRawTokenFile(const std::string& path,
                        const std::string& name,
@@ -171,12 +257,12 @@ TokenStore::issueToken(const std::string& name,
 {
     if (!isSafeName(name)) return std::nullopt;
 
-    DaemonState s = loadOrInit();
-    auto it = std::find_if(s.tokens.begin(), s.tokens.end(),
+    auto tokens = TokensFile::read();
+    auto it = std::find_if(tokens.begin(), tokens.end(),
         [&](const TokenEntry& e) { return e.name == name; });
-    if (it != s.tokens.end()) {
+    if (it != tokens.end()) {
         if (!replace) return std::nullopt;
-        s.tokens.erase(it);
+        tokens.erase(it);
     }
 
     const std::string raw = generateToken();
@@ -188,14 +274,14 @@ TokenStore::issueToken(const std::string& name,
     e.issuedAt  = issuedAt;
     e.expiresAt = expiresAt;
     e.localOnly = localOnly;
-    s.tokens.push_back(e);
+    tokens.push_back(e);
 
     // Write order matters for atomicity:
     //   1. raw file FIRST — its absence is recoverable (operator can
     //      `revoke-token <name>` then re-issue), and there's no
     //      authentication impact while it's missing.
-    //   2. daemon.json with the new hash entry SECOND — only after
-    //      the raw file is on disk. If we wrote daemon.json first
+    //   2. tokens.json with the new hash entry SECOND — only after
+    //      the raw file is on disk. If we wrote tokens.json first
     //      and then raw-file write failed, the hash entry would be
     //      stranded: validators would accept the token but no
     //      operator-readable copy of the raw value exists.
@@ -205,7 +291,7 @@ TokenStore::issueToken(const std::string& name,
     // we don't leave an unreferenced credential file behind.
     if (!writeRawTokenFile(rawTokenFilePath(name), name, raw, issuedAt))
         return std::nullopt;
-    if (!persistTokens(s)) {
+    if (!TokensFile::write(tokens)) {
         std::error_code ec;
         fs::remove(fs::path(rawTokenFilePath(name)), ec);
         return std::nullopt;
@@ -218,14 +304,14 @@ bool TokenStore::revokeToken(const std::string& name)
 {
     if (!isSafeName(name)) return false;
 
-    DaemonState s = loadOrInit();
-    const auto before = s.tokens.size();
-    s.tokens.erase(
-        std::remove_if(s.tokens.begin(), s.tokens.end(),
+    auto tokens = TokensFile::read();
+    const auto before = tokens.size();
+    tokens.erase(
+        std::remove_if(tokens.begin(), tokens.end(),
                        [&](const TokenEntry& e) { return e.name == name; }),
-        s.tokens.end());
-    if (s.tokens.size() == before) return false;
-    if (!persistTokens(s)) return false;
+        tokens.end());
+    if (tokens.size() == before) return false;
+    if (!TokensFile::write(tokens)) return false;
 
     // Best-effort remove the operator-copyable raw file. It may already
     // be gone (the operator deleted it post-copy, by design).
@@ -237,9 +323,9 @@ bool TokenStore::revokeToken(const std::string& name)
 std::vector<IssuedToken> TokenStore::listTokens() const
 {
     std::vector<IssuedToken> out;
-    DaemonState s = DaemonStateFile::read();
-    out.reserve(s.tokens.size());
-    for (const auto& e : s.tokens) {
+    auto tokens = TokensFile::read();
+    out.reserve(tokens.size());
+    for (const auto& e : tokens) {
         std::error_code ec;
         const bool present = fs::exists(fs::path(rawTokenFilePath(e.name)), ec);
         out.push_back({e.name, e.issuedAt, e.expiresAt, e.localOnly, present});
@@ -252,8 +338,8 @@ TokenStore::lookupByToken(const std::string& token,
                           const std::string& transportProtocol) const
 {
     const std::string h = hashToken(token);
-    DaemonState s = DaemonStateFile::read();
-    for (const auto& e : s.tokens) {
+    const auto tokens = TokensFile::read();
+    for (const auto& e : tokens) {
         if (e.hash != h) continue;
         if (isExpired(e.expiresAt))                 return std::nullopt;
         if (e.localOnly && transportProtocol != "local")

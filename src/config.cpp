@@ -35,11 +35,13 @@ QString Config::configDir()
 }
 
 QString Config::daemonDir()         { return configDir() + "/daemon"; }
-QString Config::daemonConfigPath()  { return daemonDir() + "/daemon.json"; }
+QString Config::daemonConfigPath()  { return daemonDir() + "/config.json"; }
+QString Config::daemonStatePath()   { return daemonDir() + "/state.json"; }
+QString Config::daemonTokensPath()  { return daemonDir() + "/tokens.json"; }
 QString Config::daemonTokensDir()   { return daemonDir() + "/tokens"; }
 
 QString Config::clientDir()         { return configDir() + "/client"; }
-QString Config::clientConfigPath()  { return clientDir() + "/client.json"; }
+QString Config::clientConfigPath()  { return clientDir() + "/config.json"; }
 
 QString Config::clientTokenPath(const QString& filename)
 {
@@ -55,8 +57,8 @@ QString Config::tokenFromEnv()
 QString Config::getToken()
 {
     // Priority 1: environment variable. Priority 2: the raw-token file
-    // referenced by client/client.json's `token_file` field — that's
-    // resolved inside ClientState since it requires parsing client.json.
+    // referenced by client/config.json's `token_file` field — that's
+    // resolved inside ClientState since it requires parsing config.json.
     // This helper only handles the env override; ClientState falls back
     // to it when its own resolution misses.
     return tokenFromEnv();

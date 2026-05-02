@@ -3,8 +3,9 @@
 
 #include "command.h"
 
-// `logoscore revoke-token NAME` — removes the token from tokens.db and
-// deletes tokens/<name>.json. Exit 3 if no token with that name exists.
+// `logoscore revoke-token NAME` — removes the token from
+// daemon/tokens.json and deletes daemon/tokens/<name>.json. Exit 3
+// if no token with that name exists.
 class RevokeTokenCommand : public Command {
 public:
     using Command::Command;

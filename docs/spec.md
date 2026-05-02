@@ -43,12 +43,13 @@ The CLI follows a daemon + client architecture. A long-running daemon process ho
 **Daemon** (`logoscore -D`):
 - Starts the Logos Core runtime and Qt event loop.
 - Discovers modules in configured directories.
-- Writes a state file to `~/.logoscore/daemon/daemon.json` describing the listeners it opened plus the hashed client tokens.
-- Auto-issues an `auto` token for the local same-host client and emits `~/.logoscore/client/client.json` + `~/.logoscore/client/auto.json`.
-- Removes the state file on shutdown.
+- Writes `~/.logoscore/daemon/state.json` (live runtime state — instance_id, pid, started_at, resolved transports) on startup, removed on clean shutdown.
+- Maintains `~/.logoscore/daemon/tokens.json` (hashed-at-rest accepted-token list — survives restarts).
+- Persists `~/.logoscore/daemon/config.json` (operator preferences) only when the operator passed `--persist-config`.
+- Auto-issues an `auto` token for the local same-host client and emits `~/.logoscore/client/config.json` + `~/.logoscore/client/auto.json` on the first boot into an empty config dir.
 
 **Client commands** (all other subcommands):
-- Read `~/.logoscore/client/client.json` to learn how to dial the daemon and which token file to load.
+- Read `~/.logoscore/client/config.json` to learn how to dial the daemon and which token file to load.
 - Connect via the Core Manager's RPC interface using the token.
 - Execute the requested operation, print the result, and exit.
 - If no daemon is running, exit with code 2 and a clear error message.
@@ -78,7 +79,7 @@ logoscore [global-flags] <command> [command-flags] [args...]
 The daemon defaults to a local Unix socket only for each well-known module
 (`core_service`, `capability_module`). To expose either over the network,
 pass one or more `--module-transport` flags; each opens an additional
-listener that gets advertised in `daemon/daemon.json`.
+listener that gets advertised in `daemon/state.json`'s `resolved` block.
 
 | Flag | Applies to | Description |
 |------|------------|-------------|
@@ -115,17 +116,23 @@ can dial each. Examples:
 
 #### Client-side dial spec
 
-Client commands never read `daemon/daemon.json`. They read
-`<configDir>/client/client.json`, which holds the dial spec
-(`endpoint`, `host`, `port`, `codec`, `cert`/`key`/`ca`/`verify_peer` for
-TLS) and a `token_file` pointing at the raw-token file alongside.
+Client commands never read daemon-only files (`daemon/config.json`,
+`daemon/tokens.json`). They read `<configDir>/client/config.json`,
+which holds the dial spec (`endpoint`, `host`, `port`, `codec`,
+`cert`/`key`/`ca`/`verify_peer` for TLS) and a `token_file` pointing
+at the raw-token file alongside. (`status` consults
+`daemon/state.json` for a fast same-host liveness check via
+`kill(pid, 0)`, but never opens daemon-only secrets.)
 
-The daemon auto-emits `client.json` + `auto.json` for the local same-host
-case at boot — local clients work out of the box with no manual setup.
-For remote clients (port-forwarded containers, NAT, SSH tunnels) hand-write
-`client.json` with the right host:port for each module and reference a
-`token_file` whose contents was copied from a `daemon/tokens/<name>.json`
-on the daemon host.
+The daemon auto-emits `client/config.json` + `client/auto.json` for the
+local same-host case on the first boot into an empty config dir — local
+clients work out of the box with no manual setup. Subsequent boots leave
+an existing `client/config.json` alone (so an operator-written
+remote-client config isn't clobbered). For remote clients
+(port-forwarded containers, NAT, SSH tunnels) hand-write
+`client/config.json` with the right host:port for each module and
+reference a `token_file` whose contents was copied from a
+`daemon/tokens/<name>.json` on the daemon host.
 
 ---
 
@@ -140,7 +147,7 @@ logoscore -D [--modules-dir <path>]...
 logoscore daemon [--modules-dir <path>]...
 ```
 
-Starts the Logos Core runtime in the foreground. Startup and shutdown messages go to stdout (so `> logs.txt` captures them); debug/info/warning logs go to stderr and are suppressed unless `--verbose` is passed. Writes `~/.logoscore/daemon/daemon.json` on startup (and emits `~/.logoscore/client/client.json` + `~/.logoscore/client/auto.json` for the local client), removes the daemon state file on clean shutdown.
+Starts the Logos Core runtime in the foreground. Startup and shutdown messages go to stdout (so `> logs.txt` captures them); debug/info/warning logs go to stderr and are suppressed unless `--verbose` is passed. Writes `~/.logoscore/daemon/state.json` on startup (and on the first fresh boot also emits `~/.logoscore/client/config.json` + `~/.logoscore/client/auto.json` for the local client), removes `state.json` on clean shutdown.
 
 The daemon scans the configured module directories for available plugins and makes them available for loading via client commands.
 
@@ -268,7 +275,7 @@ Stop the running daemon.
 logoscore stop
 ```
 
-Sends a shutdown request to the daemon via `core_service`. The daemon performs a clean shutdown: unloads all modules, removes `daemon/daemon.json`, and exits. The client prints a confirmation message and exits.
+Sends a shutdown request to the daemon via `core_service`. The daemon performs a clean shutdown: unloads all modules, removes `daemon/state.json`, and exits. The client prints a confirmation message and exits.
 
 If the daemon exits before the RPC response arrives (expected behavior), the client treats the connection loss as a successful shutdown.
 
@@ -302,7 +309,7 @@ Issue a new named token and write it to `<configDir>/daemon/tokens/<name>.json`.
 logoscore issue-token --name <name> [--replace] [--expires <dur>] [--local-only]
 ```
 
-Appends an entry to `<configDir>/daemon/daemon.json["tokens"]` (a
+Appends an entry to `<configDir>/daemon/tokens.json["tokens"]` (a
 `{name, hash, issued_at, expires_at, local_only}` row, hashes are SHA-256
 hex) and writes a companion raw-value file at `daemon/tokens/<name>.json`
 for distribution. Without `--replace`, the command refuses to overwrite an
@@ -316,7 +323,7 @@ so even a compromised TCP listener can't replay it.
 After copying `daemon/tokens/<name>.json` to the client host (typically into
 the client's `<configDir>/client/`), the operator may delete the daemon-side
 raw file — the daemon validates against the in-memory map seeded from
-`daemon.json["tokens"]`'s hashes, not the raw file. Distribute the raw file
+`tokens.json["tokens"]`'s hashes, not the raw file. Distribute the raw file
 the way you'd distribute a private key; do not commit it to version control.
 
 This command operates directly on the config dir on disk; it doesn't need the
@@ -325,7 +332,7 @@ restart (SIGHUP-driven reload is a follow-up).
 
 ### `revoke-token <name>`
 
-Remove a named token from `<configDir>/daemon/daemon.json["tokens"]`.
+Remove a named token from `<configDir>/daemon/tokens.json["tokens"]`.
 
 ```
 logoscore revoke-token <name>
@@ -365,21 +372,21 @@ The CLI needs a token to authenticate with the daemon's Core Manager. This token
 1. DAEMON STARTS
    logoscore -D -m ./modules
    → Daemon mints an "auto" token (local_only=true) for the local client
-   → Hash + metadata persisted into ~/.logoscore/daemon/daemon.json["tokens"]
+   → Hash + metadata persisted into ~/.logoscore/daemon/tokens.json["tokens"]
    → Raw value emitted to ~/.logoscore/client/auto.json
-   → ~/.logoscore/client/client.json written so local clients dial correctly
+   → ~/.logoscore/client/config.json written so local clients dial correctly
 
 2. CLIENT CONNECTS
    logoscore load-module waku
-   → Reads ~/.logoscore/client/client.json (dial spec + token_file)
+   → Reads ~/.logoscore/client/config.json (dial spec + token_file)
    → Loads the raw token from the file token_file points at
    → Sends token with RPC request to Core Manager
-   → Core Manager validates the token's hash against daemon.json["tokens"]
+   → Core Manager validates the token's hash against tokens.json["tokens"]
    → Request authorized, module loads
 
 3. REMOTE / PROGRAMMATIC ACCESS
    LOGOSCORE_TOKEN=<token> logoscore load-module waku
-   → Token from env var overrides the one in client.json's token_file
+   → Token from env var overrides the one in client/config.json's token_file
    → Useful when client/ isn't writable (remote, containers, CI)
 ```
 
@@ -390,12 +397,12 @@ When a client command runs, the token is resolved in this order (first match win
 | Priority | Source | Example |
 |----------|--------|---------|
 | 1 | `LOGOSCORE_TOKEN` env var | `LOGOSCORE_TOKEN=abc123 logoscore list-modules` |
-| 2 | `<configDir>/client/<token_file>` | the path is whatever `client.json` says (defaults to `auto.json`) |
+| 2 | `<configDir>/client/<token_file>` | the path is whatever `client/config.json` says (defaults to `auto.json`) |
 
 A named token issued by `logoscore issue-token --name alice` produces
 `<configDir>/daemon/tokens/alice.json` on the daemon host. To use it as a
 client on a different machine, copy the file into the client host's
-`<configDir>/client/` and reference it via `token_file` in `client.json`.
+`<configDir>/client/` and reference it via `token_file` in `client/config.json`.
 Once copied, the operator may delete the daemon-side raw file — validation
 keeps working because the hash is what the daemon checks.
 
@@ -403,9 +410,9 @@ keeps working because the hash is what the daemon checks.
 
 **Local usage (same machine):** No manual token management needed. At boot
 the daemon auto-issues an `auto` token (with `local_only=true`, so it can't
-be used over TCP), writes the hash into `daemon/daemon.json["tokens"]`, and
+be used over TCP), writes the hash into `daemon/tokens.json["tokens"]`, and
 emits the raw value into `client/auto.json` alongside a local-default
-`client/client.json`. Local client commands just work.
+`client/config.json`. Local client commands just work.
 
 **Remote or programmatic usage:** Issue a named token on the daemon host and
 move it to the client host:
@@ -420,10 +427,10 @@ cat ~/.logoscore/daemon/tokens/alice.json
 export LOGOSCORE_TOKEN=550e8400-e29b-41d4-a716-446655440000
 logoscore list-modules --json
 
-# Or persist by copying the file alongside a hand-written client.json:
+# Or persist by copying the file alongside a hand-written client/config.json:
 mkdir -p ~/.logoscore/client
 scp daemon-host:~/.logoscore/daemon/tokens/alice.json ~/.logoscore/client/alice.json
-# then edit ~/.logoscore/client/client.json so token_file = "alice.json"
+# then edit ~/.logoscore/client/config.json so token_file = "alice.json"
 ```
 
 **CI / containers:** Pass the token as an environment variable at runtime:
@@ -432,36 +439,76 @@ scp daemon-host:~/.logoscore/daemon/tokens/alice.json ~/.logoscore/client/alice.
 docker run -e LOGOSCORE_TOKEN=$TOKEN myimage logoscore list-modules --json
 ```
 
-### Daemon State File
+### Daemon files (config / state / tokens)
 
-The daemon writes `<configDir>/daemon/daemon.json` on startup. It carries the
-listeners the daemon opened plus the hashed-token table; the raw token values
-live in sibling `daemon/tokens/<name>.json` files so the operator can `scp`
-each one to its target host.
+The daemon dir splits by lifetime into three files:
+
+- **`daemon/state.json`** — live runtime state. Written every boot
+  (after transports actually bind), removed on clean shutdown.
+- **`daemon/config.json`** — operator preferences. Written ONLY when
+  the operator passed `--persist-config`; otherwise absent.
+- **`daemon/tokens.json`** — hashed-at-rest accepted-token list.
+  Independent of the running daemon's lifetime.
+
+#### `daemon/state.json`
 
 ```json
 {
+  "version": 2,
   "instance_id": "a3f1c8d20b4e",
   "pid": 12345,
   "started_at": "2026-03-23T14:00:00Z",
-  "modules_dirs": ["/path/to/modules"],
-  "modules": {
-    "core_service": {
-      "transports": [
-        { "protocol": "local" },
-        { "protocol": "tcp",     "host": "0.0.0.0", "port": 6000, "codec": "json" },
-        { "protocol": "tcp_ssl", "host": "0.0.0.0", "port": 6443,
-          "codec": "cbor", "ca_file": "/etc/logoscore/ca.pem",
-          "verify_peer": true }
-      ]
+  "config_source": "cli",
+  "resolved": {
+    "modules_dirs": ["/path/to/modules"],
+    "load_modules": "",
+    "persistence_path": "/var/lib/logoscore",
+    "modules": {
+      "core_service": {
+        "transports": [
+          { "protocol": "local" },
+          { "protocol": "tcp",     "host": "0.0.0.0", "port": 6000, "codec": "json" },
+          { "protocol": "tcp_ssl", "host": "0.0.0.0", "port": 6443,
+            "codec": "cbor", "ca_file": "/etc/logoscore/ca.pem",
+            "verify_peer": true }
+        ]
+      },
+      "capability_module": {
+        "transports": [
+          { "protocol": "local" },
+          { "protocol": "tcp", "host": "127.0.0.1", "port": 6001, "codec": "json" }
+        ]
+      }
     },
-    "capability_module": {
-      "transports": [
-        { "protocol": "local" },
-        { "protocol": "tcp", "host": "127.0.0.1", "port": 6001, "codec": "json" }
-      ]
-    }
-  },
+    "ssl": { "cert": "", "key": "", "ca": "" },
+    "insecure_tcp": false
+  }
+}
+```
+
+- `instance_id` is a 12-char UUID prefix the client uses with `LogosInstance::id()`
+  to reconstruct the same registry URL the daemon published (`local:logos_core_service_<id>`).
+- `pid` lets co-resident clients detect a stale state file
+  (`kill(pid, 0) == ESRCH` after a hard crash).
+- `config_source` records where the running daemon's config came from:
+  `cli` (any `--module-transport`/`--insecure-tcp`/etc. flag was
+  passed), `config.json` (loaded from disk only), or `defaults`.
+- `resolved.modules` is the post-bind transport set: `port: 0` in
+  config.json becomes the actually-bound port here.
+- `resolved` mirrors the shape of `daemon/config.json` (same field set,
+  minus `version`).
+
+#### `daemon/config.json` (operator preferences)
+
+Same shape as `state.json`'s `resolved` block, plus `version`. Reflects
+*operator intent* — `port: 0` stays `0` (auto-pick) — not the resolved
+post-bind values. Written only when `--persist-config` is passed.
+
+#### `daemon/tokens.json`
+
+```json
+{
+  "version": 2,
   "tokens": [
     { "name": "auto",  "hash": "<sha256-hex>", "issued_at": "...", "expires_at": null, "local_only": true },
     { "name": "alice", "hash": "<sha256-hex>", "issued_at": "...", "expires_at": "...", "local_only": false }
@@ -469,26 +516,18 @@ each one to its target host.
 }
 ```
 
-- `instance_id` is a 12-char UUID prefix the client uses with `LogosInstance::id()`
-  to reconstruct the same registry URL the daemon published (`local:logos_core_service_<id>`).
-- `modules` is keyed by module name. Each entry's `transports` array
-  lists the endpoints the daemon opened *for that module*.
-- `capability_module` is advertised separately (and on its own port for
-  TCP/TCP+SSL) so clients can dial it directly for the SDK's
-  auto-`requestModule` token-fetch flow without falling back to a
-  20-second LocalSocket timeout when the daemon is in another OS
-  namespace.
-- `tokens` carries one entry per issued token: `{name, hash, issued_at,
-  expires_at, local_only}`. Hashes are SHA-256 hex; raw values live only
-  in `daemon/tokens/<name>.json` at issue time.
+One entry per issued token: `{name, hash, issued_at, expires_at,
+local_only}`. Hashes are SHA-256 hex; raw values live only in
+`daemon/tokens/<name>.json` at issue time. Independent of the running
+daemon's lifetime — survives restarts.
 
-This file is daemon-owned; the client never reads it. The client reads
-`<configDir>/client/client.json` to learn how to dial. Liveness — *is the
-daemon actually answering?* — is no longer pre-probed; the first RPC (e.g.
-`status`) surfaces a connect failure via the same code path as any other
-method call, so there's one error story instead of "probe ok, RPC fails".
-
-The daemon removes this file on clean shutdown.
+These three files are daemon-owned; the client never reads
+`config.json` or `tokens.json`, and only consults `state.json` for a
+fast same-host liveness check via `kill(pid, 0)`. The client reads
+`<configDir>/client/config.json` to learn how to dial. Liveness — *is
+the daemon actually answering?* — falls through to the first RPC (e.g.
+`status`), so a connect failure surfaces via the same code path as any
+other method call.
 
 ---
 
@@ -580,7 +619,7 @@ Logoscore Daemon
   Uptime:       4h 32m
   Version:      v0.5.0
   Instance ID:  a3f1...c8d2
-  State file:   /Users/iuri/.logoscore/daemon/daemon.json
+  State file:   /Users/iuri/.logoscore/daemon/state.json
 
 Modules: 3 loaded, 1 crashed, 1 not loaded
   waku        v0.1.0    loaded      2h 14m
@@ -620,7 +659,7 @@ $ logoscore status
 Logoscore Daemon
   Status:       not running
 
-No daemon state file at /Users/iuri/.logoscore/daemon/daemon.json
+No daemon state file at /Users/iuri/.logoscore/daemon/state.json
 Run "logoscore -D" to start the daemon.
 
 $ echo $?
@@ -1164,13 +1203,14 @@ kill $WATCH_PID
    → Core initializes
    → Daemon mints "auto" token (local_only=true) for the local client
    → Scans /path/to/modules for available plugins
-   → Writes ~/.logoscore/daemon/daemon.json (instance + listeners + token hashes)
-   → Emits ~/.logoscore/client/client.json + ~/.logoscore/client/auto.json
+   → Writes ~/.logoscore/daemon/state.json (instance + resolved listeners)
+   → Writes ~/.logoscore/daemon/tokens.json (hashed accepted-token list)
+   → Emits ~/.logoscore/client/config.json + ~/.logoscore/client/auto.json
    → Runs event loop (foreground)
 
 2. LOAD MODULES
    logoscore load-module waku
-   → Reads ~/.logoscore/client/client.json (dial spec + token_file)
+   → Reads ~/.logoscore/client/config.json (dial spec + token_file)
    → Loads token from the file token_file points at
    → Connects to daemon via Core Manager RPC with token
    → Daemon resolves dependencies for "waku"
@@ -1197,7 +1237,7 @@ kill $WATCH_PID
    → Client sends shutdown RPC to core_service
    → Daemon schedules quit (with brief delay to send RPC response)
    → Daemon unloads all modules
-   → Removes ~/.logoscore/daemon/daemon.json
+   → Removes ~/.logoscore/daemon/state.json (tokens.json + config.json survive)
    → Exits
 
    Alternatively: Ctrl+C / kill <pid> / SIGTERM

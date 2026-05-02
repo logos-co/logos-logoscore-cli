@@ -28,7 +28,7 @@ namespace {
 //
 // Returns std::nullopt on parse failure so the caller can print a
 // clear error rather than persisting garbage. Empty input returns an
-// empty string (the "no expiry" sentinel that DaemonStateFile encodes
+// empty string (the "no expiry" sentinel that TokensFile encodes
 // as JSON `null`).
 std::optional<std::string> resolveExpires(const std::string& s)
 {

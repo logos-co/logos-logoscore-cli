@@ -17,6 +17,23 @@ std::string ClientStateFile::filePath()
 }
 
 namespace {
+// Process-wide override set by setOverride(). Used by main.cpp to
+// thread CLI-flag-merged client config into RpcClient::connect()
+// without persisting to disk. Empty (nullopt) = no override → fall
+// through to disk read in ClientStateFile::read().
+std::optional<ClientState>& overrideSlot()
+{
+    static std::optional<ClientState> s;
+    return s;
+}
+} // namespace
+
+void ClientStateFile::setOverride(std::optional<ClientState> override)
+{
+    overrideSlot() = std::move(override);
+}
+
+namespace {
 
 json transportToJson(const ClientModuleTransport& t)
 {
@@ -58,6 +75,9 @@ std::optional<ClientModuleTransport> transportFromJson(const json& j)
 
 ClientState ClientStateFile::read()
 {
+    if (auto& slot = overrideSlot(); slot.has_value())
+        return *slot;
+
     ClientState state;
     std::ifstream ifs(filePath());
     if (!ifs) return state;

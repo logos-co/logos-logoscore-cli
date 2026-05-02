@@ -62,7 +62,7 @@ namespace {
 // the number to the listener). Without the pre-allocation the listener
 // would race the kernel to bind and the actual port would only be
 // known *after* the listener was up — too late to advertise in
-// daemon.json.
+// state.json.
 //
 // No "inheritance" here. Each module's transports are independent;
 // nothing about core_service's set leaks into capability_module's.
@@ -70,7 +70,7 @@ namespace {
 //
 // Returns std::nullopt if any non-local listener fails to acquire a
 // port. The caller is expected to abort daemon startup — silently
-// advertising port=0 in daemon.json (the previous behaviour) is
+// advertising port=0 in state.json (the previous behaviour) is
 // worse: clients pick up an unreachable endpoint and time out.
 std::optional<LogosTransportSet> buildTransportSet(
     const std::vector<TransportInfo>& infos,
@@ -109,7 +109,7 @@ std::optional<LogosTransportSet> buildTransportSet(
 
 // Round-trip a LogosTransportSet back into the on-disk TransportInfo
 // shape so we can advertise it under `modules.<name>.transports` in
-// daemon.json. Reverse of buildTransportSet in the sense that the
+// state.json. Reverse of buildTransportSet in the sense that the
 // on-disk shape matches what clients then read.
 std::vector<TransportInfo> toAdvertised(const LogosTransportSet& set)
 {
@@ -128,7 +128,7 @@ std::vector<TransportInfo> toAdvertised(const LogosTransportSet& set)
         t.verifyPeer = c.verifyPeer;
         t.codec = (c.codec == LogosWireCodec::Cbor) ? "cbor" : "json";
         // certFile/keyFile intentionally NOT copied — they're
-        // server-only secrets and don't belong in daemon.json.
+        // server-only secrets and don't belong in state.json.
         out.push_back(std::move(t));
     }
     return out;
@@ -136,11 +136,14 @@ std::vector<TransportInfo> toAdvertised(const LogosTransportSet& set)
 
 } // namespace
 
-int Daemon::start(int argc, char* argv[], const std::vector<std::string>& modulesDirs,
-                  const std::string& persistencePath,
-                  const std::map<std::string,
-                                 std::vector<TransportInfo>>& moduleTransports)
+int Daemon::start(int argc, char* argv[],
+                  const DaemonConfig& cfg,
+                  const std::string& configSource,
+                  bool persistConfig)
 {
+    const auto& modulesDirs      = cfg.modulesDirs;
+    const auto& persistencePath  = cfg.persistencePath;
+    const auto& moduleTransports = cfg.modules;
     // 1. Generate instance ID BEFORE core init, so logos_host inherits it
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -249,13 +252,22 @@ int Daemon::start(int argc, char* argv[], const std::vector<std::string>& module
     // issued token (alice, bob, …) isn't recoverable on restart — those
     // tokens validate via TokenStore::lookupByToken on demand. The `auto`
     // token is special: the daemon (re-)generates it every boot,
-    // overwrites both the hash entry in daemon.json and the raw files at
+    // overwrites both the hash entry in tokens.json and the raw files at
     // daemon/tokens/auto.json + client/auto.json, and registers the raw
     // version with the in-process TokenManager so the hot path stays
     // fast (no per-RPC hash + DB lookup). `local_only=true` keeps a
     // leaked client/auto.json from being usable over TCP from a remote
     // host. Operator-issued tokens take effect only on the next daemon
     // restart (or future SIGHUP-driven reload).
+    // Capture the pre-issue tokens-file state to gate the local-client
+    // config auto-emit below. A daemon launching into an empty config
+    // dir gets a generated client/config.json + auto.json so `status`
+    // works out of the box; a returning daemon (tokens.json already
+    // had operator-issued entries) leaves client/config.json alone —
+    // the operator has shown they're managing the client side.
+    const bool tokensFileWasMissing =
+        !std::filesystem::exists(Config::daemonTokensPath().toStdString());
+
     TokenStore tokenStore(Config::configDir().toStdString());
     auto autoTokenRaw = tokenStore.issueToken("auto", /*expiresAt=*/{},
                                               /*localOnly=*/true,
@@ -268,46 +280,81 @@ int Daemon::start(int argc, char* argv[], const std::vector<std::string>& module
     TokenManager::instance().saveToken("cli_client",
                                        QString::fromStdString(*autoTokenRaw));
 
-    // 9. Write daemon-state file — DaemonStateFile::write picks up
-    //    everything that issueToken just persisted (the `auto` entry in
-    //    `tokens` plus the legacy advertised-endpoints map). We refresh
-    //    ephemeral fields (pid / started_at / instance_id / modules /
-    //    persistence) here; durable operator-issued tokens written to
-    //    disk by an earlier `issue-token` call survive untouched.
-    DaemonState state = DaemonStateFile::read();
-    if (state.schemaVersion != kDaemonStateSchemaVersion) state = DaemonState{};
-    state.instanceId      = instanceId;
-    state.pid             = pid;
-    state.startedAt       = currentUtcIso8601();
-    state.modulesDirs     = modulesDirs;
-    state.persistencePath = persistencePath;
-    state.modules.clear();
-    state.modules.emplace("core_service",      toAdvertised(coreTransports));
-    state.modules.emplace("capability_module", toAdvertised(capabilityTransports));
-    if (!DaemonStateFile::write(state)) {
+    // 9. Write the live-instance state file. Carries the resolved
+    //    transport endpoints (post-bind, with real ports), instanceId/
+    //    pid/startedAt for co-resident clients, and a snapshot of the
+    //    operator-resolved config for diagnostics. Persistent state
+    //    (tokens.json) and operator preferences (config.json, only
+    //    written on --persist-config) live in their own files and
+    //    aren't touched here.
+    DaemonRuntimeState state;
+    state.instanceId    = instanceId;
+    state.pid           = pid;
+    state.startedAt     = currentUtcIso8601();
+    state.configSource  = configSource;
+    // Start from the operator-merged config so downstream consumers
+    // see every preference (loadModules, ssl paths, insecureTcp), then
+    // overwrite the per-module map with the resolved (post-bind)
+    // transports — that's the only field where state.json diverges
+    // from config.json on intent.
+    state.resolved              = cfg;
+    state.resolved.modules.clear();
+    state.resolved.modules.emplace("core_service",      toAdvertised(coreTransports));
+    state.resolved.modules.emplace("capability_module", toAdvertised(capabilityTransports));
+    if (!DaemonRuntimeStateFile::write(state)) {
         fprintf(stderr, "Failed to write daemon state file: %s\n",
-                DaemonStateFile::filePath().c_str());
+                DaemonRuntimeStateFile::filePath().c_str());
         return 1;
     }
 
-    // 10. Generate the local-client convenience artifacts (client/client.json
-    //     + client/auto.json). Remote clients are expected to write their
-    //     own — the daemon doesn't know what host:port a remote operator
-    //     dials it from.
-    if (!DaemonStateFile::writeLocalClientArtifacts(instanceId, *autoTokenRaw, state.startedAt)) {
+    // Persist operator preferences only if asked. Done after state.json
+    // is on disk so a config that fails earlier (e.g. bind failure)
+    // doesn't pollute config.json. The persisted file holds intent
+    // (port=0 stays 0) — the resolved values are in state.json.
+    // Persistence failures are non-fatal: log and continue.
+    if (persistConfig) {
+        if (DaemonConfigFile::write(cfg)) {
+            fprintf(stdout, "Persisted config: %s\n",
+                    DaemonConfigFile::filePath().c_str());
+        } else {
+            fprintf(stderr, "Warning: failed to persist config to %s\n",
+                    DaemonConfigFile::filePath().c_str());
+        }
+    }
+
+    // 10. Generate the local-client convenience artifacts (client/config.json
+    //     + client/auto.json). The config.json write is gated inside
+    //     writeLocalClientArtifacts on the file not already existing —
+    //     remote clients are expected to write their own, and an
+    //     operator-authored remote config must not be clobbered just
+    //     because a daemon happened to start in the same config dir.
+    //     The raw client/auto.json is always (re)written so a config.json
+    //     pointing at "auto.json" stays consistent with the freshly-issued
+    //     auto token.
+    if (!DaemonRuntimeStateFile::writeLocalClientArtifacts(
+            instanceId, *autoTokenRaw, state.startedAt, tokensFileWasMissing)) {
         fprintf(stderr, "Warning: failed to write local client artifacts under %s\n",
                 Config::clientDir().toStdString().c_str());
     }
 
     fprintf(stdout, "Logoscore daemon started (pid %lld, instance %s)\n",
             static_cast<long long>(pid), instanceId.c_str());
-    fprintf(stdout, "Daemon state: %s\n", DaemonStateFile::filePath().c_str());
+    fprintf(stdout, "Daemon state: %s\n", DaemonRuntimeStateFile::filePath().c_str());
     fprintf(stdout, "Local client config: %s\n",
             Config::clientConfigPath().toStdString().c_str());
     fflush(stdout);
 
-    // 8. Set up signal handlers for clean shutdown
+    // 8. Set up signal handlers for clean shutdown. SIGINT / SIGTERM
+    //    fire `QCoreApplication::quit()`, which makes `exec()` return
+    //    and the explicit cleanup below runs. We also subscribe to
+    //    `aboutToQuit` as a defense-in-depth: any future code path
+    //    that calls `quit()` without going through the explicit
+    //    cleanup (e.g. an exception caught by the event loop) still
+    //    unlinks state.json so a co-resident client can detect
+    //    "no live daemon".
     setupSignalHandlers();
+    QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
+                     []() { DaemonRuntimeStateFile::remove(); });
 
     // 9. Run Qt event loop (blocks)
     int result = QCoreApplication::exec();
@@ -317,7 +364,7 @@ int Daemon::start(int argc, char* argv[], const std::vector<std::string>& module
     fflush(stdout);
 
     logos_core_cleanup();
-    DaemonStateFile::remove();
+    DaemonRuntimeStateFile::remove();
 
     delete coreServiceImpl;
     delete coreServiceApi;
