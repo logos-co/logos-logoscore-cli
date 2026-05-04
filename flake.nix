@@ -75,18 +75,23 @@
               pkgs.cmake
               pkgs.ninja
               pkgs.pkg-config
+              pkgs.qt6.wrapQtAppsNoGuiHook
             ];
 
             buildInputs = [
-              # cppSdk propagates Qt6, Boost, OpenSSL, and nlohmann_json
+              # cppSdk propagates Boost, OpenSSL, and nlohmann_json
               # through `propagatedBuildInputs` on its symlinkJoin, so
-              # we don't list them explicitly here. CMake's
+              # we don't list them explicitly here. Qt is intentionally
+              # NOT propagated by the SDK (qtbase's setup-hook fires
+              # `qtPreHook` which errors unless `wrapQtAppsHook` was
+              # sourced first, and that ordering can't be guaranteed
+              # through propagation), so we list it explicitly. CMake's
               # `find_package(logos-cpp-sdk)` then re-runs
-              # `find_dependency(...)` against those propagated entries
-              # at configure time and stitches them into the imported
-              # target. If the SDK's propagation set ever shrinks,
-              # missing find_package calls in our own CMakeLists
-              # (OpenSSL, nlohmann_json, …) will surface clearly.
+              # `find_dependency(...)` against the propagated non-Qt
+              # entries + the Qt entries at configure time and stitches
+              # them into the imported target.
+              pkgs.qt6.qtbase
+              pkgs.qt6.qtremoteobjects
               cppSdk
               pkgs.stduuid
               pkgs.cli11
@@ -193,9 +198,9 @@
               pkgs.gtest
               liblogosLib
               moduleClientLib
-              # cppSdk propagates Qt6, Boost, OpenSSL, nlohmann_json
-              # via its symlinkJoin's propagatedBuildInputs — see the
-              # `build` derivation above for the rationale.
+              # cppSdk propagates Boost, OpenSSL, nlohmann_json (but
+              # not Qt) via its symlinkJoin's propagatedBuildInputs —
+              # see the `build` derivation above for the rationale.
               cppSdk
             ];
 
@@ -264,12 +269,15 @@
               pkgs.cmake
               pkgs.ninja
               pkgs.pkg-config
+              pkgs.qt6.wrapQtAppsNoGuiHook
             ];
 
             buildInputs = [
-              # cppSdk propagates Qt6, Boost, OpenSSL, nlohmann_json
-              # via its symlinkJoin's propagatedBuildInputs — see the
-              # `build` derivation above for the rationale.
+              # cppSdk propagates Boost, OpenSSL, nlohmann_json (but
+              # not Qt) via its symlinkJoin's propagatedBuildInputs —
+              # see the `build` derivation above for the rationale.
+              pkgs.qt6.qtbase
+              pkgs.qt6.qtremoteobjects
               cppSdk
               pkgs.gtest
               pkgs.stduuid
