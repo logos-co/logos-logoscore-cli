@@ -14,6 +14,25 @@ static std::vector<std::string> parseParams(const std::string& paramsStr) {
     std::string current;
     char quoteChar = 0;
     bool inQuote = false;
+    // `hasQuoted` tracks whether a quoted fragment contributed to the
+    // current arg — even if empty (`""`). Without this flag we'd have no
+    // way to tell a user-intended empty string apart from an unfilled
+    // position between commas, so every `concat("", "")` would collapse
+    // into zero args. Resets on each comma.
+    bool hasQuoted = false;
+    // `seenComma` tracks whether we've passed at least one separator —
+    // if so, the params list has declared N slots and we should preserve
+    // empty-between-commas as empty strings rather than swallowing them.
+    bool seenComma = false;
+
+    auto pushArg = [&]() {
+        std::string trimmed = trim(current);
+        if (!trimmed.empty() || hasQuoted || seenComma) {
+            result.push_back(trimmed);
+        }
+        current.clear();
+        hasQuoted = false;
+    };
 
     for (size_t i = 0; i < paramsStr.length(); ++i) {
         char c = paramsStr[i];
@@ -22,12 +41,16 @@ static std::vector<std::string> parseParams(const std::string& paramsStr) {
             if (c == '\'' || c == '"') {
                 inQuote = true;
                 quoteChar = c;
+                hasQuoted = true;
             } else if (c == ',') {
-                std::string trimmed = trim(current);
-                if (!trimmed.empty()) {
-                    result.push_back(trimmed);
-                }
-                current.clear();
+                // Set `seenComma` BEFORE flushing so the segment we
+                // just consumed (which may be empty for a leading
+                // comma like `,a` or back-to-back `,,`) gets pushed
+                // as an explicit empty arg. Setting after pushArg
+                // would drop the *first* empty position in those
+                // cases — e.g. `,a` becomes ["a"] instead of ["", "a"].
+                seenComma = true;
+                pushArg();
             } else {
                 current += c;
             }
@@ -40,9 +63,10 @@ static std::vector<std::string> parseParams(const std::string& paramsStr) {
         }
     }
 
-    std::string trimmed = trim(current);
-    if (!trimmed.empty()) {
-        result.push_back(trimmed);
+    // Flush the trailing arg. The top-level "is there anything?" check
+    // avoids pushing a phantom arg for completely empty input (`fn()`).
+    if (!current.empty() || hasQuoted || seenComma) {
+        pushArg();
     }
 
     return result;

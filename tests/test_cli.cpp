@@ -209,8 +209,13 @@ TEST_F(CLITest, InlineMode_LoadModulesOption) {
     std::string output;
     int exitCode = runLogoscoreWithTimeout("--verbose --load-modules fake_module_xyz", &output);
 
-    EXPECT_NE(output.find("Module not found in known plugins:"), std::string::npos)
-        << "Should see warning that module was not found";
+    // liblogos renamed the "known plugins" warning to "known modules" in
+    // commit b82145c. Accept either so the test tolerates both the pinned
+    // and the current liblogos pointing at this same source.
+    EXPECT_TRUE(
+        output.find("Module not found in known modules:") != std::string::npos
+        || output.find("Module not found in known plugins:") != std::string::npos
+    ) << "Should see warning that module was not found";
     EXPECT_NE(output.find("fake_module_xyz"), std::string::npos)
         << "Should see the module name in output";
 }

@@ -1,10 +1,11 @@
 #include "client.h"
 #include "../config.h"
-#include "../daemon/connection_file.h"
+#include "client_state.h"
 
 #include <logos_api.h>
 #include <logos_api_client.h>
 #include <logos_instance.h>
+#include <logos_transport_config.h>
 #include <token_manager.h>
 
 #include <QCoreApplication>
@@ -23,7 +24,7 @@ struct RpcClient::Impl {
     LogosAPIClient* coreService = nullptr;
     QString instanceId;
     QString token;
-    ConnectionInfo connInfo;
+    ClientState clientState;
 
     // Helper: invoke a core_service method and return a QJsonObject result
     template<typename... Args>
@@ -46,36 +47,94 @@ RpcClient::~RpcClient()
 
 bool RpcClient::connect()
 {
-    // Read connection file
-    d->connInfo = ConnectionFile::read();
-    if (!d->connInfo.valid) {
-        m_lastError = "No running logoscore daemon. Start one with: logoscore -D";
+    // Read client config (pure parse — doesn't probe the daemon).
+    // The client never opens daemon/state.json or daemon/config.json:
+    // the daemon's runtime state and operator preferences aren't ours
+    // to inspect. We dial whatever client/config.json says, with
+    // whatever token lives in client/<token_file>. ClientStateFile::read
+    // also serves an in-process override set by main.cpp when CLI
+    // client-config flags were passed without --persist-config — the
+    // dial spec then reflects flags + config.json + defaults for this
+    // run only.
+    d->clientState = ClientStateFile::read();
+    if (!d->clientState.fileOk) {
+        m_lastError = "No client config at " +
+            QString::fromStdString(ClientStateFile::filePath()) +
+            ". Either run the daemon locally first (it auto-emits a "
+            "config), pass client flags + --persist-config, or write "
+            "client/config.json + the matching token file by hand.";
         return false;
     }
 
-    d->instanceId = QString::fromStdString(d->connInfo.instanceId);
-
-    // Resolve token
+    // Resolve token: env override wins, else read from client/<token_file>.
     d->token = Config::getToken();
     if (d->token.isEmpty())
-        d->token = QString::fromStdString(d->connInfo.token);
+        d->token = QString::fromStdString(
+            ClientStateFile::readTokenFile(d->clientState.tokenFile));
 
     if (d->token.isEmpty()) {
-        m_lastError = "No authentication token found.";
+        m_lastError = QString("No authentication token. Expected at %1 or in $LOGOSCORE_TOKEN.")
+            .arg(QString::fromStdString(
+                Config::clientTokenPath(QString::fromStdString(d->clientState.tokenFile)).toStdString()));
         return false;
     }
 
-    // Set LOGOS_INSTANCE_ID so LogosInstance::id() returns the correct registry URL
-    qputenv("LOGOS_INSTANCE_ID", d->instanceId.toUtf8());
+    // For LocalSocket dialing, the SDK derives the registry name from
+    // `local:logos_<module>_<instance_id>`, so we need the daemon's
+    // instance id. The daemon's auto-emitted client/config.json carries it;
+    // remote clients (TCP / TCP-SSL) don't need it. The client never
+    // opens daemon-side files — by design.
+    if (!d->clientState.instanceId.empty()) {
+        d->instanceId = QString::fromStdString(d->clientState.instanceId);
+        qputenv("LOGOS_INSTANCE_ID", d->instanceId.toUtf8());
+    }
 
-    // Store token in TokenManager so the SDK can authenticate
     TokenManager::instance().saveToken("cli_client", d->token);
 
-    // Create LogosAPI for this CLI client
+    // Translate ClientModuleTransport (client-side) into LogosTransportConfig
+    // (SDK-side) — this is the actual dial spec.
+    auto toCfg = [](const ClientModuleTransport& t) {
+        LogosTransportConfig cfg;
+        if      (t.protocol == "tcp")     cfg.protocol = LogosProtocol::Tcp;
+        else if (t.protocol == "tcp_ssl") cfg.protocol = LogosProtocol::TcpSsl;
+        else                              cfg.protocol = LogosProtocol::LocalSocket;
+        cfg.host       = t.host;
+        cfg.port       = t.port;
+        cfg.caFile     = t.caFile;
+        cfg.verifyPeer = t.verifyPeer;
+        cfg.codec = (t.codec == "cbor") ? LogosWireCodec::Cbor : LogosWireCodec::Json;
+        return cfg;
+    };
+
+    // core_service is mandatory.
+    auto coreIt = d->clientState.daemon.find("core_service");
+    if (coreIt == d->clientState.daemon.end()) {
+        m_lastError = "client/config.json: 'daemon.core_service' is required.";
+        return false;
+    }
+    const LogosTransportConfig coreServiceCfg = toCfg(coreIt->second);
+
+    // Create LogosAPI for this CLI client. Keep the global default at
+    // LocalSocket so the implicit provider in LogosAPI's ctor doesn't
+    // try to bind a TLS server on the client side.
     d->api = new LogosAPI("cli_client");
 
-    // Get a client handle to the daemon's core_service module
-    d->coreService = d->api->getClient("core_service");
+    // Wire up capability_module's per-module transport. Required by the
+    // SDK's auto-`requestModule` flow inside LogosAPIClient. If
+    // client/config.json omits it, fall through to LocalSocket — same as the
+    // SDK's global default.
+    if (auto capIt = d->clientState.daemon.find("capability_module");
+        capIt != d->clientState.daemon.end()) {
+        d->api->setCapabilityModuleTransport(toCfg(capIt->second));
+    }
+
+    // Get a client handle to the daemon's core_service module.
+    // client/config.json's per-module entry is the dial spec, full stop —
+    // no env-var overrides, no daemon-advertised list to pick from.
+    // If the operator wants a different transport, they re-run
+    // `logoscore <subcommand> --client-transport ...` which
+    // regenerates client/config.json (step 7).
+    d->coreService = d->api->getClient("core_service", coreServiceCfg);
     if (!d->coreService) {
         m_lastError = "Failed to get core_service client handle.";
         return false;
@@ -157,21 +216,17 @@ QJsonObject RpcClient::getStatus()
     if (ret.canConvert<QJsonObject>())
         return ret.toJsonObject();
 
-    // If RPC failed, return basic info from connection file
+    // If the RPC failed, we don't have detailed daemon info to fall
+    // back on — the client never opens daemon-side files by design, so pid /
+    // started_at / advertised modules are not in our hands. Surface
+    // what we know (the instance_id from client/config.json, if local) and
+    // tag the response as RPC-degraded so callers exit non-zero.
     QJsonObject status;
     QJsonObject daemon;
-    daemon["status"] = "running";
-    daemon["pid"] = static_cast<qint64>(d->connInfo.pid);
-    daemon["instance_id"] = QString::fromStdString(d->connInfo.instanceId);
+    daemon["status"] = "not_running";
+    if (!d->instanceId.isEmpty())
+        daemon["instance_id"] = d->instanceId;
     daemon["version"] = QCoreApplication::applicationVersion();
-    if (!d->connInfo.startedAt.empty()) {
-        QDateTime started = QDateTime::fromString(
-            QString::fromStdString(d->connInfo.startedAt), Qt::ISODate);
-        if (started.isValid()) {
-            qint64 uptimeSecs = started.secsTo(QDateTime::currentDateTimeUtc());
-            daemon["uptime_seconds"] = uptimeSecs;
-        }
-    }
     status["daemon"] = daemon;
     status["modules"] = QJsonArray();
     status["rpc_error"] = "core_service not reachable";

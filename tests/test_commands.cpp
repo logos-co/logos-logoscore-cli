@@ -134,6 +134,9 @@ TEST_F(CommandTest, CreateCommand_KnownCommands)
     EXPECT_NE(createCommand("watch", mockClient, output), nullptr);
     EXPECT_NE(createCommand("stats", mockClient, output), nullptr);
     EXPECT_NE(createCommand("stop", mockClient, output), nullptr);
+    EXPECT_NE(createCommand("issue-token", mockClient, output), nullptr);
+    EXPECT_NE(createCommand("revoke-token", mockClient, output), nullptr);
+    EXPECT_NE(createCommand("list-tokens", mockClient, output), nullptr);
 }
 
 TEST_F(CommandTest, CreateCommand_Unknown_ReturnsNull)
@@ -158,6 +161,9 @@ TEST_F(CommandTest, KnownSubcommands_ContainsExpected)
     EXPECT_TRUE(cmds.contains("stats"));
     EXPECT_TRUE(cmds.contains("stop"));
     EXPECT_TRUE(cmds.contains("daemon"));
+    EXPECT_TRUE(cmds.contains("issue-token"));
+    EXPECT_TRUE(cmds.contains("revoke-token"));
+    EXPECT_TRUE(cmds.contains("list-tokens"));
 }
 
 // ── Connection Error Handling ────────────────────────────────────────────────

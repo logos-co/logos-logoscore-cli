@@ -67,8 +67,24 @@ set_target_properties(logos_module_client PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${LOGOS_MODULE_CLIENT_ROOT}/include"
 )
 
+# ── logos-cpp-sdk (imported target) ───────────────────────────────────────────
+# Optional: only required when LOGOS_CPP_SDK_ROOT is set. Daemon code uses
+# logos:: helpers (e.g. transportSetToJsonString) that liblogos doesn't
+# itself reference; without this we'd get an undefined-symbol linker
+# error because the SDK's static archive is otherwise dead-stripped
+# inside liblogos_core.
+if(DEFINED LOGOS_CPP_SDK_ROOT AND EXISTS "${LOGOS_CPP_SDK_ROOT}/lib/cmake/logos-cpp-sdk")
+    find_package(logos-cpp-sdk REQUIRED
+        PATHS "${LOGOS_CPP_SDK_ROOT}" NO_DEFAULT_PATH)
+endif()
+
 # ── nlohmann_json (header-only) ───────────────────────────────────────────────
 find_package(nlohmann_json REQUIRED)
+
+# ── OpenSSL (TokenStore::hashToken uses SHA-256 to digest auth tokens at
+# rest, replacing the previous 64-bit FNV-1a — collision-resistant by
+# design so two distinct tokens can never validate to the same name).
+find_package(OpenSSL REQUIRED)
 
 # ── stduuid (header-only) ────────────────────────────────────────────────────
 find_package(stduuid REQUIRED)
@@ -95,10 +111,13 @@ set(CLI_SOURCES
 
     # Daemon path
     src/daemon/daemon.cpp
-    src/daemon/connection_file.cpp
+    src/daemon/daemon_state.cpp
+    src/daemon/port_allocator.cpp
+    src/daemon/token_store.cpp
 
     # Client path
     src/client/client.cpp
+    src/client/client_state.cpp
     src/client/output.cpp
     src/client/commands/command.cpp
     src/client/commands/status_command.cpp
@@ -111,6 +130,9 @@ set(CLI_SOURCES
     src/client/commands/watch_command.cpp
     src/client/commands/stats_command.cpp
     src/client/commands/stop_command.cpp
+    src/client/commands/issue_token_command.cpp
+    src/client/commands/revoke_token_command.cpp
+    src/client/commands/list_tokens_command.cpp
 
     # Core service (in-process daemon module)
     src/core_service/core_service_impl.cpp
@@ -132,9 +154,17 @@ target_link_libraries(logoscore PRIVATE
     nlohmann_json::nlohmann_json
     stduuid
     CLI11::CLI11
+    OpenSSL::Crypto
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::RemoteObjects
 )
+
+# Link the SDK directly when LOGOS_CPP_SDK_ROOT is provided (daemon path
+# pulls in logos::transportSetToJsonString and friends — see the
+# find_package note above).
+if(TARGET logos-cpp-sdk::logos_sdk)
+    target_link_libraries(logoscore PRIVATE logos-cpp-sdk::logos_sdk)
+endif()
 
 target_include_directories(logoscore PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
