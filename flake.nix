@@ -117,11 +117,11 @@
             inherit version meta;
 
             dontUnpack = true;
+            dontStrip = true;
 
             nativeBuildInputs =
               [ pkgs.qt6.wrapQtAppsNoGuiHook ]
-              ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.cctools ]
-              ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.autoPatchelfHook ];
+              ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.cctools ];
 
             buildInputs = [
               pkgs.qt6.qtbase
