@@ -2,11 +2,13 @@
 #include "logos_core.h"
 #include <logos_api.h>
 #include <logos_api_client.h>
+#include <logos_types.h>
 
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QJsonDocument>
 #include <QDebug>
+#include <QMetaType>
 #include <QTimer>
 #include <cstdlib>
 
@@ -268,7 +270,22 @@ QVariant CoreServiceImpl::callModuleMethod(const QString& module,
     result["module"] = module;
     result["method"] = method;
 
-    if (ret.canConvert<QJsonObject>()) {
+    // LogosResult is a user-defined struct: `QJsonValue::fromVariant` has
+    // no built-in conversion for it and produces null. Unpack it by hand
+    // into the same `{success, value, error}` shape the plain-C++
+    // transport produces in qvariantToRpcValue — so the JSON the CLI
+    // ultimately prints is identical regardless of which transport the
+    // daemon-module RPC went over (LocalSocket/QRO, TCP, TCP+SSL).
+    const int logosResultId = QMetaType::fromName("LogosResult").id();
+    if (logosResultId != QMetaType::UnknownType
+            && ret.userType() == logosResultId) {
+        const LogosResult lr = ret.value<LogosResult>();
+        QJsonObject obj;
+        obj["success"] = lr.success;
+        obj["value"]   = QJsonValue::fromVariant(lr.value);
+        obj["error"]   = QJsonValue::fromVariant(lr.error);
+        result["result"] = obj;
+    } else if (ret.canConvert<QJsonObject>()) {
         result["result"] = ret.toJsonObject();
     } else if (ret.canConvert<QJsonArray>()) {
         result["result"] = ret.toJsonArray();

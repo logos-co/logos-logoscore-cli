@@ -4,6 +4,11 @@
   inputs = {
     logos-nix.url = "github:logos-co/logos-nix";
     nixpkgs.follows = "logos-nix/nixpkgs";
+    # Direct SDK input so the CLI binary can link logos_sdk and use its
+    # public symbols (e.g. logos::transportSetToJsonString) without
+    # relying on the symbol surviving liblogos_core's link-time
+    # dead-strip. liblogos's own SDK pin still drives transitive deps.
+    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk";
     logos-liblogos.url = "github:logos-co/logos-liblogos";
     logos-module-client.url = "github:logos-co/logos-module-client";
     logos-capability-module.url = "github:logos-co/logos-capability-module";
@@ -12,12 +17,13 @@
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-liblogos, logos-module-client, logos-capability-module, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
+  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-liblogos, logos-module-client, logos-capability-module, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f {
         inherit system;
         pkgs = import nixpkgs { inherit system; };
+        cppSdk = logos-cpp-sdk.packages.${system}.default;
         liblogos = logos-liblogos.packages.${system}.logos-liblogos;
         liblogosLib = logos-liblogos.packages.${system}.logos-liblogos-lib;
         liblogosPortable = logos-liblogos.packages.${system}.portable;
@@ -31,7 +37,7 @@
       });
     in
     {
-      packages = forAllSystems ({ pkgs, system, liblogos, liblogosLib, liblogosPortable, moduleClient, moduleClientLib, capabilityModuleLib, installDev, installPortable, dirBundler, appBundler }:
+      packages = forAllSystems ({ pkgs, system, cppSdk, liblogos, liblogosLib, liblogosPortable, moduleClient, moduleClientLib, capabilityModuleLib, installDev, installPortable, dirBundler, appBundler }:
         let
           pname = "logos-logoscore-cli";
           version = "0.1.0";
@@ -67,12 +73,24 @@
               pkgs.cmake
               pkgs.ninja
               pkgs.pkg-config
+              pkgs.qt6.wrapQtAppsNoGuiHook
             ];
 
             buildInputs = [
+              # cppSdk propagates Boost, OpenSSL, and nlohmann_json
+              # through `propagatedBuildInputs` on its symlinkJoin, so
+              # we don't list them explicitly here. Qt is intentionally
+              # NOT propagated by the SDK (qtbase's setup-hook fires
+              # `qtPreHook` which errors unless `wrapQtAppsHook` was
+              # sourced first, and that ordering can't be guaranteed
+              # through propagation), so we list it explicitly. CMake's
+              # `find_package(logos-cpp-sdk)` then re-runs
+              # `find_dependency(...)` against the propagated non-Qt
+              # entries + the Qt entries at configure time and stitches
+              # them into the imported target.
               pkgs.qt6.qtbase
               pkgs.qt6.qtremoteobjects
-              pkgs.nlohmann_json
+              cppSdk
               pkgs.stduuid
               pkgs.cli11
               pkgs.gtest
@@ -82,6 +100,12 @@
               "-GNinja"
               "-DLOGOS_LIBLOGOS_ROOT=${liblogos}"
               "-DLOGOS_MODULE_CLIENT_ROOT=${moduleClient}"
+              # Direct path to the SDK: CMake's find_package(logos-cpp-sdk)
+              # picks up the imported target so logoscore can link
+              # logos_sdk explicitly (needed for symbols like
+              # logos::transportSetToJsonString which liblogos doesn't
+              # itself reference and would otherwise be dead-stripped).
+              "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
             ];
           };
 
@@ -172,12 +196,17 @@
               pkgs.gtest
               liblogosLib
               moduleClientLib
+              # cppSdk propagates Boost, OpenSSL, nlohmann_json (but
+              # not Qt) via its symlinkJoin's propagatedBuildInputs —
+              # see the `build` derivation above for the rationale.
+              cppSdk
             ];
 
             cmakeFlags = [
               "-GNinja"
               "-DLOGOS_LIBLOGOS_ROOT=${liblogos}"
               "-DLOGOS_MODULE_CLIENT_ROOT=${moduleClient}"
+              "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
             ];
 
             installPhase = ''
@@ -238,12 +267,16 @@
               pkgs.cmake
               pkgs.ninja
               pkgs.pkg-config
+              pkgs.qt6.wrapQtAppsNoGuiHook
             ];
 
             buildInputs = [
+              # cppSdk propagates Boost, OpenSSL, nlohmann_json (but
+              # not Qt) via its symlinkJoin's propagatedBuildInputs —
+              # see the `build` derivation above for the rationale.
               pkgs.qt6.qtbase
               pkgs.qt6.qtremoteobjects
-              pkgs.nlohmann_json
+              cppSdk
               pkgs.gtest
               pkgs.stduuid
               pkgs.cli11
@@ -253,6 +286,7 @@
               "-GNinja"
               "-DLOGOS_LIBLOGOS_ROOT=${liblogosPortable}"
               "-DLOGOS_MODULE_CLIENT_ROOT=${moduleClient}"
+              "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
             ];
           };
 

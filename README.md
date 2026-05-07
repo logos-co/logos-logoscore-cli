@@ -61,7 +61,45 @@ logoscore daemon --modules-dir ./modules
 logoscore -D -m ./modules > logs.txt &
 ```
 
-The daemon writes a connection file to `~/.logoscore/daemon.json` on startup and removes it on shutdown.
+The daemon writes a runtime-state file (`~/.logoscore/daemon/state.json`) on startup, after transports actually bind, and removes it on clean shutdown. It also auto-emits a local-client config under `~/.logoscore/client/` (`config.json` + `auto.json`) so client commands work out of the box from the same machine.
+
+Layout:
+
+```
+~/.logoscore/
+├── daemon/
+│   ├── config.json        # operator preferences (written ONLY when --persist-config is passed)
+│   ├── state.json         # live-instance resolved state (created at boot, removed at shutdown)
+│   ├── tokens.json        # hashed-at-rest accepted-token list (survives restarts)
+│   └── tokens/
+│       └── <name>.json    # raw, operator-copyable per `issue-token <name>`. 0600 perms.
+└── client/
+    ├── config.json        # client-owned: dial spec + token_file (write only on --persist-config)
+    └── auto.json          # raw token; daemon-emitted at boot for the local client
+```
+
+Each daemon-side file has one writer and a clear lifetime:
+- **`config.json`** — operator-typed preferences (transport choices, modules dirs, SSL paths). Values reflect intent: `port: 0` stays `0` (auto-pick a free port). Only written when the operator explicitly passes `--persist-config`.
+- **`state.json`** — what this specific daemon process resolved (instance_id, pid, started_at, *actually-bound* port). Created at boot, deleted at shutdown.
+- **`tokens.json`** — the hashed-at-rest accepted-token list. Independent of the running daemon's lifetime.
+
+The daemon never reads `client/`; the client never reads `daemon/config.json` or `daemon/tokens.json`. (`status` consults `daemon/state.json` for a fast same-host liveness check via `kill(pid, 0)`, but never opens daemon-only secrets.) For remote clients on a different host, copy a single `daemon/tokens/<name>.json` file to the target host's `client/` dir and reference it via `token_file` in `client/config.json`.
+
+#### `--persist-config`
+
+CLI flags affect this run only by default. To bake them into the next launch — daemon or client side — pass `--persist-config`:
+
+```bash
+# Run the daemon with TCP listeners; this run only.
+logoscore -D --module-transport core_service=tcp,port=0
+
+# Same flags + persist them. config.json is written; next no-flag launch
+# reproduces the TCP behavior. `port: 0` stays `0` in config.json (intent
+# preserved); the actual bound port lives in state.json.
+logoscore -D --module-transport core_service=tcp,port=0 --persist-config
+```
+
+Boot precedence is `defaults < config.json < CLI args`, with per-flag override detection: a CLI flag overrides only its own field, everything else falls through. Without `--persist-config`, no file is written.
 
 #### Client Commands
 
@@ -117,23 +155,72 @@ logoscore stats
 
 #### Authentication
 
-For local usage, token management is automatic — the daemon writes a token to `~/.logoscore/daemon.json` and clients read it.
+For local same-host use, token management is automatic. At boot the daemon
+auto-issues a token named `auto` (with `local_only=true`, so it can't be used
+over TCP), writes the hash into `daemon/tokens.json`, and emits the raw value
+into `client/auto.json`. On the *first* boot into an empty config dir it
+also writes a default `client/config.json` so local client commands work
+out of the box; subsequent boots leave an existing `client/config.json`
+alone (so an operator-written remote-client config isn't clobbered).
 
 For remote or programmatic access:
 
 ```bash
 # Via environment variable
 LOGOSCORE_TOKEN=<token> logoscore list-modules --json
-
-# Via config file
-echo '{"token": "<token>"}' > ~/.logoscore/config.json
 ```
 
-Token resolution order: `LOGOSCORE_TOKEN` env var → `~/.logoscore/config.json` → `~/.logoscore/daemon.json`.
+Token resolution order: `LOGOSCORE_TOKEN` env var → `<configDir>/client/<token_file>` (the path is whatever `client/config.json` says — defaults to `auto.json`).
+
+##### Named client tokens
+
+For multi-client setups (a daemon serving several remote clients, CI rotating
+credentials, etc.), issue named tokens. Each entry persists as a `{name, hash,
+issued_at, expires_at, local_only}` row in `daemon/tokens.json["tokens"]`; the
+raw value is written to `daemon/tokens/<name>.json` (mode 0600) at issue time
+so the operator can hand it off:
+
+```bash
+# Issue a token for "alice"
+logoscore issue-token --name alice
+logoscore issue-token --name alice --replace            # rotate
+logoscore issue-token --name ci    --expires 30d        # expires after 30 days
+logoscore issue-token --name probe --local-only         # only valid over LocalSocket
+
+# List all issued tokens (names, issued_at, expires_at, local_only flag)
+logoscore list-tokens
+
+# Revoke by name — next request with that token fails auth
+logoscore revoke-token alice
+```
+
+After copying `daemon/tokens/alice.json` to the client host, the operator may
+delete the daemon-side raw file (`rm daemon/tokens/alice.json`); validation
+keeps working because the hash is what the daemon checks. Operator-issued
+tokens take effect on the next daemon restart (SIGHUP-driven reload is a
+follow-up).
+
+##### Plaintext-TCP guard
+
+Plaintext `tcp` on a non-loopback host puts tokens on the wire in cleartext.
+The daemon refuses to bind such a listener unless `--insecure-tcp` is
+explicitly passed:
+
+```bash
+# Refused — would expose tokens.
+logoscore -D --module-transport core_service=tcp,host=0.0.0.0,port=6000
+
+# Use TLS instead.
+logoscore -D \
+    --module-transport core_service=tcp_ssl,host=0.0.0.0,port=6443,cert=/path/cert.pem,key=/path/key.pem
+
+# Or, for trusted-network test setups only:
+logoscore -D --module-transport core_service=tcp,host=0.0.0.0,port=6000 --insecure-tcp
+```
 
 #### Parallel Daemons (`--config-dir`)
 
-`--config-dir <path>` overrides the default `~/.logoscore` location for `daemon.json`, `config.json`, and the module persistence tree. This lets multiple `logoscore` daemons run side-by-side against isolated state. Client commands must be invoked with the same `--config-dir` as the daemon they target.
+`--config-dir <path>` overrides the default `~/.logoscore` location for the entire `daemon/` and `client/` subtree (and the module persistence tree). This lets multiple `logoscore` daemons run side-by-side against isolated state. Client commands must be invoked with the same `--config-dir` as the daemon they target.
 
 ```bash
 # Two parallel daemons with isolated config/state
@@ -150,6 +237,56 @@ logoscore --config-dir /tmp/ls-b stop
 ```
 
 Resolution order: `--config-dir` → `LOGOSCORE_CONFIG_DIR` env var → `~/.logoscore`. The flag also mirrors into `LOGOSCORE_CONFIG_DIR` so child processes inherit it.
+
+#### Transports
+
+By default the daemon binds each well-known module (`core_service`,
+`capability_module`) to a local Unix socket only — clients must run on the
+same host. To reach the daemon from another machine, a container, or
+across NAT, configure a network listener per module via `--module-transport`:
+
+```
+--module-transport NAME=PROTOCOL[,k=v[,k=v...]]
+```
+
+`NAME` is the module (`core_service` or `capability_module`); `PROTOCOL`
+is `local`, `tcp`, or `tcp_ssl`. The optional `k=v` pairs configure the
+protocol: `host`, `port`, `codec` (`json` default | `cbor`), and
+`ca` / `cert` / `key` / `verify_peer` for `tcp_ssl`. The flag is
+repeatable — each appearance adds one more listener to the named module.
+
+```bash
+# TCP — plaintext, good for localhost or trusted networks. Both modules
+# need their own listener so the host-side client can dial each.
+logoscore -D -m ./modules \
+    --module-transport core_service=local \
+    --module-transport core_service=tcp,host=127.0.0.1,port=6000 \
+    --module-transport capability_module=local \
+    --module-transport capability_module=tcp,host=127.0.0.1,port=6001
+
+# TCP + TLS — wire-encrypted; cert + key required, CA optional.
+logoscore -D -m ./modules \
+    --module-transport core_service=local \
+    --module-transport "core_service=tcp_ssl,host=0.0.0.0,port=6443,cert=/etc/logoscore/cert.pem,key=/etc/logoscore/key.pem,ca=/etc/logoscore/ca.pem" \
+    --module-transport capability_module=local \
+    --module-transport "capability_module=tcp_ssl,host=0.0.0.0,port=6444,cert=/etc/logoscore/cert.pem,key=/etc/logoscore/key.pem,ca=/etc/logoscore/ca.pem"
+
+# Defaults: omit --module-transport entirely and the well-known modules
+# get a single `local` listener each. Most local-development setups just
+# want this.
+logoscore -D -m ./modules
+```
+
+##### Client-side dial spec
+
+The client never reads daemon-only files (`daemon/config.json`,
+`daemon/tokens.json`) — it dials whatever `<configDir>/client/config.json`
+says. The daemon auto-emits one for the local same-host case at boot
+(LocalSocket pointing at the daemon's freshly-issued `auto.json` token).
+For remote clients (docker `-p` port-forwarding, NAT, SSH tunnels)
+hand-write `client/config.json` with the right host:port for each
+module — or pass `--client-tcp-host`, `--client-tcp-port`, etc. on the
+CLI plus `--persist-config` to have it generated.
 
 #### Agent / Script Example
 
