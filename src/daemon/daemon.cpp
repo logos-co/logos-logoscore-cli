@@ -335,7 +335,9 @@ int Daemon::start(int argc, char* argv[],
     //     pointing at "auto.json" stays consistent with the freshly-issued
     //     auto token.
     if (!DaemonRuntimeStateFile::writeLocalClientArtifacts(
-            instanceId, autoTokenRaw, state.startedAt, tokensFileWasMissing)) {
+            instanceId, autoTokenRaw, state.startedAt, tokensFileWasMissing,
+            toAdvertised(coreTransports),
+            toAdvertised(capabilityTransports))) {
         fprintf(stderr, "Warning: failed to write local client artifacts under %s\n",
                 Config::clientDir().toStdString().c_str());
     }

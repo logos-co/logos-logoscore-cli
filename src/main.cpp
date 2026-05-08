@@ -1,6 +1,7 @@
 #include <CLI/CLI.hpp>
 #include <QCoreApplication>
 #include <QDebug>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -580,16 +581,60 @@ int main(int argc, char *argv[])
         // or disk-specified — never a hybrid.
         if (moduleTransportOpt->count() > 0) mergedCfg.modules = moduleTransportsMap;
 
-        // Default the well-known modules to LocalSocket-only when neither
-        // the operator nor disk-config supplied them. Without this, a
-        // bare `logoscore -D` would start a daemon with no listeners and
-        // clients would have nothing to dial.
+        // Make sure the well-known modules at least *have* an entry,
+        // so a bare `logoscore -D` (no transport flags) still boots
+        // with listeners. The local-prepend below populates them.
         for (const std::string& wellKnown : {"core_service", "capability_module"}) {
-            if (mergedCfg.modules.find(wellKnown) == mergedCfg.modules.end()) {
-                TransportInfo t;
-                t.protocol = "local";
-                mergedCfg.modules[wellKnown].push_back(std::move(t));
+            (void)mergedCfg.modules[wellKnown];  // default-construct empty
+        }
+
+        // Always make every configured module carry a LocalSocket
+        // listener. Two reasons:
+        //
+        //  (1) Default modules (none operator-configured) need *some*
+        //      listener — local is the cheapest, always-works choice.
+        //
+        //  (2) Even when the operator explicitly opts into TCP / TCP+SSL
+        //      for a given module (e.g.
+        //      `--module-transport core_service=tcp,...`,
+        //      `--module-transport my_module=tcp,...`), a lot of
+        //      intra-daemon code paths (capability_module's
+        //      requestModule → core_service handshake; the daemon's
+        //      own auto-`requestModule` flow inside LogosAPIClient;
+        //      cross-module outbound `getClient(name)` calls) default
+        //      to LocalSocket and have no plumbing to discover the
+        //      operator's chosen TCP endpoint. Forcing a local listener
+        //      alongside whatever else the operator named keeps those
+        //      paths working without fan-out — the operator's TCP
+        //      listener is the *additional* surface for outside clients.
+        //
+        // Order matters: we PREPEND local so it's the first entry in
+        // each module's preference list, which means consumers that
+        // pick "first transport" land on local. Operator-supplied
+        // entries follow in the order they were typed.
+        //
+        // Applies to every module in the merged config, well-known or
+        // user-configured — same logic, no special-casing.
+        //
+        // Normalization rule: at most one `local` entry per module,
+        // always at index 0. If the operator typed `local` later in
+        // the order (e.g. `--module-transport NAME=tcp,...
+        // --module-transport NAME=local`) we MOVE that entry to the
+        // front rather than leave it at index 1 and prepend a fresh
+        // one — otherwise consumers that pick "first transport" would
+        // still land on TCP, and we'd have two local entries to dedupe.
+        for (auto& [moduleName, transports] : mergedCfg.modules) {
+            (void)moduleName;
+            auto localIt = std::find_if(transports.begin(), transports.end(),
+                [](const TransportInfo& t) { return t.protocol == "local"; });
+            TransportInfo localEntry;
+            if (localIt != transports.end()) {
+                localEntry = std::move(*localIt);
+                transports.erase(localIt);
+            } else {
+                localEntry.protocol = "local";
             }
+            transports.insert(transports.begin(), std::move(localEntry));
         }
 
         // Plaintext-TCP guard, post-merge: refuse to bind plaintext

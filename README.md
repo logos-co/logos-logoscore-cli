@@ -249,32 +249,50 @@ across NAT, configure a network listener per module via `--module-transport`:
 --module-transport NAME=PROTOCOL[,k=v[,k=v...]]
 ```
 
-`NAME` is the module (`core_service` or `capability_module`); `PROTOCOL`
-is `local`, `tcp`, or `tcp_ssl`. The optional `k=v` pairs configure the
-protocol: `host`, `port`, `codec` (`json` default | `cbor`), and
+`NAME` is any module the daemon will load; `PROTOCOL` is `local`, `tcp`,
+or `tcp_ssl`. The optional `k=v` pairs configure the protocol: `host`,
+`port`, `codec` (`json` default | `cbor`), and
 `ca` / `cert` / `key` / `verify_peer` for `tcp_ssl`. The flag is
 repeatable — each appearance adds one more listener to the named module.
 
+**Local is always present.** Every module the operator configures (and
+the two well-known ones — `core_service` and `capability_module`)
+automatically gets a `local` listener prepended to whatever the
+operator named. The TCP / TCP+SSL flags add *additional*
+outside-facing listeners; they don't replace the same-host one.
+
+This means the examples below — and any `--module-transport NAME=tcp,...`
+invocation generally — don't need a separate `--module-transport
+NAME=local` line. The same-host LocalSocket listener is bound for free,
+which lets every intra-daemon code path (capability_module's
+`requestModule` → core_service handshake, the SDK's auto-`requestModule`
+flow inside `LogosAPIClient`, cross-module outbound `getClient(name)`
+calls) keep working over LocalSocket while remote clients use the
+operator-configured TCP endpoint.
+
 ```bash
-# TCP — plaintext, good for localhost or trusted networks. Both modules
-# need their own listener so the host-side client can dial each.
+# TCP — plaintext, good for localhost or trusted networks. Local
+# listeners are added automatically; just name the TCP one.
 logoscore -D -m ./modules \
-    --module-transport core_service=local \
     --module-transport core_service=tcp,host=127.0.0.1,port=6000 \
-    --module-transport capability_module=local \
     --module-transport capability_module=tcp,host=127.0.0.1,port=6001
 
-# TCP + TLS — wire-encrypted; cert + key required, CA optional.
+# TCP + TLS — wire-encrypted; cert + key required, CA optional. Local
+# listeners are still bound implicitly for same-host clients.
 logoscore -D -m ./modules \
-    --module-transport core_service=local \
     --module-transport "core_service=tcp_ssl,host=0.0.0.0,port=6443,cert=/etc/logoscore/cert.pem,key=/etc/logoscore/key.pem,ca=/etc/logoscore/ca.pem" \
-    --module-transport capability_module=local \
     --module-transport "capability_module=tcp_ssl,host=0.0.0.0,port=6444,cert=/etc/logoscore/cert.pem,key=/etc/logoscore/key.pem,ca=/etc/logoscore/ca.pem"
 
 # Defaults: omit --module-transport entirely and the well-known modules
 # get a single `local` listener each. Most local-development setups just
 # want this.
 logoscore -D -m ./modules
+
+# Per-module: applies to user modules too. The operator's TCP listener
+# is the additional surface; LocalSocket is always there for in-process
+# / on-host callers.
+logoscore -D -m ./modules \
+    --module-transport my_module=tcp,host=127.0.0.1,port=6010
 ```
 
 ##### Client-side dial spec

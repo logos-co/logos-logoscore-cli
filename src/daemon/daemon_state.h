@@ -114,10 +114,23 @@ public:
     static bool remove();
 
     // Emit <configDir>/client/config.json + <configDir>/client/auto.json
-    // populated for a local same-host client over LocalSocket. Called by
-    // the daemon at boot after auto-issuing the `auto` token; allows
-    // `logoscore status` (and friends) to work out of the box from the
-    // same machine without hand-writing a client config.
+    // populated as a same-host dial spec for the daemon we just bound.
+    // Called by the daemon at boot after auto-issuing the `auto` token;
+    // allows `logoscore status` (and friends) to work out of the box
+    // from the same machine without hand-writing a client config.
+    //
+    // The emitted client/config.json mirrors the daemon's resolved
+    // per-module transports (passed in via `coreServiceTransports` /
+    // `capabilityModuleTransports`). For each module, the dial entry
+    // is the LocalSocket if present in the resolved set (the common
+    // case — `local` is implicitly bound for every module, see
+    // `main.cpp`'s `--module-transport` merge), otherwise the first
+    // operator-named transport. Wildcard bind addresses ("0.0.0.0",
+    // "::") are translated to loopback ("127.0.0.1", "::1") in the
+    // client entry so the dial spec is always usable from the same
+    // host. daemon/state.json's advertised transport list is unaffected
+    // — that one keeps the bind address verbatim because remote
+    // clients on a different host need it.
     //
     // Two gates control what gets written:
     //
@@ -135,8 +148,7 @@ public:
     //     The second gate keeps the daemon out of the operator's way
     //     once they've started managing tokens — a returning operator
     //     who deleted client/config.json gets to write their own
-    //     instead of having a default LocalSocket config silently
-    //     reappear.
+    //     instead of having a default config silently reappear.
     //
     // For remote operators: don't try to stretch this — copy a
     // daemon/tokens/<name>.json file and hand-write a client config
@@ -148,7 +160,9 @@ public:
     static bool writeLocalClientArtifacts(const std::string& instanceId,
                                           const std::string& autoTokenRaw,
                                           const std::string& issuedAt,
-                                          bool               freshTokensFile);
+                                          bool               freshTokensFile,
+                                          const std::vector<TransportInfo>& coreServiceTransports,
+                                          const std::vector<TransportInfo>& capabilityModuleTransports);
 };
 
 #endif // DAEMON_STATE_H

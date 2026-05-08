@@ -295,11 +295,77 @@ bool DaemonRuntimeStateFile::remove()
     return fs::remove(filePath(), ec);
 }
 
+namespace {
+
+// Pick the transport a co-resident client should dial for a given
+// module. Operator-typed order is the source of truth: prefer
+// LocalSocket (always works on the same host) when present; otherwise
+// fall through to whatever the operator named first. A TCP-only
+// daemon emits a TCP client config, a TCP+local daemon emits local,
+// and an operator-misordered TCP+local config still does the right
+// thing because we explicitly look for a `local` entry first.
+const TransportInfo* pickClientDialTransport(
+    const std::vector<TransportInfo>& transports)
+{
+    if (transports.empty()) return nullptr;
+    for (const auto& t : transports) {
+        if (t.protocol == "local") return &t;
+    }
+    return &transports.front();
+}
+
+// Translate a server-side BIND address into a same-host DIAL address.
+// Wildcard bind targets ("0.0.0.0", "::", "::0") aren't valid
+// connect targets — a client that tries to connect to 0.0.0.0
+// usually fails with "address not available" or hits whatever route
+// the kernel happens to pick. Map them to loopback so the auto-
+// emitted client/config.json (intended for a co-resident client)
+// always has a working dial spec. daemon/state.json's advertised
+// transport list is unaffected — that one keeps the operator's
+// bind address verbatim because remote clients on a different host
+// need it to reach the listener.
+std::string toClientDialHost(const std::string& bindHost)
+{
+    if (bindHost.empty())            return "127.0.0.1";
+    if (bindHost == "0.0.0.0")       return "127.0.0.1";
+    if (bindHost == "::" ||
+        bindHost == "::0")           return "::1";
+    return bindHost;
+}
+
+// Serialize one TransportInfo into the per-module entry shape that
+// client/config.json expects. The required fields depend on protocol;
+// emit only what the dial side actually needs.
+json toClientEntry(const TransportInfo& t)
+{
+    json entry;
+    entry["transport"] = t.protocol;
+    if (t.protocol == "tcp" || t.protocol == "tcp_ssl") {
+        entry["host"] = toClientDialHost(t.host);
+        entry["port"] = t.port;
+        if (!t.codec.empty()) entry["codec"] = t.codec;
+    }
+    if (t.protocol == "tcp_ssl") {
+        if (!t.caFile.empty()) entry["ca"] = t.caFile;
+        // Auto-emitted local-client config is for same-host dialing
+        // against the daemon we just bound. The daemon uses its own
+        // cert/key; the client config doesn't need verifyPeer or CA
+        // for the loopback case unless the operator explicitly set
+        // them. Mirror what's in the resolved transport.
+        entry["verify_peer"] = t.verifyPeer;
+    }
+    return entry;
+}
+
+}  // namespace
+
 bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
     const std::string& instanceId,
     const std::string& autoTokenRaw,
     const std::string& issuedAt,
-    bool               freshTokensFile)
+    bool               freshTokensFile,
+    const std::vector<TransportInfo>& coreServiceTransports,
+    const std::vector<TransportInfo>& capabilityModuleTransports)
 {
     const std::string clientDir      = Config::clientDir().toStdString();
     const std::string clientCfgPath  = Config::clientConfigPath().toStdString();
@@ -309,15 +375,30 @@ bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
     fs::create_directories(clientDir, ec);
     if (ec) return false;
 
-    // client/config.json — default LocalSocket dial config. Two
-    // gates: (1) don't clobber an existing operator-written file;
-    // (2) only emit during a "fresh" boot where daemon/tokens.json
-    // didn't exist beforehand. The second gate keeps the daemon
-    // out of the way once the operator has started managing tokens.
+    // client/config.json — dial config matching what the daemon
+    // actually bound. Earlier this hardcoded both modules to
+    // `transport: local`, which silently made `logoscore status`
+    // hang on a TCP-only daemon: the client connected to a
+    // LocalSocket the modules never bound and timed out reading
+    // an object that wasn't there. Now we mirror the resolved
+    // transports so a co-resident client just works.
+    //
+    // Two gates: (1) don't clobber an existing operator-written
+    // file; (2) only emit during a "fresh" boot where
+    // daemon/tokens.json didn't exist beforehand. The second gate
+    // keeps the daemon out of the way once the operator has started
+    // managing tokens.
     if (freshTokensFile && !fs::exists(clientCfgPath, ec)) {
+        const TransportInfo* coreDial =
+            pickClientDialTransport(coreServiceTransports);
+        const TransportInfo* capDial =
+            pickClientDialTransport(capabilityModuleTransports);
+
         json daemonBlock;
-        daemonBlock["core_service"]      = { {"transport", "local"} };
-        daemonBlock["capability_module"] = { {"transport", "local"} };
+        daemonBlock["core_service"]      = coreDial ? toClientEntry(*coreDial)
+                                                    : json({{"transport", "local"}});
+        daemonBlock["capability_module"] = capDial  ? toClientEntry(*capDial)
+                                                    : json({{"transport", "local"}});
 
         json client;
         client["version"]     = 2;
