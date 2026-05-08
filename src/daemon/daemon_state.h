@@ -148,7 +148,9 @@ public:
     static bool writeLocalClientArtifacts(const std::string& instanceId,
                                           const std::string& autoTokenRaw,
                                           const std::string& issuedAt,
-                                          bool               freshTokensFile);
+                                          bool               freshTokensFile,
+                                          const std::vector<TransportInfo>& coreServiceTransports,
+                                          const std::vector<TransportInfo>& capabilityModuleTransports);
 };
 
 #endif // DAEMON_STATE_H

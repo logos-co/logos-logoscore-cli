@@ -158,12 +158,25 @@ main.cpp
 The daemon path calls the liblogos C API directly. It owns the runtime and hosts all modules, including the built-in `core_service` module. Startup/shutdown messages go to stdout (so `> logs.txt` works); debug logs go to stderr and are suppressed unless `--verbose` is passed.
 
 **Multi-transport.** `--module-transport` is repeatable, scoped per
-well-known module. When the daemon exposes `core_service` (or
-`capability_module`) over several transports at once, each one becomes an
-entry under that module's `transports` array in `daemon/state.json`, and the
-provider maintains one listener per entry. Module ↔ module traffic inside the
-process group stays on the local socket regardless; only the externally
-advertised surface is affected.
+module (well-known or user-configured). When the daemon exposes a
+module over several transports at once, each one becomes an entry under
+that module's `transports` array in `daemon/state.json`, and the provider
+maintains one listener per entry.
+
+**Local is always present.** Every configured module — well-known or
+user — implicitly carries a LocalSocket listener prepended to its
+resolved set, even when the operator only passed `--module-transport
+NAME=tcp,...`. The operator's TCP / TCP+SSL flags add *additional*
+outside-facing listeners; they don't replace the same-host LocalSocket.
+This is what keeps module ↔ module traffic working on the local socket
+in every configuration: the parent's `notifyCapabilityModule` handshake,
+the SDK's auto-`requestModule` flow inside `LogosAPIClient`, and any
+cross-module `getClient(name)` calls all default to LocalSocket and
+have no plumbing to discover the operator's chosen TCP endpoint —
+forcing a LocalSocket listener alongside whatever else the operator
+named keeps those paths working without fan-out. The advertised
+`transports[]` array always lists the LocalSocket entry first,
+followed by operator-named entries in the order they were typed.
 
 **Plaintext-TCP guard.** Plaintext `tcp` listeners on a non-loopback host
 expose tokens in cleartext. The daemon refuses to bind such a listener

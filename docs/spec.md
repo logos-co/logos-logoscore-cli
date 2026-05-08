@@ -81,9 +81,22 @@ The daemon defaults to a local Unix socket only for each well-known module
 pass one or more `--module-transport` flags; each opens an additional
 listener that gets advertised in `daemon/state.json`'s `resolved` block.
 
+**Local is always present.** Every module the operator configures (and
+the two well-known ones) implicitly gets a LocalSocket listener
+prepended to its resolved transport set, in addition to whatever the
+operator named via `--module-transport`. The operator's TCP / TCP+SSL
+flags add *additional* outside-facing surfaces; they don't replace the
+same-host LocalSocket. This keeps the same-host code paths (the
+parent's capability_module handshake, the SDK's auto-`requestModule`
+flow inside `LogosAPIClient`, cross-module `getClient(name)` calls)
+working over LocalSocket regardless of which network transport the
+operator chose. `daemon/state.json`'s `resolved.modules.<name>.transports[]`
+always lists the LocalSocket entry first, followed by operator-named
+entries in the order they were typed.
+
 | Flag | Applies to | Description |
 |------|------------|-------------|
-| `--module-transport NAME=PROTOCOL[,k=v...]` | daemon | Repeatable. `NAME` is `core_service` or `capability_module`. `PROTOCOL` is `local`, `tcp`, or `tcp_ssl`. Each occurrence adds one listener to the named module. If the flag is omitted entirely, every well-known module gets a single `local` listener. |
+| `--module-transport NAME=PROTOCOL[,k=v...]` | daemon | Repeatable. `NAME` is any module the daemon will load (well-known or user-configured). `PROTOCOL` is `local`, `tcp`, or `tcp_ssl`. Each occurrence adds one listener to the named module. If the flag is omitted entirely, every well-known module gets a single `local` listener; if it's passed without a `local` entry for `NAME`, a `local` listener is added implicitly so same-host callers always work. |
 | `--insecure-tcp` | daemon | Allow `tcp` (plaintext) listeners on a non-loopback host. Without this flag, the daemon refuses to bind such a listener because tokens travel in cleartext. |
 
 The `k=v` pairs after the protocol configure the listener:
@@ -102,16 +115,21 @@ Each well-known module needs its own listener so the host-side client
 can dial each. Examples:
 
 ```
-# TCP — plaintext, good for localhost or trusted networks. Both modules
-# need their own listener.
---module-transport core_service=local
+# TCP — plaintext, good for localhost or trusted networks. Local
+# listeners are added implicitly; just name the TCP one for each
+# module that needs an outside-facing surface.
 --module-transport core_service=tcp,host=127.0.0.1,port=6000
---module-transport capability_module=local
 --module-transport capability_module=tcp,host=127.0.0.1,port=6001
 
-# TCP + TLS — wire-encrypted; cert + key required, CA optional.
+# TCP + TLS — wire-encrypted; cert + key required, CA optional. Local
+# listeners are still added implicitly.
 --module-transport "core_service=tcp_ssl,host=0.0.0.0,port=6443,cert=/p/c.pem,key=/p/k.pem,ca=/p/ca.pem"
 --module-transport "capability_module=tcp_ssl,host=0.0.0.0,port=6444,cert=/p/c.pem,key=/p/k.pem,ca=/p/ca.pem"
+
+# Per-module: applies to user modules too. The operator's TCP listener
+# is the additional outside-facing surface; same-host callers still
+# reach `my_module` over LocalSocket without extra configuration.
+--module-transport my_module=tcp,host=127.0.0.1,port=6010
 ```
 
 #### Client-side dial spec
