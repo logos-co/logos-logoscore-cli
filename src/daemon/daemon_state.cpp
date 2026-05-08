@@ -314,6 +314,25 @@ const TransportInfo* pickClientDialTransport(
     return &transports.front();
 }
 
+// Translate a server-side BIND address into a same-host DIAL address.
+// Wildcard bind targets ("0.0.0.0", "::", "::0") aren't valid
+// connect targets — a client that tries to connect to 0.0.0.0
+// usually fails with "address not available" or hits whatever route
+// the kernel happens to pick. Map them to loopback so the auto-
+// emitted client/config.json (intended for a co-resident client)
+// always has a working dial spec. daemon/state.json's advertised
+// transport list is unaffected — that one keeps the operator's
+// bind address verbatim because remote clients on a different host
+// need it to reach the listener.
+std::string toClientDialHost(const std::string& bindHost)
+{
+    if (bindHost.empty())            return "127.0.0.1";
+    if (bindHost == "0.0.0.0")       return "127.0.0.1";
+    if (bindHost == "::" ||
+        bindHost == "::0")           return "::1";
+    return bindHost;
+}
+
 // Serialize one TransportInfo into the per-module entry shape that
 // client/config.json expects. The required fields depend on protocol;
 // emit only what the dial side actually needs.
@@ -322,7 +341,7 @@ json toClientEntry(const TransportInfo& t)
     json entry;
     entry["transport"] = t.protocol;
     if (t.protocol == "tcp" || t.protocol == "tcp_ssl") {
-        entry["host"] = t.host.empty() ? "127.0.0.1" : t.host;
+        entry["host"] = toClientDialHost(t.host);
         entry["port"] = t.port;
         if (!t.codec.empty()) entry["codec"] = t.codec;
     }

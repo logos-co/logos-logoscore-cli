@@ -615,16 +615,26 @@ int main(int argc, char *argv[])
         //
         // Applies to every module in the merged config, well-known or
         // user-configured — same logic, no special-casing.
+        //
+        // Normalization rule: at most one `local` entry per module,
+        // always at index 0. If the operator typed `local` later in
+        // the order (e.g. `--module-transport NAME=tcp,...
+        // --module-transport NAME=local`) we MOVE that entry to the
+        // front rather than leave it at index 1 and prepend a fresh
+        // one — otherwise consumers that pick "first transport" would
+        // still land on TCP, and we'd have two local entries to dedupe.
         for (auto& [moduleName, transports] : mergedCfg.modules) {
             (void)moduleName;
-            const bool hasLocal = std::any_of(
-                transports.begin(), transports.end(),
+            auto localIt = std::find_if(transports.begin(), transports.end(),
                 [](const TransportInfo& t) { return t.protocol == "local"; });
-            if (!hasLocal) {
-                TransportInfo t;
-                t.protocol = "local";
-                transports.insert(transports.begin(), std::move(t));
+            TransportInfo localEntry;
+            if (localIt != transports.end()) {
+                localEntry = std::move(*localIt);
+                transports.erase(localIt);
+            } else {
+                localEntry.protocol = "local";
             }
+            transports.insert(transports.begin(), std::move(localEntry));
         }
 
         // Plaintext-TCP guard, post-merge: refuse to bind plaintext
