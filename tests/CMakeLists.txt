@@ -64,6 +64,7 @@ gtest_discover_tests(unit_tests)
 
 add_executable(cli_tests
     test_cli.cpp
+    test_integration.cpp
 )
 
 target_link_libraries(cli_tests PRIVATE
