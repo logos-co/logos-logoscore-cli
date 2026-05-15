@@ -12,12 +12,15 @@
     logos-liblogos.url = "github:logos-co/logos-liblogos";
     logos-module-client.url = "github:logos-co/logos-module-client";
     logos-capability-module.url = "github:logos-co/logos-capability-module";
+    # Real test-module plugins (test_basic_module) used by the
+    # daemon-backed integration tests in tests/test_integration.cpp.
+    logos-test-modules.url = "github:logos-co/logos-test-modules";
     nix-bundle-logos-module-install.url = "github:logos-co/nix-bundle-logos-module-install";
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-liblogos, logos-module-client, logos-capability-module, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
+  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-liblogos, logos-module-client, logos-capability-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f {
@@ -216,6 +219,7 @@
 
               cp bin/cli_tests $out/bin/
               cp bin/unit_tests $out/bin/
+              cp bin/integration_tests $out/bin/
               cp bin/logoscore $out/bin/
 
               if [ -d ${liblogosLib}/lib ]; then
@@ -227,7 +231,7 @@
               fi
 
               ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
-                for binary in $out/bin/cli_tests $out/bin/unit_tests $out/bin/logoscore; do
+                for binary in $out/bin/cli_tests $out/bin/unit_tests $out/bin/integration_tests $out/bin/logoscore; do
                   for dylib in $out/lib/*.dylib; do
                     if [ -f "$dylib" ]; then
                       libname=$(basename $dylib)
@@ -355,9 +359,25 @@
         }
       );
 
-      checks = forAllSystems ({ pkgs, system, ... }:
+      checks = forAllSystems ({ pkgs, system, liblogos, capabilityModuleLib, installDev, ... }:
         let
           testsPkg = self.packages.${system}.tests;
+          # Modules the integration daemon scans. The daemon auto-loads
+          # capability_module at boot for auth — without it every
+          # load-module/call blocks ~20s on capability negotiation then
+          # fails (status/list-modules don't need it, so they'd still
+          # pass, masking the problem). The `tests` package ships only
+          # the binary, so bundle the built-in capability_module next to
+          # the real test_basic_module plugin here. `.install` /
+          # installDev both expose a top-level `modules/` tree;
+          # symlinkJoin (lndir) merges them into one scan dir.
+          testModulesInstall = pkgs.symlinkJoin {
+            name = "logos-logoscore-cli-it-modules";
+            paths = [
+              (installDev capabilityModuleLib)
+              logos-test-modules.modules.${system}.test_basic_module.install
+            ];
+          };
         in {
           tests = pkgs.runCommand "logos-logoscore-cli-tests" {
             nativeBuildInputs = [ testsPkg ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.qt6.qtbase ];
@@ -368,11 +388,18 @@
               export QT_PLUGIN_PATH="${pkgs.qt6.qtbase}/${pkgs.qt6.qtbase.qtPluginPrefix}"
             ''}
             export LOGOSCORE_BINARY=${testsPkg}/bin/logoscore
+            # Daemon-backed integration tests (tests/test_integration.cpp)
+            # read these. Absent ⇒ those tests GTEST_SKIP, so the rest of
+            # the suite still runs in environments without test modules.
+            export LOGOSCORE_TEST_MODULES_DIR=${testModulesInstall}/modules
+            export LOGOS_HOST_PATH=${liblogos}/bin/logos_host
             mkdir -p $out
             echo "Running logos-logoscore-cli unit tests..."
             ${testsPkg}/bin/unit_tests --gtest_output=xml:$out/unit-test-results.xml
             echo "Running logos-logoscore-cli CLI tests..."
             ${testsPkg}/bin/cli_tests --gtest_output=xml:$out/cli-test-results.xml
+            echo "Running logos-logoscore-cli integration tests..."
+            ${testsPkg}/bin/integration_tests --gtest_output=xml:$out/integration-test-results.xml
           '';
         }
       );
