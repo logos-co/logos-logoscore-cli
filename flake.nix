@@ -219,6 +219,7 @@
 
               cp bin/cli_tests $out/bin/
               cp bin/unit_tests $out/bin/
+              cp bin/integration_tests $out/bin/
               cp bin/logoscore $out/bin/
 
               if [ -d ${liblogosLib}/lib ]; then
@@ -230,7 +231,7 @@
               fi
 
               ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
-                for binary in $out/bin/cli_tests $out/bin/unit_tests $out/bin/logoscore; do
+                for binary in $out/bin/cli_tests $out/bin/unit_tests $out/bin/integration_tests $out/bin/logoscore; do
                   for dylib in $out/lib/*.dylib; do
                     if [ -f "$dylib" ]; then
                       libname=$(basename $dylib)
@@ -397,6 +398,8 @@
             ${testsPkg}/bin/unit_tests --gtest_output=xml:$out/unit-test-results.xml
             echo "Running logos-logoscore-cli CLI tests..."
             ${testsPkg}/bin/cli_tests --gtest_output=xml:$out/cli-test-results.xml
+            echo "Running logos-logoscore-cli integration tests..."
+            ${testsPkg}/bin/integration_tests --gtest_output=xml:$out/integration-test-results.xml
           '';
         }
       );

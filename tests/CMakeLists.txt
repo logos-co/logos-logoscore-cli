@@ -64,7 +64,6 @@ gtest_discover_tests(unit_tests)
 
 add_executable(cli_tests
     test_cli.cpp
-    test_integration.cpp
 )
 
 target_link_libraries(cli_tests PRIVATE
@@ -77,3 +76,27 @@ target_include_directories(cli_tests PRIVATE
 )
 
 gtest_discover_tests(cli_tests)
+
+# ── Daemon-backed integration tests (own target, own CTest entry) ────────────
+#
+# Kept separate from cli_tests and registered as a SINGLE CTest test
+# (not gtest_discover_tests): the suite shares one daemon across all
+# LoadedModuleTest cases via SetUpTestSuite(). Per-case discovery would
+# make CTest spawn one process per test, defeating that sharing and
+# starting a fresh daemon for every case. The Nix check runs the binary
+# directly (also one process), so sharing holds there too.
+
+add_executable(integration_tests
+    test_integration.cpp
+)
+
+target_link_libraries(integration_tests PRIVATE
+    GTest::gtest_main
+    Qt${QT_VERSION_MAJOR}::Core
+)
+
+target_include_directories(integration_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+add_test(NAME integration_tests COMMAND integration_tests)

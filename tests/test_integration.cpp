@@ -141,10 +141,14 @@ public:
     }
 
     bool waitReady() {
+        // Bound each probe: a partially-started daemon (client config
+        // written, RPC not yet answering) would otherwise make `status`
+        // block the full SDK timeout per iteration, blowing the ~20s
+        // readiness budget into minutes.
         for (int i = 0; i < 200; ++i) {
             int st = 0;
             if (pid > 0 && waitpid(pid, &st, WNOHANG) == pid) { pid = -1; return false; }
-            if (run("status", nullptr) == 0) return true;
+            if (run("status", nullptr, /*timeoutSecs=*/5) == 0) return true;
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
         return false;
@@ -192,6 +196,15 @@ public:
 
     fs::path binary, modulesDir, base, configDir, homeDir, daemonLog;
     pid_t    pid = -1;
+};
+
+// Reap a spawned subprocess (e.g. `watch`) on every exit path —
+// including a fatal gtest assertion that `return`s out of the test —
+// so background watchers can't leak past the test.
+struct ProcGuard {
+    LogoscoreDaemon* d;
+    pid_t pid;
+    ~ProcGuard() { if (d && pid > 0) d->killGroup(pid); }
 };
 
 constexpr int kNegativeBudgetSecs = 12;
@@ -440,21 +453,25 @@ TEST_F(LoadedModuleTest, AsyncEchoWithDelay) {
 
 // ── Events: subscribe via `watch`, fire via a method call ────────────────────
 
+// Re-emit the event on a cadence while polling the watch log instead of
+// sleeping a fixed time and emitting once: emitting is idempotent, so
+// this races neither the watcher's subscription nor a slow CI worker —
+// whenever the subscription becomes active, a subsequent emit lands.
+// The ProcGuard reaps the watcher even if a fatal assertion fires.
+
 TEST_F(LoadedModuleTest, EmitTestEventRoundTrip) {
     const fs::path log = s_d->base / "watch_single.log";
     pid_t w = s_d->spawnBg({"watch", "test_basic_module", "--event", "testEvent"}, log);
     ASSERT_GT(w, 0);
-    std::this_thread::sleep_for(std::chrono::milliseconds(800));  // subscribe
-
-    std::string out;
-    ASSERT_EQ(s_d->run("call test_basic_module emitTestEvent payload123", &out), 0) << out;
+    ProcGuard guard{s_d, w};
 
     bool got = false;
-    for (int i = 0; i < 100 && !got; ++i) {
-        if (slurp(log).find("payload123") != std::string::npos) got = true;
-        else std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    for (int i = 0; i < 150 && !got; ++i) {  // up to ~15s
+        std::string out;
+        s_d->run("call test_basic_module emitTestEvent payload123", &out);
+        if (slurp(log).find("payload123") != std::string::npos) { got = true; break; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
-    s_d->killGroup(w);
     EXPECT_TRUE(got) << "testEvent payload not observed.\n--- watch log ---\n"
                      << slurp(log);
 }
@@ -463,19 +480,18 @@ TEST_F(LoadedModuleTest, EmitMultiArgEvent) {
     const fs::path log = s_d->base / "watch_multi.log";
     pid_t w = s_d->spawnBg({"watch", "test_basic_module", "--event", "multiArgEvent"}, log);
     ASSERT_GT(w, 0);
-    std::this_thread::sleep_for(std::chrono::milliseconds(800));
-
-    std::string out;
-    ASSERT_EQ(s_d->run("call test_basic_module emitMultiArgEvent label 42", &out), 0) << out;
+    ProcGuard guard{s_d, w};
 
     bool got = false;
-    for (int i = 0; i < 100 && !got; ++i) {
+    for (int i = 0; i < 150 && !got; ++i) {
+        std::string out;
+        s_d->run("call test_basic_module emitMultiArgEvent label 42", &out);
         const std::string l = slurp(log);
-        if (l.find("label") != std::string::npos && l.find("42") != std::string::npos)
-            got = true;
-        else std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (l.find("label") != std::string::npos && l.find("42") != std::string::npos) {
+            got = true; break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
-    s_d->killGroup(w);
     EXPECT_TRUE(got) << "multiArgEvent not observed.\n--- watch log ---\n" << slurp(log);
 }
 
