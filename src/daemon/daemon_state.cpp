@@ -383,12 +383,39 @@ bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
     // an object that wasn't there. Now we mirror the resolved
     // transports so a co-resident client just works.
     //
-    // Two gates: (1) don't clobber an existing operator-written
-    // file; (2) only emit during a "fresh" boot where
-    // daemon/tokens.json didn't exist beforehand. The second gate
-    // keeps the daemon out of the way once the operator has started
-    // managing tokens.
-    if (freshTokensFile && !fs::exists(clientCfgPath, ec)) {
+    // Decide whether to (re)write client/config.json.
+    //
+    //   - No file yet: emit it only on a "fresh" boot (daemon/tokens.json
+    //     didn't exist beforehand) — keeps the daemon out of the way
+    //     once the operator has started managing tokens.
+    //
+    //   - File already exists: normally left alone so a hand-written
+    //     remote-client config is never clobbered. The one exception is
+    //     a file that is provably a *stale copy of our own* generated
+    //     artifact: it carries an `instance_id` that doesn't match this
+    //     daemon. That happens when ~/.logoscore lives on a persisted
+    //     volume (e.g. a restarting container): every boot mints a new
+    //     instance_id while the old client/config.json lingers, leaving
+    //     co-resident clients dialing a dead instance forever. Such a
+    //     file is ours to refresh. An operator-authored remote config
+    //     has no `instance_id` field, so it never matches here.
+    bool writeClientCfg = false;
+    if (!fs::exists(clientCfgPath, ec)) {
+        writeClientCfg = freshTokensFile;
+    } else {
+        std::ifstream ifs(clientCfgPath);
+        if (ifs) {
+            json existing;
+            try { existing = json::parse(ifs); }
+            catch (...) { existing = json::object(); }
+            const std::string existingInstance =
+                existing.value("instance_id", std::string{});
+            if (!existingInstance.empty() && existingInstance != instanceId)
+                writeClientCfg = true;
+        }
+    }
+
+    if (writeClientCfg) {
         const TransportInfo* coreDial =
             pickClientDialTransport(coreServiceTransports);
         const TransportInfo* capDial =

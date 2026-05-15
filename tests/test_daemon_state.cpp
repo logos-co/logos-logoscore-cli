@@ -3,8 +3,10 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <sstream>
 #include <string>
 #include <unistd.h>
+#include <vector>
 #include "daemon/daemon_state.h"
 #include "config.h"
 
@@ -209,4 +211,91 @@ TEST_F(DaemonStateTest, Config_RejectsUnknownSchemaVersion)
     fs::create_directories(p.parent_path());
     std::ofstream(p) << R"({"version":99})" << "\n";
     EXPECT_FALSE(DaemonConfigFile::read().has_value());
+}
+
+// -- writeLocalClientArtifacts (client/config.json) -----------------------
+
+namespace {
+
+std::string slurp(const fs::path& p)
+{
+    std::ifstream ifs(p);
+    std::ostringstream ss;
+    ss << ifs.rdbuf();
+    return ss.str();
+}
+
+const std::vector<TransportInfo> kLocalOnly = { TransportInfo{"local"} };
+
+fs::path clientCfgPath()
+{
+    return fs::path(Config::clientConfigPath().toStdString());
+}
+
+bool writeArtifacts(const std::string& instanceId, bool freshTokensFile)
+{
+    return DaemonRuntimeStateFile::writeLocalClientArtifacts(
+        instanceId, "raw-token", currentUtcIso8601(), freshTokensFile,
+        kLocalOnly, kLocalOnly);
+}
+
+} // namespace
+
+TEST_F(DaemonStateTest, ClientArtifacts_WritesConfigOnFreshBoot)
+{
+    ASSERT_FALSE(fs::exists(clientCfgPath()));
+    EXPECT_TRUE(writeArtifacts("inst-A", /*freshTokensFile=*/true));
+    ASSERT_TRUE(fs::exists(clientCfgPath()));
+    EXPECT_NE(slurp(clientCfgPath()).find("inst-A"), std::string::npos);
+}
+
+TEST_F(DaemonStateTest, ClientArtifacts_SkipsConfigWhenAbsentAndNotFresh)
+{
+    EXPECT_TRUE(writeArtifacts("inst-A", /*freshTokensFile=*/false));
+    EXPECT_FALSE(fs::exists(clientCfgPath()));
+}
+
+TEST_F(DaemonStateTest, ClientArtifacts_RefreshesStaleInstanceId)
+{
+    fs::create_directories(clientCfgPath().parent_path());
+    std::ofstream(clientCfgPath())
+        << R"({"version":2,"token_file":"auto.json","instance_id":"OLD","daemon":{}})"
+        << "\n";
+
+    // Persisted config dir, replaced daemon: the existing file points
+    // at a different instance, so even a non-fresh boot must refresh it.
+    EXPECT_TRUE(writeArtifacts("NEW", /*freshTokensFile=*/false));
+
+    const std::string body = slurp(clientCfgPath());
+    EXPECT_NE(body.find("NEW"), std::string::npos);
+    EXPECT_EQ(body.find("OLD"), std::string::npos);
+}
+
+TEST_F(DaemonStateTest, ClientArtifacts_LeavesMatchingInstanceIdUntouched)
+{
+    fs::create_directories(clientCfgPath().parent_path());
+    std::ofstream(clientCfgPath())
+        << R"({"version":2,"token_file":"auto.json","instance_id":"SAME","custom":"keep"})"
+        << "\n";
+
+    EXPECT_TRUE(writeArtifacts("SAME", /*freshTokensFile=*/true));
+
+    // Instance already matches: no rewrite, operator's field survives.
+    EXPECT_NE(slurp(clientCfgPath()).find(R"("custom":"keep")"),
+              std::string::npos);
+}
+
+TEST_F(DaemonStateTest, ClientArtifacts_NeverClobbersOperatorRemoteConfig)
+{
+    fs::create_directories(clientCfgPath().parent_path());
+    // Operator-authored remote config: no instance_id field at all.
+    std::ofstream(clientCfgPath())
+        << R"({"version":2,"token_file":"my.json","daemon":{"core_service":{"transport":"tcp","host":"10.0.0.5","port":6000}}})"
+        << "\n";
+
+    EXPECT_TRUE(writeArtifacts("inst-Z", /*freshTokensFile=*/true));
+
+    const std::string body = slurp(clientCfgPath());
+    EXPECT_NE(body.find("10.0.0.5"), std::string::npos);
+    EXPECT_EQ(body.find("inst-Z"), std::string::npos);
 }

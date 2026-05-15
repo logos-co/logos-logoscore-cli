@@ -140,15 +140,22 @@ public:
     //     reference auto.json from a hand-written client/config.json
     //     deserve to keep working.
     //
-    //   - The default client/config.json is written **only** when both
-    //     conditions hold: client/config.json doesn't already exist,
-    //     AND `freshTokensFile` is true (daemon/tokens.json was
-    //     created during this very boot). The first gate keeps a
-    //     hand-written remote-client config from being clobbered.
-    //     The second gate keeps the daemon out of the operator's way
-    //     once they've started managing tokens — a returning operator
-    //     who deleted client/config.json gets to write their own
-    //     instead of having a default config silently reappear.
+    //   - When client/config.json is absent it is written **only** if
+    //     `freshTokensFile` is true (daemon/tokens.json was created
+    //     during this very boot). That keeps the daemon out of the
+    //     operator's way once they've started managing tokens — a
+    //     returning operator who deleted client/config.json gets to
+    //     write their own instead of having a default reappear.
+    //
+    //   - When client/config.json is present it is left untouched so a
+    //     hand-written remote-client config is never clobbered — with
+    //     one exception: a file carrying an `instance_id` that doesn't
+    //     match this daemon is a stale copy of *our own* generated
+    //     artifact (a persisted ~/.logoscore whose daemon was replaced,
+    //     e.g. a restarting container) and is refreshed in place so
+    //     co-resident clients don't dial a dead instance forever. An
+    //     operator-authored remote config has no `instance_id`, so it
+    //     never matches.
     //
     // For remote operators: don't try to stretch this — copy a
     // daemon/tokens/<name>.json file and hand-write a client config

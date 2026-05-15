@@ -331,6 +331,10 @@ int Daemon::start(int argc, char* argv[],
     //     remote clients are expected to write their own, and an
     //     operator-authored remote config must not be clobbered just
     //     because a daemon happened to start in the same config dir.
+    //     The one exception: an existing config.json whose instance_id
+    //     no longer matches this daemon is a stale copy of our own
+    //     artifact (persisted config dir, replaced daemon) and is
+    //     refreshed in place — see writeLocalClientArtifacts.
     //     The raw client/auto.json is always (re)written so a config.json
     //     pointing at "auto.json" stays consistent with the freshly-issued
     //     auto token.
