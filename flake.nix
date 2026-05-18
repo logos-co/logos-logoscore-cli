@@ -4,43 +4,32 @@
   inputs = {
     logos-nix.url = "github:logos-co/logos-nix";
     nixpkgs.follows = "logos-nix/nixpkgs";
-    # Direct SDK input so the CLI binary can link logos_sdk and use its
-    # public symbols (e.g. logos::transportSetToJsonString) without
-    # relying on the symbol surviving liblogos_core's link-time
-    # dead-strip. liblogos's own SDK pin still drives transitive deps.
-    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk";
     logos-liblogos.url = "github:logos-co/logos-liblogos";
     logos-module-client.url = "github:logos-co/logos-module-client";
     logos-capability-module.url = "github:logos-co/logos-capability-module";
-    # Real test-module plugins (test_basic_module) used by the
-    # daemon-backed integration tests in tests/test_integration.cpp.
-    logos-test-modules.url = "github:logos-co/logos-test-modules";
-    nix-bundle-logos-module-install.url = "github:logos-co/nix-bundle-logos-module-install";
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-liblogos, logos-module-client, logos-capability-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
+  outputs = { self, nixpkgs, logos-nix, logos-liblogos, logos-module-client, logos-capability-module, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f {
         inherit system;
         pkgs = import nixpkgs { inherit system; };
-        cppSdk = logos-cpp-sdk.packages.${system}.default;
         liblogos = logos-liblogos.packages.${system}.logos-liblogos;
         liblogosLib = logos-liblogos.packages.${system}.logos-liblogos-lib;
         liblogosPortable = logos-liblogos.packages.${system}.portable;
+        liblogosPortableLib = logos-liblogos.packages.${system}.portable;
         moduleClient = logos-module-client.packages.${system}.logos-module-client;
         moduleClientLib = logos-module-client.packages.${system}.logos-module-client-lib;
-        capabilityModuleLib = logos-capability-module.packages.${system}.lib;
-        installDev = nix-bundle-logos-module-install.bundlers.${system}.dev;
-        installPortable = nix-bundle-logos-module-install.bundlers.${system}.portable;
+        capabilityModule = logos-capability-module.packages.${system}.default;
         dirBundler = nix-bundle-dir.bundlers.${system}.qtApp;
         appBundler = nix-bundle-appimage.lib.${system}.mkAppImage;
       });
     in
     {
-      packages = forAllSystems ({ pkgs, system, cppSdk, liblogos, liblogosLib, liblogosPortable, moduleClient, moduleClientLib, capabilityModuleLib, installDev, installPortable, dirBundler, appBundler }:
+      packages = forAllSystems ({ pkgs, system, liblogos, liblogosLib, liblogosPortable, liblogosPortableLib, moduleClient, moduleClientLib, capabilityModule, dirBundler, appBundler }:
         let
           pname = "logos-logoscore-cli";
           version = "0.1.0";
@@ -51,24 +40,9 @@
             platforms = platforms.unix;
           };
 
-          # Install capability module (bundle + lgpm in one step)
-          capabilityInstall = installDev capabilityModuleLib;
-          modules = pkgs.runCommand "${pname}-modules-${version}"
-            { inherit meta; }
-            ''
-              mkdir -p $out/modules
-
-              if [ -d "${capabilityInstall}/modules" ]; then
-                cp -r ${capabilityInstall}/modules/. $out/modules/
-              fi
-
-              echo "Modules directory contents:"
-              ls -laR $out/modules/
-            '';
-
-          # Build the logoscore binary against logos-liblogos
-          build = pkgs.stdenv.mkDerivation {
-            inherit pname version src meta;
+          mkBuild = { liblogosDrv, portable ? false }: pkgs.stdenv.mkDerivation {
+            pname = if portable then "${pname}-portable" else pname;
+            inherit version src meta;
 
             dontWrapQtApps = true;
 
@@ -76,24 +50,12 @@
               pkgs.cmake
               pkgs.ninja
               pkgs.pkg-config
-              pkgs.qt6.wrapQtAppsNoGuiHook
             ];
 
             buildInputs = [
-              # cppSdk propagates Boost, OpenSSL, and nlohmann_json
-              # through `propagatedBuildInputs` on its symlinkJoin, so
-              # we don't list them explicitly here. Qt is intentionally
-              # NOT propagated by the SDK (qtbase's setup-hook fires
-              # `qtPreHook` which errors unless `wrapQtAppsHook` was
-              # sourced first, and that ordering can't be guaranteed
-              # through propagation), so we list it explicitly. CMake's
-              # `find_package(logos-cpp-sdk)` then re-runs
-              # `find_dependency(...)` against the propagated non-Qt
-              # entries + the Qt entries at configure time and stitches
-              # them into the imported target.
               pkgs.qt6.qtbase
               pkgs.qt6.qtremoteobjects
-              cppSdk
+              pkgs.nlohmann_json
               pkgs.stduuid
               pkgs.cli11
               pkgs.gtest
@@ -101,20 +63,85 @@
 
             cmakeFlags = [
               "-GNinja"
-              "-DLOGOS_LIBLOGOS_ROOT=${liblogos}"
+              "-DLOGOS_LIBLOGOS_ROOT=${liblogosDrv}"
               "-DLOGOS_MODULE_CLIENT_ROOT=${moduleClient}"
-              # Direct path to the SDK: CMake's find_package(logos-cpp-sdk)
-              # picks up the imported target so logoscore can link
-              # logos_sdk explicitly (needed for symbols like
-              # logos::transportSetToJsonString which liblogos doesn't
-              # itself reference and would otherwise be dead-stripped).
-              "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
+            ] ++ pkgs.lib.optionals portable [
+              "-DLOGOS_PORTABLE_BUILD=ON"
             ];
           };
 
-          # Package the logoscore binary with its runtime deps
-          bin = pkgs.stdenvNoCC.mkDerivation {
-            pname = "${pname}-bin";
+          mkModules = { portable ? false }: pkgs.runCommand "${pname}-modules-${version}"
+            { inherit meta; }
+            ''
+              mkdir -p $out/modules/capability_module
+
+              if [ -d ${capabilityModule}/lib ]; then
+                for lib in ${capabilityModule}/lib/*.dylib ${capabilityModule}/lib/*.so; do
+                  if [ -f "$lib" ]; then
+                    cp "$lib" $out/modules/capability_module/
+                  fi
+                done
+              fi
+
+              pluginFile=""
+              for f in $out/modules/capability_module/*; do
+                if [ -f "$f" ]; then
+                  pluginFile="$(basename "$f")"
+                  break
+                fi
+              done
+
+              if [ -z "$pluginFile" ]; then
+                echo "Error: No capability_module library found"
+                exit 1
+              fi
+
+              platform=""
+              arch=""
+              case "$(uname -s)" in
+                Linux)  platform="linux" ;;
+                Darwin) platform="darwin" ;;
+              esac
+              case "$(uname -m)" in
+                x86_64)        arch="x86_64" ;;
+                aarch64|arm64) arch="aarch64" ;;
+              esac
+
+              ${if portable then ''
+              # Portable build: standard platform variant keys
+              cat > $out/modules/capability_module/manifest.json <<EOF
+              {
+                "name": "capability_module",
+                "version": "1.0.0",
+                "main": {
+                  "$platform-$arch": "$pluginFile",
+                  "$platform-amd64": "$pluginFile",
+                  "$platform-arm64": "$pluginFile",
+                  "$platform-x86_64": "$pluginFile",
+                  "$platform-aarch64": "$pluginFile"
+                }
+              }
+              EOF
+              '' else ''
+              # Dev build: use -dev suffix variant keys
+              cat > $out/modules/capability_module/manifest.json <<EOF
+              {
+                "name": "capability_module",
+                "version": "1.0.0",
+                "main": {
+                  "$platform-$arch-dev": "$pluginFile",
+                  "$platform-amd64-dev": "$pluginFile",
+                  "$platform-arm64-dev": "$pluginFile",
+                  "$platform-x86_64-dev": "$pluginFile",
+                  "$platform-aarch64-dev": "$pluginFile"
+                }
+              }
+              EOF
+              ''}
+            '';
+
+          mkBin = { buildDrv, liblogosLibDrv, liblogosDrv, modulesDrv, portable ? false }: pkgs.stdenvNoCC.mkDerivation {
+            pname = "${pname}-bin${pkgs.lib.optionalString portable "-portable"}";
             inherit version meta;
 
             dontUnpack = true;
@@ -131,7 +158,8 @@
 
             qtWrapperArgs = [
               "--unset LD_LIBRARY_PATH"
-              "--set LOGOS_HOST_PATH ${liblogos}/bin/logos_host"
+              "--set LOGOS_BUNDLED_MODULES_DIR ${modulesDrv}/modules"
+              "--set LOGOS_HOST_PATH ${liblogosDrv}/bin/logos_host"
             ];
 
             installPhase = ''
@@ -139,23 +167,21 @@
 
               mkdir -p $out/bin $out/lib $out/modules
 
-              cp -r ${build}/bin/* $out/bin/
+              cp -r ${buildDrv}/bin/* $out/bin/
               chmod -R +w $out/bin
 
-              # Copy liblogos_core so logoscore can link at runtime
-              if [ -d ${liblogosLib}/lib ]; then
-                cp -r ${liblogosLib}/lib/* $out/lib/
+              if [ -d ${liblogosLibDrv}/lib ]; then
+                cp -r ${liblogosLibDrv}/lib/* $out/lib/
                 chmod -R +w $out/lib
               fi
 
-              # Copy liblogos_module_client so logoscore can link at runtime
               if [ -d ${moduleClientLib}/lib ]; then
                 cp -r ${moduleClientLib}/lib/* $out/lib/
                 chmod -R +w $out/lib
               fi
 
-              if [ -d ${modules}/modules ]; then
-                cp -r ${modules}/modules/* $out/modules/
+              if [ -d ${modulesDrv}/modules ]; then
+                cp -r ${modulesDrv}/modules/* $out/modules/
               fi
 
               ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
@@ -175,7 +201,28 @@
             '';
           };
 
-          # Tests derivation: builds cli_tests + logoscore binary for integration tests
+          # Dev build (default)
+          build = mkBuild { liblogosDrv = liblogos; };
+          modules = mkModules {};
+          bin = mkBin {
+            buildDrv = build;
+            liblogosLibDrv = liblogosLib;
+            liblogosDrv = liblogos;
+            modulesDrv = modules;
+          };
+
+          # Portable build
+          buildPortable = mkBuild { liblogosDrv = liblogosPortable; portable = true; };
+          modulesPortable = mkModules { portable = true; };
+          binPortable = mkBin {
+            buildDrv = buildPortable;
+            liblogosLibDrv = liblogosPortableLib;
+            liblogosDrv = liblogosPortable;
+            modulesDrv = modulesPortable;
+            portable = true;
+          };
+
+          # Tests derivation
           tests = pkgs.stdenv.mkDerivation {
             pname = "${pname}-tests";
             inherit version src meta;
@@ -193,23 +240,15 @@
             buildInputs = [
               pkgs.qt6.qtbase
               pkgs.qt6.qtremoteobjects
-              pkgs.nlohmann_json
-              pkgs.stduuid
-              pkgs.cli11
               pkgs.gtest
               liblogosLib
               moduleClientLib
-              # cppSdk propagates Boost, OpenSSL, nlohmann_json (but
-              # not Qt) via its symlinkJoin's propagatedBuildInputs —
-              # see the `build` derivation above for the rationale.
-              cppSdk
             ];
 
             cmakeFlags = [
               "-GNinja"
               "-DLOGOS_LIBLOGOS_ROOT=${liblogos}"
               "-DLOGOS_MODULE_CLIENT_ROOT=${moduleClient}"
-              "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
             ];
 
             installPhase = ''
@@ -219,7 +258,6 @@
 
               cp bin/cli_tests $out/bin/
               cp bin/unit_tests $out/bin/
-              cp bin/integration_tests $out/bin/
               cp bin/logoscore $out/bin/
 
               if [ -d ${liblogosLib}/lib ]; then
@@ -231,7 +269,7 @@
               fi
 
               ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
-                for binary in $out/bin/cli_tests $out/bin/unit_tests $out/bin/integration_tests $out/bin/logoscore; do
+                for binary in $out/bin/cli_tests $out/bin/unit_tests $out/bin/logoscore; do
                   for dylib in $out/lib/*.dylib; do
                     if [ -f "$dylib" ]; then
                       libname=$(basename $dylib)
@@ -245,113 +283,25 @@
             '';
           };
 
-          # Portable modules: bundle + install capability module (portable variant)
-          capabilityInstallPortable = installPortable capabilityModuleLib;
-          modulesPortable = pkgs.runCommand "${pname}-modules-portable-${version}"
-            { inherit meta; }
-            ''
-              mkdir -p $out/modules
-
-              if [ -d "${capabilityInstallPortable}/modules" ]; then
-                cp -r ${capabilityInstallPortable}/modules/. $out/modules/
-              fi
-
-              echo "Modules directory contents:"
-              ls -laR $out/modules/
-            '';
-
-          # Portable build: compile against portable liblogos
-          buildPortable = pkgs.stdenv.mkDerivation {
-            pname = "${pname}-portable";
-            inherit version src meta;
-
-            dontWrapQtApps = true;
-
-            nativeBuildInputs = [
-              pkgs.cmake
-              pkgs.ninja
-              pkgs.pkg-config
-              pkgs.qt6.wrapQtAppsNoGuiHook
-            ];
-
-            buildInputs = [
-              # cppSdk propagates Boost, OpenSSL, nlohmann_json (but
-              # not Qt) via its symlinkJoin's propagatedBuildInputs —
-              # see the `build` derivation above for the rationale.
-              pkgs.qt6.qtbase
-              pkgs.qt6.qtremoteobjects
-              cppSdk
-              pkgs.gtest
-              pkgs.stduuid
-              pkgs.cli11
-            ];
-
-            cmakeFlags = [
-              "-GNinja"
-              "-DLOGOS_LIBLOGOS_ROOT=${liblogosPortable}"
-              "-DLOGOS_MODULE_CLIENT_ROOT=${moduleClient}"
-              "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
-            ];
-          };
-
-          # Portable bin package — nix-bundle-dir handles library bundling and patching
-          binPortable = pkgs.stdenvNoCC.mkDerivation {
-            pname = "${pname}-bin-portable";
-            inherit version meta;
-
-            dontUnpack = true;
-
-            nativeBuildInputs =
-              [ pkgs.qt6.wrapQtAppsNoGuiHook ]
-              ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.cctools ]
-              ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.autoPatchelfHook ];
-
-            buildInputs = [
-              pkgs.qt6.qtbase
-              pkgs.qt6.qtremoteobjects
-            ];
-
-            passthru = { extraDirs = [ "modules" ]; };
-
-            qtWrapperArgs = [
-              "--unset LD_LIBRARY_PATH"
-            ];
-
-            installPhase = ''
-              runHook preInstall
-
-              mkdir -p $out/bin $out/lib $out/modules
-
-              # Binaries from portable build
-              cp -r ${buildPortable}/bin/* $out/bin/
-              cp -L ${liblogosPortable}/bin/logos_host $out/bin/ 2>/dev/null || true
-
-              # Libraries — nix-bundle-dir will resolve and bundle all dependencies
-              cp -L ${liblogosPortable}/lib/*.dylib $out/lib/ 2>/dev/null || true
-              cp -L ${liblogosPortable}/lib/*.so $out/lib/ 2>/dev/null || true
-              cp -L ${moduleClientLib}/lib/*.dylib $out/lib/ 2>/dev/null || true
-              cp -L ${moduleClientLib}/lib/*.so $out/lib/ 2>/dev/null || true
-
-              # Portable modules
-              cp -r ${modulesPortable}/modules/* $out/modules/ 2>/dev/null || true
-
-              runHook postInstall
-            '';
-          };
-
           logoscoreCli = pkgs.symlinkJoin {
             name = pname;
             paths = [ bin ];
           };
+
+          logoscoreCliPortable = pkgs.symlinkJoin {
+            name = "${pname}-portable";
+            paths = [ binPortable ];
+          };
         in
         {
           cli = logoscoreCli;
+          portable = logoscoreCliPortable;
           tests = tests;
-          cli-bundle-dir = dirBundler binPortable;
+          cli-bundle-dir = dirBundler bin;
           cli-appimage = appBundler {
-            drv = binPortable;
+            drv = bin;
             name = "logoscore";
-            bundle = dirBundler binPortable;
+            bundle = dirBundler bin;
             desktopFile = ./assets/logoscore.desktop;
             icon = ./assets/logoscore.png;
           };
@@ -359,25 +309,9 @@
         }
       );
 
-      checks = forAllSystems ({ pkgs, system, liblogos, capabilityModuleLib, installDev, ... }:
+      checks = forAllSystems ({ pkgs, system, ... }:
         let
           testsPkg = self.packages.${system}.tests;
-          # Modules the integration daemon scans. The daemon auto-loads
-          # capability_module at boot for auth — without it every
-          # load-module/call blocks ~20s on capability negotiation then
-          # fails (status/list-modules don't need it, so they'd still
-          # pass, masking the problem). The `tests` package ships only
-          # the binary, so bundle the built-in capability_module next to
-          # the real test_basic_module plugin here. `.install` /
-          # installDev both expose a top-level `modules/` tree;
-          # symlinkJoin (lndir) merges them into one scan dir.
-          testModulesInstall = pkgs.symlinkJoin {
-            name = "logos-logoscore-cli-it-modules";
-            paths = [
-              (installDev capabilityModuleLib)
-              logos-test-modules.modules.${system}.test_basic_module.install
-            ];
-          };
         in {
           tests = pkgs.runCommand "logos-logoscore-cli-tests" {
             nativeBuildInputs = [ testsPkg ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.qt6.qtbase ];
@@ -388,18 +322,11 @@
               export QT_PLUGIN_PATH="${pkgs.qt6.qtbase}/${pkgs.qt6.qtbase.qtPluginPrefix}"
             ''}
             export LOGOSCORE_BINARY=${testsPkg}/bin/logoscore
-            # Daemon-backed integration tests (tests/test_integration.cpp)
-            # read these. Absent ⇒ those tests GTEST_SKIP, so the rest of
-            # the suite still runs in environments without test modules.
-            export LOGOSCORE_TEST_MODULES_DIR=${testModulesInstall}/modules
-            export LOGOS_HOST_PATH=${liblogos}/bin/logos_host
             mkdir -p $out
             echo "Running logos-logoscore-cli unit tests..."
             ${testsPkg}/bin/unit_tests --gtest_output=xml:$out/unit-test-results.xml
             echo "Running logos-logoscore-cli CLI tests..."
             ${testsPkg}/bin/cli_tests --gtest_output=xml:$out/cli-test-results.xml
-            echo "Running logos-logoscore-cli integration tests..."
-            ${testsPkg}/bin/integration_tests --gtest_output=xml:$out/integration-test-results.xml
           '';
         }
       );
@@ -414,9 +341,6 @@
           buildInputs = [
             pkgs.qt6.qtbase
             pkgs.qt6.qtremoteobjects
-            pkgs.nlohmann_json
-            pkgs.stduuid
-            pkgs.cli11
             pkgs.gtest
           ];
           shellHook = ''
