@@ -170,12 +170,12 @@ int Daemon::start(int argc, char* argv[],
         std::string absDir = std::filesystem::absolute(dir, ec).string();
         const char* resolved = ec ? dir.c_str() : absDir.c_str();
         qDebug() << "Added plugins directory:" << resolved;
-        logos_core_add_plugins_dir(resolved);
+        logos_core_add_modules_dir(resolved);
     }
 
     std::string bundledDir = paths::bundledModulesDir();
     if (!bundledDir.empty()) {
-        logos_core_add_plugins_dir(bundledDir.c_str());
+        logos_core_add_modules_dir(bundledDir.c_str());
         qDebug() << "Added bundled modules directory:" << bundledDir.c_str();
     }
 

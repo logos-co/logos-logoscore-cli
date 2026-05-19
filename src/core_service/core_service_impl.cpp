@@ -21,30 +21,30 @@ void CoreServiceImpl::onInit(LogosAPI* api)
 // Helpers to convert C API char** to QStringList
 // ---------------------------------------------------------------------------
 
-QStringList CoreServiceImpl::getKnownPluginNames()
+QStringList CoreServiceImpl::getKnownModuleNames()
 {
     QStringList result;
-    char** plugins = logos_core_get_known_plugins();
-    if (plugins) {
-        for (int i = 0; plugins[i] != nullptr; ++i) {
-            result.append(QString::fromUtf8(plugins[i]));
-            free(plugins[i]);
+    char** modules = logos_core_get_known_modules();
+    if (modules) {
+        for (int i = 0; modules[i] != nullptr; ++i) {
+            result.append(QString::fromUtf8(modules[i]));
+            free(modules[i]);
         }
-        free(plugins);
+        free(modules);
     }
     return result;
 }
 
-QStringList CoreServiceImpl::getLoadedPluginNames()
+QStringList CoreServiceImpl::getLoadedModuleNames()
 {
     QStringList result;
-    char** plugins = logos_core_get_loaded_plugins();
-    if (plugins) {
-        for (int i = 0; plugins[i] != nullptr; ++i) {
-            result.append(QString::fromUtf8(plugins[i]));
-            free(plugins[i]);
+    char** modules = logos_core_get_loaded_modules();
+    if (modules) {
+        for (int i = 0; modules[i] != nullptr; ++i) {
+            result.append(QString::fromUtf8(modules[i]));
+            free(modules[i]);
         }
-        free(plugins);
+        free(modules);
     }
     return result;
 }
@@ -57,14 +57,14 @@ QVariant CoreServiceImpl::loadModule(const QString& name)
 {
     QJsonObject result;
 
-    bool ok = logos_core_load_plugin_with_dependencies(name.toUtf8().constData());
+    bool ok = logos_core_load_module(name.toUtf8().constData(), true);
     if (!ok) {
         result["status"] = "error";
         result["code"] = "MODULE_LOAD_FAILED";
         result["message"] = QString("Failed to load module '%1'.").arg(name);
 
         // Include known modules for context
-        QStringList known = getKnownPluginNames();
+        QStringList known = getKnownModuleNames();
         QJsonArray names;
         for (const QString& n : known)
             names.append(n);
@@ -82,10 +82,10 @@ QVariant CoreServiceImpl::unloadModule(const QString& name)
 {
     QJsonObject result;
 
-    logos_core_unload_plugin(name.toUtf8().constData());
+    logos_core_unload_module(name.toUtf8().constData(), false);
 
     // Check if it was actually unloaded
-    QStringList loaded = getLoadedPluginNames();
+    QStringList loaded = getLoadedModuleNames();
     if (loaded.contains(name)) {
         result["status"] = "error";
         result["code"] = "MODULE_NOT_LOADED";
@@ -104,17 +104,17 @@ QVariant CoreServiceImpl::reloadModule(const QString& name)
     result["action"] = "reload";
     result["module"] = name;
 
-    QStringList loaded = getLoadedPluginNames();
+    QStringList loaded = getLoadedModuleNames();
     QString previousStatus = loaded.contains(name) ? "loaded" : "not_loaded";
     result["previous_status"] = previousStatus;
 
     // Unload if loaded
     if (loaded.contains(name)) {
-        logos_core_unload_plugin(name.toUtf8().constData());
+        logos_core_unload_module(name.toUtf8().constData(), false);
     }
 
     // Load
-    bool ok = logos_core_load_plugin_with_dependencies(name.toUtf8().constData());
+    bool ok = logos_core_load_module(name.toUtf8().constData(), true);
     if (!ok) {
         result["status"] = "error";
         result["error"] = "module failed to start";
@@ -133,8 +133,8 @@ QJsonArray CoreServiceImpl::listModules(const QString& filter)
 {
     QJsonArray modules;
 
-    QStringList known = getKnownPluginNames();
-    QStringList loaded = getLoadedPluginNames();
+    QStringList known = getKnownModuleNames();
+    QStringList loaded = getLoadedModuleNames();
 
     for (const QString& name : known) {
         QJsonObject mod;
@@ -188,7 +188,7 @@ QJsonObject CoreServiceImpl::getModuleInfo(const QString& name)
 {
     QJsonObject info;
 
-    QStringList known = getKnownPluginNames();
+    QStringList known = getKnownModuleNames();
     if (!known.contains(name)) {
         info["status"] = "error";
         info["code"] = "MODULE_NOT_FOUND";
@@ -198,7 +198,7 @@ QJsonObject CoreServiceImpl::getModuleInfo(const QString& name)
 
     info["name"] = name;
 
-    QStringList loaded = getLoadedPluginNames();
+    QStringList loaded = getLoadedModuleNames();
     if (loaded.contains(name)) {
         info["status"] = "loaded";
 

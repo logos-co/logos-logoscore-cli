@@ -43,8 +43,8 @@ private:
     LogosAPI* m_api = nullptr;
 
     // Helpers
-    QStringList getKnownPluginNames();
-    QStringList getLoadedPluginNames();
+    QStringList getKnownModuleNames();
+    QStringList getLoadedModuleNames();
 };
 
 #endif // CORE_SERVICE_IMPL_H
