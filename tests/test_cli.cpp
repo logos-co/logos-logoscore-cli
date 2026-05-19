@@ -365,7 +365,7 @@ TEST_F(CLITest, InlineMode_ManifestWithType_Discovered) {
 // ═════════════════════════════════════════════════════════════════════════════
 // Relative path resolution — logos_core cannot load plugin metadata from
 // relative paths (dlopen fails to resolve RPATH).  logoscore must resolve
-// --modules-dir to an absolute path before calling logos_core_add_plugins_dir.
+// --modules-dir to an absolute path before calling logos_core_add_modules_dir.
 //
 // These tests verify this by checking that the "Added plugins directory:"
 // debug message contains an absolute path, even when the CLI receives a

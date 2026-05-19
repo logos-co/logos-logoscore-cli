@@ -95,14 +95,14 @@ The CLI uses these functions from liblogos (declared in `logos_core.h`):
 | Function | Used by |
 |---|---|
 | `logos_core_init(argc, argv)` | Daemon, Inline |
-| `logos_core_add_plugins_dir(path)` | Daemon, Inline |
+| `logos_core_add_modules_dir(path)` | Daemon, Inline |
 | `logos_core_start()` | Daemon, Inline |
 | `logos_core_exec()` | Daemon, Inline |
 | `logos_core_cleanup()` | Daemon |
-| `logos_core_load_plugin_with_dependencies(name)` | core_service, Inline |
-| `logos_core_unload_plugin(name)` | core_service |
-| `logos_core_get_known_plugins()` | core_service |
-| `logos_core_get_loaded_plugins()` | core_service |
+| `logos_core_load_module(name, true)` | core_service, Inline |
+| `logos_core_unload_module(name, false)` | core_service |
+| `logos_core_get_known_modules()` | core_service |
+| `logos_core_get_loaded_modules()` | core_service |
 | `logos_core_get_module_stats()` | core_service |
 
 ---
@@ -135,8 +135,8 @@ main.cpp
   → Daemon::start(modulesDirs, persistencePath, transportInfos)
     1. Generate instance ID, set LOGOS_INSTANCE_ID env var
     2. logos_core_init(argc, argv)
-    3. logos_core_add_plugins_dir() for each -m path
-    4. logos_core_start()                         // discover plugins
+    3. logos_core_add_modules_dir() for each -m path
+    4. logos_core_start()                         // discover modules
     5. Register core_service (and capability_module) in-process via
        LogosAPI/LogosAPIProvider. For each --module-transport NAME=PROTOCOL[,k=v]
        flag, pass the resolved TransportInfo to LogosAPIProvider so it opens
@@ -304,10 +304,10 @@ private:
 
 | LOGOS_METHOD | What it does (daemon-side) |
 |---|---|
-| `loadModule(name)` | Calls `logos_core_load_plugin_with_dependencies(name)`. Returns `{"status":"ok","module":"...","version":"...","dependencies_loaded":[...]}` |
-| `unloadModule(name)` | Calls `logos_core_unload_plugin(name)`. Returns `{"status":"ok","module":"..."}` |
+| `loadModule(name)` | Calls `logos_core_load_module(name, true)`. Returns `{"status":"ok","module":"...","version":"...","dependencies_loaded":[...]}` |
+| `unloadModule(name)` | Calls `logos_core_unload_module(name, false)`. Returns `{"status":"ok","module":"..."}` |
 | `reloadModule(name)` | Checks if loaded/crashed → unload if needed → load. Returns result with `previous_status` |
-| `listModules(filter)` | Calls `logos_core_get_known_plugins()` + `logos_core_get_loaded_plugins()`. Merges with crash metadata. Returns JSON array with status enum |
+| `listModules(filter)` | Calls `logos_core_get_known_modules()` + `logos_core_get_loaded_modules()`. Merges with crash metadata. Returns JSON array with status enum |
 | `getStatus()` | Reads daemon state (PID, uptime, version) + calls `listModules("all")`. Returns `{"daemon":{...},"modules_summary":{...},"modules":[...]}` |
 | `getModuleInfo(name)` | Fetches metadata, methods (via SDK introspection), process info, crash history. Returns extended JSON |
 | `getModuleStats()` | Calls `logos_core_get_module_stats()`. Returns CPU/memory per module |
@@ -632,7 +632,7 @@ logoscore daemon [--modules-dir <path>]...
 ```
 
 **Behavior:**
-1. `logos_core_init(argc, argv)`, add plugin directories, `logos_core_start()`
+1. `logos_core_init(argc, argv)`, add module directories, `logos_core_start()`
 2. Register `core_service` in-process via `logos_core_register_module()`
 3. Write `~/.logoscore/daemon/state.json` (listeners + hashed-token table) and emit `~/.logoscore/client/config.json` + `~/.logoscore/client/auto.json` for the local client
 4. `logos_core_exec()` (Qt event loop — blocks)
@@ -833,7 +833,7 @@ logoscore load-module waku
         "core_service", "loadModule", "waku")
       ───── IPC (Qt Remote Objects) ─────→
                                           CoreServiceImpl::loadModule("waku")
-                                            → logos_core_load_plugin_with_dependencies("waku")
+                                            → logos_core_load_module("waku", true)
                                             → build result JSON
       ←──── IPC (return value) ──────────
     → Output::printSuccess(result)
@@ -846,7 +846,7 @@ Only the daemon path calls liblogos C API functions directly:
 
 | Daemon operation | liblogos functions |
 |---|---|
-| Start core | `logos_core_init`, `logos_core_add_plugins_dir`, `logos_core_start` |
+| Start core | `logos_core_init`, `logos_core_add_modules_dir`, `logos_core_start` |
 | Register core_service | `LogosAPI`, `LogosAPIProvider::registerObject` (C++ SDK) |
 | Run event loop | `logos_core_exec` |
 | Shutdown | `logos_core_cleanup` |
@@ -857,10 +857,10 @@ Client commands call core_service LOGOS_METHODs, which delegate to liblogos inte
 
 | CLI command | core_service method | liblogos function called internally |
 |---|---|---|
-| `load-module` | `loadModule(name)` | `logos_core_load_plugin_with_dependencies` |
-| `unload-module` | `unloadModule(name)` | `logos_core_unload_plugin` |
-| `reload-module` | `reloadModule(name)` | `logos_core_unload_plugin` + `logos_core_load_plugin_with_dependencies` |
-| `list-modules` | `listModules(filter)` | `logos_core_get_known_plugins`, `logos_core_get_loaded_plugins` |
+| `load-module` | `loadModule(name)` | `logos_core_load_module(name, true)` |
+| `unload-module` | `unloadModule(name)` | `logos_core_unload_module(name, false)` |
+| `reload-module` | `reloadModule(name)` | `logos_core_unload_module(name, false)` + `logos_core_load_module(name, true)` |
+| `list-modules` | `listModules(filter)` | `logos_core_get_known_modules`, `logos_core_get_loaded_modules` |
 | `status` | `getStatus()` | reads daemon state + `listModules` |
 | `module-info` | `getModuleInfo(name)` | plugin metadata + methods introspection |
 | `call` | `callModuleMethod(module, method, args)` | `LogosAPIClient::invokeRemoteMethod` (proxied to target module) |
