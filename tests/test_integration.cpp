@@ -279,6 +279,102 @@ TEST_F(ErrorPathTest, UnknownMethodOnLoadedModule) {
     EXPECT_NE(out.find("true"), std::string::npos) << out;
 }
 
+// Crash-isolation: modules run in a separate logos_host subprocess
+// (logos_core_start spawns it in remote mode). A faulty module that
+// SIGSEGVs must take down only that host process — the logoscore
+// daemon itself must keep answering clients. Uses test_basic_module's
+// crashOnDemand() (a null-pointer deref). Fresh-daemon-per-test
+// because killing the host pollutes shared state for everything else.
+//
+// "Daemon survived" alone is too weak — a missing/renamed method or
+// an error-returning stub also exits non-zero. Belt + braces:
+//   (1) precondition: module-info lists crashOnDemand → we're really
+//       calling the method we think we are;
+//   (2) positive crash evidence: after the call, the daemon observes
+//       the host die and flips the module out of "loaded" state
+//       (module_manager.cpp's onTerminated → registry.markUnloaded).
+//       A method that merely returned an error would leave it loaded.
+TEST_F(ErrorPathTest, CrashedModuleDoesNotKillDaemon) {
+    std::string out;
+
+    // Module loads and is callable — baseline that the daemon + host
+    // are healthy before we intentionally crash one of them.
+    ASSERT_EQ(d.run("load-module test_basic_module", &out), 0)
+        << "test_basic_module must load before crash test.\n" << out
+        << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+    ASSERT_EQ(d.run("call test_basic_module returnTrue", &out), 0)
+        << "module must be callable pre-crash.\n" << out;
+    EXPECT_NE(out.find("true"), std::string::npos) << out;
+
+    // Precondition (1): the method we're about to call really exists
+    // on the loaded module — otherwise the "non-zero exit" assertion
+    // below would pass for the wrong reason (method-not-found, not
+    // host crash). Pulls the methods list from module-info --json.
+    ASSERT_EQ(d.run("module-info test_basic_module", &out), 0)
+        << "module-info should succeed for a loaded module.\n" << out;
+    QJsonObject pre = lastJsonObject(out);
+    ASSERT_EQ(pre.value("status").toString().toStdString(), "loaded")
+        << "module should be loaded before the crash.\n" << out;
+    QJsonArray methods = pre.value("methods").toArray();
+    bool hasCrash = false;
+    for (const QJsonValue& v : methods) {
+        if (v.toObject().value("name").toString() == "crashOnDemand") {
+            hasCrash = true;
+            break;
+        }
+    }
+    ASSERT_TRUE(hasCrash)
+        << "test_basic_module must expose crashOnDemand — otherwise "
+           "this test would pass for the wrong reason (method-not-found).\n"
+        << out;
+
+    // Crash the host. The RPC will not return cleanly: either the
+    // peer dies mid-call (RPC_FAILED, non-zero exit) or the SDK
+    // burns its full timeout. `timeout` keeps us bounded in either
+    // case — we only assert "must not succeed", not a specific code.
+    EXPECT_NE(d.run("call test_basic_module crashOnDemand",
+                    &out, kNegativeBudgetSecs), 0)
+        << "crashOnDemand must not return success.\n" << out;
+
+    // Positive crash evidence (2): the daemon's SIGCHLD handler runs
+    // asynchronously, so poll for up to ~5s waiting to observe the
+    // module flip out of "loaded" (markUnloaded). If crashOnDemand
+    // had merely returned an error envelope without dying, the host
+    // would still be alive and module-info would keep reporting
+    // status=="loaded" — failing this assertion.
+    std::string lastStatus = "<none>";
+    bool unloaded = false;
+    for (int i = 0; i < 50; ++i) {
+        if (d.run("module-info test_basic_module", &out, /*timeoutSecs=*/5) == 0) {
+            lastStatus = lastJsonObject(out)
+                             .value("status").toString().toStdString();
+            if (lastStatus != "loaded") { unloaded = true; break; }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    EXPECT_TRUE(unloaded)
+        << "daemon never observed the host crash — module still reports "
+        << "status='" << lastStatus << "' (expected anything but 'loaded'). "
+        << "Either crashOnDemand didn't actually crash, or the daemon's "
+        << "subprocess supervisor stopped detecting host exits.\n"
+        << "--- daemon log ---\n" << slurp(d.daemonLog);
+
+    // Original isolation assertion: a quick `status` round-trip proves
+    // the daemon is still serving clients after the host subprocess
+    // died. If the daemon went down with the module, `status` would
+    // either fail to connect or `timeout` would fire.
+    ASSERT_EQ(d.run("status", &out, /*timeoutSecs=*/10), 0)
+        << "daemon must survive a module crash.\n" << out
+        << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+
+    // `list-modules` exercises a different code path than `status`
+    // (catalog scan vs. liveness check) — both must keep working.
+    ASSERT_EQ(d.run("list-modules", &out, /*timeoutSecs=*/10), 0)
+        << "list-modules must still work after a module crash.\n" << out;
+    EXPECT_NE(out.find("test_basic"), std::string::npos)
+        << "module must remain discoverable after its host crashed.\n" << out;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Full API + concurrency — ONE shared daemon, module loaded once
 // ═══════════════════════════════════════════════════════════════════════════
