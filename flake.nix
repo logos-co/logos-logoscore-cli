@@ -9,7 +9,7 @@
     # relying on the symbol surviving liblogos_core's link-time
     # dead-strip. liblogos's own SDK pin still drives transitive deps.
     logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk";
-    logos-liblogos.url = "github:logos-co/logos-liblogos";
+    logos-liblogos.url = "github:logos-co/logos-liblogos/module-crash-handling";
     logos-module-client.url = "github:logos-co/logos-module-client";
     logos-capability-module.url = "github:logos-co/logos-capability-module";
     # Real test-module plugins (test_basic_module) used by the
