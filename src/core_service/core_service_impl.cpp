@@ -207,7 +207,6 @@ LogosMap CoreServiceImpl::getModuleInfo(const std::string& name)
     if (containsName(loaded, name)) {
         info["status"] = "loaded";
 
-        // Query the module's published methods via SDK
         if (m_api) {
             QString qName = QString::fromStdString(name);
             LogosAPIClient* moduleClient = m_api->getClient(qName);
@@ -252,8 +251,8 @@ StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
     LogosMap result;
 
     if (!m_api) {
-        result["status"] = "error";
-        result["code"] = "INTERNAL_ERROR";
+        result["status"]  = "error";
+        result["code"]    = "INTERNAL_ERROR";
         result["message"] = "core_service not initialized.";
         return {false, result, "core_service not initialized."};
     }
@@ -306,12 +305,6 @@ StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
     result["module"] = module;
     result["method"] = method;
 
-    // LogosResult is a user-defined struct: `QJsonValue::fromVariant` has
-    // no built-in conversion for it and produces null. Unpack it by hand
-    // into the same `{success, value, error}` shape the plain-C++
-    // transport produces in qvariantToRpcValue — so the JSON the CLI
-    // ultimately prints is identical regardless of which transport the
-    // daemon-module RPC went over (LocalSocket/QRO, TCP, TCP+SSL).
     const int logosResultId = QMetaType::fromName("LogosResult").id();
     if (logosResultId != QMetaType::UnknownType
             && ret.userType() == logosResultId) {
@@ -422,7 +415,6 @@ LogosMap CoreServiceImpl::shutdown()
     result["status"] = "ok";
     result["message"] = "Daemon shutting down.";
 
-    // Give the RPC layer time to send the response before we quit
     QTimer::singleShot(200, QCoreApplication::instance(), &QCoreApplication::quit);
 
     return result;

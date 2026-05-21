@@ -10,17 +10,16 @@ int StopCommand::execute(const std::vector<std::string>& args)
 
     QJsonObject result = client().shutdown();
 
-    QString status = result.value("status").toString();
+    std::string status = result.value("status").toString().toStdString();
 
     // If the daemon shut down before the RPC response arrived, the call
-    // returns an RPC_FAILED error.  That's expected — treat it as success.
+    // returns an RPC_FAILED error. That's expected — treat it as success.
     if (status == "error") {
-        QString code = result.value("code").toString();
+        std::string code = result.value("code").toString().toStdString();
         if (code == "RPC_FAILED") {
-            // Daemon likely already exited — that's fine
             if (output().isJsonMode()) {
                 QJsonObject ok;
-                ok["status"] = "ok";
+                ok["status"]  = "ok";
                 ok["message"] = "Daemon stopped.";
                 output().printSuccess(ok);
             } else {
@@ -28,7 +27,7 @@ int StopCommand::execute(const std::vector<std::string>& args)
             }
             return 0;
         }
-        output().printError(code, result.value("message").toString());
+        output().printError(code, result.value("message").toString().toStdString());
         return 1;
     }
 

@@ -1,5 +1,6 @@
 #include "reload_module_command.h"
 #include <CLI/CLI.hpp>
+#include <cstdio>
 
 int ReloadModuleCommand::execute(const std::vector<std::string>& args)
 {
@@ -19,19 +20,15 @@ int ReloadModuleCommand::execute(const std::vector<std::string>& args)
     if (err != 0)
         return err;
 
-    QString moduleName = QString::fromStdString(name);
+    if (!output().isJsonMode())
+        fprintf(stderr, "Reloading %s...\n", name.c_str());
 
-    if (!output().isJsonMode()) {
-        // Print progress to stderr in human mode
-        fprintf(stderr, "Reloading %s...\n", moduleName.toUtf8().constData());
-    }
+    QJsonObject result = client().reloadModule(name);
 
-    QJsonObject result = client().reloadModule(moduleName);
-
-    QString status = result.value("status").toString();
+    std::string status = result.value("status").toString().toStdString();
     if (status == "error") {
-        output().printError(result.value("code").toString(),
-                           result.value("message").toString(), result);
+        output().printError(result.value("code").toString().toStdString(),
+                            result.value("message").toString().toStdString(), result);
         return 3;
     }
 

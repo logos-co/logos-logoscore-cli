@@ -8,8 +8,8 @@ public:
     using Command::Command;
 
     int execute(const std::vector<std::string>& args) override;
-    QString name() const override { return "list-modules"; }
-    QString description() const override { return "List available or loaded modules"; }
+    std::string name() const override { return "list-modules"; }
+    std::string description() const override { return "List available or loaded modules"; }
 };
 
 #endif // LIST_MODULES_COMMAND_H

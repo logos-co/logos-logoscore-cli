@@ -1,118 +1,90 @@
 #include "call_executor.h"
 #include "logos_sdk_c.h"
-#include <QFile>
-#include <QTextStream>
+#include "../string_utils.h"
+#include <QEventLoop>
+#include <QTimer>
+#include <QObject>
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
-#include <QEventLoop>
-#include <QTimer>
-#include <QDebug>
+#include <fmt/format.h>
+#include <fstream>
 #include <iostream>
+#include <sstream>
+#include <stdexcept>
 
 struct CallResult {
     bool completed = false;
-    bool success = false;
-    QString message;
+    bool success   = false;
+    std::string message;
 };
 
 static void methodCallCallback(int result, const char* message, void* user_data) {
     CallResult* callResult = static_cast<CallResult*>(user_data);
     callResult->completed = true;
-    callResult->success = (result == 1);
-    callResult->message = message ? QString::fromUtf8(message) : QString();
+    callResult->success   = (result == 1);
+    callResult->message   = message ? std::string(message) : std::string();
 }
 
-QString CallExecutor::resolveParam(const QString& param) {
-    if (param.startsWith('@')) {
-        QString filePath = param.mid(1);
-        QFile file(filePath);
+std::string CallExecutor::resolveParam(const std::string& param) {
+    if (!strutil::starts_with(param, '@'))
+        return param;
 
-        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            qWarning() << "Failed to open file:" << filePath;
-            return QString();
-        }
+    std::string filePath = param.substr(1);
+    std::ifstream file(filePath);
+    if (!file.is_open())
+        return {};
 
-        QTextStream in(&file);
-        QString content = in.readAll();
-        file.close();
-
-        return content;
-    }
-
-    return param;
+    std::ostringstream ss;
+    ss << file.rdbuf();
+    return ss.str();
 }
 
-QJsonValue CallExecutor::convertParam(const QString& param) {
-    if (param.toLower() == "true") {
-        return QJsonValue(true);
-    }
-    if (param.toLower() == "false") {
-        return QJsonValue(false);
-    }
-
-    bool ok;
-    int intVal = param.toInt(&ok);
-    if (ok) {
-        return QJsonValue(intVal);
-    }
-
-    double doubleVal = param.toDouble(&ok);
-    if (ok) {
-        return QJsonValue(doubleVal);
-    }
-
-    return QJsonValue(param);
-}
-
-QString CallExecutor::buildParamsJson(const std::vector<std::string>& params) {
+std::string CallExecutor::buildParamsJson(const std::vector<std::string>& params) {
     QJsonArray paramsArray;
 
     for (size_t i = 0; i < params.size(); ++i) {
-        QString rawParam = QString::fromStdString(params[i]);
-        QString resolvedParam = resolveParam(rawParam);
+        const std::string& rawParam      = params[i];
+        const std::string resolvedParam  = resolveParam(rawParam);
 
-        if (rawParam.startsWith('@') && resolvedParam.isEmpty()) {
-            qWarning() << "Failed to resolve file parameter:" << rawParam;
-            return QString();
+        if (strutil::starts_with(rawParam, '@') && resolvedParam.empty()) {
+            fprintf(stderr, "Warning: failed to resolve file parameter: %s\n",
+                    rawParam.c_str());
+            return {};
         }
 
         QJsonObject paramObj;
-        paramObj["name"] = QString("arg%1").arg(i);
-        paramObj["value"] = resolvedParam;
+        paramObj["name"] = QString::fromStdString(fmt::format("arg{}", i));
 
-        QJsonValue converted = convertParam(resolvedParam);
-        if (converted.isBool()) {
-            paramObj["type"] = "bool";
-            paramObj["value"] = resolvedParam;
-        } else if (converted.isDouble()) {
-            bool ok;
-            resolvedParam.toInt(&ok);
-            if (ok) {
-                paramObj["type"] = "int";
-            } else {
-                paramObj["type"] = "double";
-            }
-            paramObj["value"] = resolvedParam;
+        // Determine type and coerce value
+        std::string type;
+        std::string lower = strutil::to_lower(resolvedParam);
+        if (lower == "true" || lower == "false") {
+            type = "bool";
         } else {
-            paramObj["type"] = "QString";
-            paramObj["value"] = resolvedParam;
+            bool isInt = false;
+            try { std::stoi(resolvedParam); isInt = true; } catch (...) {}
+            if (isInt) {
+                type = "int";
+            } else {
+                bool isDouble = false;
+                try { std::stod(resolvedParam); isDouble = true; } catch (...) {}
+                type = isDouble ? "double" : "string";
+            }
         }
 
+        paramObj["type"]  = QString::fromStdString(type);
+        paramObj["value"] = QString::fromStdString(resolvedParam);
         paramsArray.append(paramObj);
     }
 
     QJsonDocument doc(paramsArray);
-    return QString::fromUtf8(doc.toJson(QJsonDocument::Compact));
+    return doc.toJson(QJsonDocument::Compact).toStdString();
 }
 
 bool CallExecutor::executeCall(const ModuleCall& call) {
-    qDebug() << "Executing call:" << QString::fromStdString(call.moduleName) << "."
-             << QString::fromStdString(call.methodName)
-             << "with" << call.params.size() << "params";
-
-    QString paramsJson = buildParamsJson(call.params);
-    if (call.params.size() > 0 && paramsJson.isEmpty()) {
+    std::string paramsJson = buildParamsJson(call.params);
+    if (call.params.size() > 0 && paramsJson.empty()) {
         std::cerr << "Error: Failed to build parameters for "
                   << call.moduleName << "."
                   << call.methodName << std::endl;
@@ -124,7 +96,7 @@ bool CallExecutor::executeCall(const ModuleCall& call) {
     logos_sdk_call_method_async(
         call.moduleName.c_str(),
         call.methodName.c_str(),
-        paramsJson.isEmpty() ? "[]" : paramsJson.toUtf8().constData(),
+        paramsJson.empty() ? "[]" : paramsJson.c_str(),
         methodCallCallback,
         &result
     );
@@ -139,9 +111,8 @@ bool CallExecutor::executeCall(const ModuleCall& call) {
 
     QObject::connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
     QObject::connect(&pollTimer, &QTimer::timeout, [&]() {
-        if (result.completed) {
+        if (result.completed)
             loop.quit();
-        }
     });
 
     timeoutTimer.start();
@@ -153,26 +124,23 @@ bool CallExecutor::executeCall(const ModuleCall& call) {
 
     if (!result.completed) {
         std::cerr << "Error: Timeout waiting for "
-                  << call.moduleName << "."
-                  << call.methodName << std::endl;
+                  << call.moduleName << "." << call.methodName << std::endl;
         return false;
     }
 
     if (!result.success) {
-        std::cerr << "Error: " << result.message.toStdString() << std::endl;
+        std::cerr << "Error: " << result.message << std::endl;
         return false;
     }
 
-    std::cout << result.message.toStdString() << std::endl;
-
+    std::cout << result.message << std::endl;
     return true;
 }
 
 int CallExecutor::executeCalls(const std::vector<ModuleCall>& calls) {
     for (const ModuleCall& call : calls) {
-        if (!executeCall(call)) {
+        if (!executeCall(call))
             return 1;
-        }
     }
     return 0;
 }

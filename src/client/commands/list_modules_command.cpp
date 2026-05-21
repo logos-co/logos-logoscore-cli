@@ -19,7 +19,7 @@ int ListModulesCommand::execute(const std::vector<std::string>& args)
     if (err != 0)
         return err;
 
-    QString filter = loaded ? "loaded" : "all";
+    std::string filter = loaded ? "loaded" : "all";
     QJsonArray modules = client().listModules(filter);
 
     output().printModuleList(modules);

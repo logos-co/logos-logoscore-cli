@@ -8,8 +8,8 @@ public:
     using Command::Command;
 
     int execute(const std::vector<std::string>& args) override;
-    QString name() const override { return "reload-module"; }
-    QString description() const override { return "Reload (unload + load) a module"; }
+    std::string name() const override { return "reload-module"; }
+    std::string description() const override { return "Reload (unload + load) a module"; }
 };
 
 #endif // RELOAD_MODULE_COMMAND_H

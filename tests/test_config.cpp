@@ -1,55 +1,63 @@
 #include <gtest/gtest.h>
-#include <QCoreApplication>
-#include <QDir>
 #include <cstdlib>
+#include <filesystem>
+#include <string>
 #include "config.h"
+
+static std::string getTempDir()
+{
+    const char* tmp = std::getenv("TMPDIR");
+    if (!tmp || !*tmp) tmp = "/tmp";
+    return std::string(tmp);
+}
 
 class ConfigTest : public ::testing::Test {
 protected:
-    QString origHome;
-    QString testDir;
+    std::string origHome;
+    std::string testDir;
 
     void SetUp() override {
-        testDir = QDir::tempPath() + "/logoscore_test_config_" + QString::number(QCoreApplication::applicationPid());
-        QDir().mkpath(testDir + "/.logoscore");
+        testDir = getTempDir() + "/logoscore_test_config_" + std::to_string(getpid());
+        std::filesystem::create_directories(testDir + "/.logoscore");
 
-        origHome = qEnvironmentVariable("HOME");
-        qputenv("HOME", testDir.toUtf8());
+        const char* h = std::getenv("HOME");
+        origHome = h ? std::string(h) : "";
+        setenv("HOME", testDir.c_str(), 1);
 
-        qunsetenv("LOGOSCORE_TOKEN");
-        qunsetenv("LOGOSCORE_CONFIG_DIR");
-        Config::setConfigDir(QString());
+        unsetenv("LOGOSCORE_TOKEN");
+        unsetenv("LOGOSCORE_CONFIG_DIR");
+        Config::setConfigDir("");
     }
 
     void TearDown() override {
-        qputenv("HOME", origHome.toUtf8());
-        qunsetenv("LOGOSCORE_CONFIG_DIR");
-        Config::setConfigDir(QString());
-        QDir(testDir).removeRecursively();
+        setenv("HOME", origHome.c_str(), 1);
+        unsetenv("LOGOSCORE_CONFIG_DIR");
+        Config::setConfigDir("");
+        std::filesystem::remove_all(testDir);
     }
 };
 
 TEST_F(ConfigTest, ConfigDir_ReturnsHomeLogoscore)
 {
-    QString dir = Config::configDir();
-    EXPECT_TRUE(dir.endsWith("/.logoscore"));
+    std::string dir = Config::configDir();
+    const std::string suffix = "/.logoscore";
+    EXPECT_TRUE(dir.size() > suffix.size() &&
+                dir.substr(dir.size() - suffix.size()) == suffix);
 }
 
 // ----------------------------------------------------------------------
 // Token resolution
-// Post-config-split, Config::getToken() only knows about the env override.
-// The fallback to client/<token_file> lives in ClientState (a layer up).
 // ----------------------------------------------------------------------
 
 TEST_F(ConfigTest, GetToken_EnvVarReturned)
 {
-    qputenv("LOGOSCORE_TOKEN", "env-token");
+    setenv("LOGOSCORE_TOKEN", "env-token", 1);
     EXPECT_EQ(Config::getToken(), "env-token");
 }
 
 TEST_F(ConfigTest, GetToken_EmptyWhenNoEnv)
 {
-    EXPECT_TRUE(Config::getToken().isEmpty());
+    EXPECT_TRUE(Config::getToken().empty());
 }
 
 // ----------------------------------------------------------------------
@@ -58,16 +66,15 @@ TEST_F(ConfigTest, GetToken_EmptyWhenNoEnv)
 
 TEST_F(ConfigTest, Paths_DaemonAndClientUnderConfigDir)
 {
-    const QString cfg = Config::configDir();
-    EXPECT_EQ(Config::daemonDir(),         cfg + "/daemon");
-    EXPECT_EQ(Config::daemonConfigPath(),  cfg + "/daemon/config.json");
-    EXPECT_EQ(Config::daemonStatePath(),   cfg + "/daemon/state.json");
-    EXPECT_EQ(Config::daemonTokensPath(),  cfg + "/daemon/tokens.json");
-    EXPECT_EQ(Config::daemonTokensDir(),   cfg + "/daemon/tokens");
-    EXPECT_EQ(Config::clientDir(),         cfg + "/client");
-    EXPECT_EQ(Config::clientConfigPath(),  cfg + "/client/config.json");
-    EXPECT_EQ(Config::clientTokenPath("auto.json"),
-              cfg + "/client/auto.json");
+    const std::string cfg = Config::configDir();
+    EXPECT_EQ(Config::daemonDir(),        cfg + "/daemon");
+    EXPECT_EQ(Config::daemonConfigPath(), cfg + "/daemon/config.json");
+    EXPECT_EQ(Config::daemonStatePath(),  cfg + "/daemon/state.json");
+    EXPECT_EQ(Config::daemonTokensPath(), cfg + "/daemon/tokens.json");
+    EXPECT_EQ(Config::daemonTokensDir(),  cfg + "/daemon/tokens");
+    EXPECT_EQ(Config::clientDir(),        cfg + "/client");
+    EXPECT_EQ(Config::clientConfigPath(), cfg + "/client/config.json");
+    EXPECT_EQ(Config::clientTokenPath("auto.json"), cfg + "/client/auto.json");
 }
 
 // ----------------------------------------------------------------------
@@ -76,23 +83,23 @@ TEST_F(ConfigTest, Paths_DaemonAndClientUnderConfigDir)
 
 TEST_F(ConfigTest, ConfigDir_EnvVarOverridesHome)
 {
-    const QString alt = testDir + "/alt-config";
-    QDir().mkpath(alt);
-    qputenv("LOGOSCORE_CONFIG_DIR", alt.toUtf8());
+    const std::string alt = testDir + "/alt-config";
+    std::filesystem::create_directories(alt);
+    setenv("LOGOSCORE_CONFIG_DIR", alt.c_str(), 1);
 
     EXPECT_EQ(Config::configDir(), alt);
-    EXPECT_TRUE(Config::daemonConfigPath().startsWith(alt));
-    EXPECT_TRUE(Config::clientConfigPath().startsWith(alt));
+    EXPECT_EQ(Config::daemonConfigPath().substr(0, alt.size()), alt);
+    EXPECT_EQ(Config::clientConfigPath().substr(0, alt.size()), alt);
 }
 
 TEST_F(ConfigTest, ConfigDir_SetterOverridesEnvVar)
 {
-    const QString envDir = testDir + "/env-config";
-    const QString setterDir = testDir + "/setter-config";
-    QDir().mkpath(envDir);
-    QDir().mkpath(setterDir);
+    const std::string envDir    = testDir + "/env-config";
+    const std::string setterDir = testDir + "/setter-config";
+    std::filesystem::create_directories(envDir);
+    std::filesystem::create_directories(setterDir);
 
-    qputenv("LOGOSCORE_CONFIG_DIR", envDir.toUtf8());
+    setenv("LOGOSCORE_CONFIG_DIR", envDir.c_str(), 1);
     Config::setConfigDir(setterDir);
 
     EXPECT_EQ(Config::configDir(), setterDir)
@@ -101,15 +108,15 @@ TEST_F(ConfigTest, ConfigDir_SetterOverridesEnvVar)
 
 TEST_F(ConfigTest, ConfigDir_ClearingSetterFallsBackToEnv)
 {
-    const QString envDir = testDir + "/env-config";
-    const QString setterDir = testDir + "/setter-config";
-    QDir().mkpath(envDir);
-    QDir().mkpath(setterDir);
+    const std::string envDir    = testDir + "/env-config";
+    const std::string setterDir = testDir + "/setter-config";
+    std::filesystem::create_directories(envDir);
+    std::filesystem::create_directories(setterDir);
 
-    qputenv("LOGOSCORE_CONFIG_DIR", envDir.toUtf8());
+    setenv("LOGOSCORE_CONFIG_DIR", envDir.c_str(), 1);
     Config::setConfigDir(setterDir);
     ASSERT_EQ(Config::configDir(), setterDir);
 
-    Config::setConfigDir(QString());
+    Config::setConfigDir("");
     EXPECT_EQ(Config::configDir(), envDir);
 }

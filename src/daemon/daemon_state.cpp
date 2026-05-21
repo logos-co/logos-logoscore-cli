@@ -196,7 +196,7 @@ bool atomicWriteJson(const fs::path& path, const json& obj)
 
 std::string DaemonConfigFile::filePath()
 {
-    return Config::daemonConfigPath().toStdString();
+    return Config::daemonConfigPath();
 }
 
 std::optional<DaemonConfig> DaemonConfigFile::read()
@@ -231,7 +231,7 @@ bool DaemonConfigFile::write(const DaemonConfig& cfg)
 
 std::string DaemonRuntimeStateFile::filePath()
 {
-    return Config::daemonStatePath().toStdString();
+    return Config::daemonStatePath();
 }
 
 bool DaemonRuntimeStateFile::write(const DaemonRuntimeState& state)
@@ -367,9 +367,9 @@ bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
     const std::vector<TransportInfo>& coreServiceTransports,
     const std::vector<TransportInfo>& capabilityModuleTransports)
 {
-    const std::string clientDir      = Config::clientDir().toStdString();
-    const std::string clientCfgPath  = Config::clientConfigPath().toStdString();
-    const std::string autoTokenPath  = Config::clientTokenPath("auto.json").toStdString();
+    const std::string clientDir      = Config::clientDir();
+    const std::string clientCfgPath  = Config::clientConfigPath();
+    const std::string autoTokenPath  = Config::clientTokenPath("auto.json");
 
     std::error_code ec;
     fs::create_directories(clientDir, ec);

@@ -8,8 +8,8 @@ public:
     using Command::Command;
 
     int execute(const std::vector<std::string>& args) override;
-    QString name() const override { return "load-module"; }
-    QString description() const override { return "Load a module into the daemon"; }
+    std::string name() const override { return "load-module"; }
+    std::string description() const override { return "Load a module into the daemon"; }
 };
 
 #endif // LOAD_MODULE_COMMAND_H

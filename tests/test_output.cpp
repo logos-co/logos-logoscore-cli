@@ -79,7 +79,7 @@ TEST_F(OutputTest, PrintSuccess_JsonArray)
 TEST_F(OutputTest, PrintSuccess_String)
 {
     CaptureStdout cap;
-    jsonOutput.printSuccess(QString("All good"));
+    jsonOutput.printSuccess(std::string("All good"));
 
     std::string out = cap.str();
     QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(out));

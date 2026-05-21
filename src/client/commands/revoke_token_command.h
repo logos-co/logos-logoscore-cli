@@ -10,8 +10,8 @@ class RevokeTokenCommand : public Command {
 public:
     using Command::Command;
     int execute(const std::vector<std::string>& args) override;
-    QString name() const override { return "revoke-token"; }
-    QString description() const override {
+    std::string name() const override { return "revoke-token"; }
+    std::string description() const override {
         return "Revoke a previously-issued client token";
     }
 };

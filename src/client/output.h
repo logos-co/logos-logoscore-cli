@@ -1,10 +1,10 @@
 #ifndef OUTPUT_H
 #define OUTPUT_H
 
-#include <QString>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QVariant>
+#include <string>
 
 class Output {
 public:
@@ -17,10 +17,10 @@ public:
     // Success output
     void printSuccess(const QJsonObject& data);
     void printSuccess(const QJsonArray& data);
-    void printSuccess(const QString& message);
+    void printSuccess(const std::string& message);
 
     // Error output
-    void printError(const QString& code, const QString& message,
+    void printError(const std::string& code, const std::string& message,
                     const QJsonObject& extra = {});
 
     // Table output (list-modules, stats)
@@ -36,10 +36,10 @@ public:
     void printReload(const QJsonObject& result);
 
     // Generic key-value display
-    void printKeyValue(const QString& key, const QString& value);
+    void printKeyValue(const std::string& key, const std::string& value);
 
     // Raw output to stdout
-    void printRaw(const QString& text);
+    void printRaw(const std::string& text);
 
 private:
     bool m_forceJson;
@@ -47,8 +47,8 @@ private:
     bool m_isTTY = false;
 
     void checkTTY();
-    QString formatUptime(qint64 seconds) const;
-    QString padRight(const QString& str, int width) const;
+    std::string formatUptime(qint64 seconds) const;
+    std::string padRight(const std::string& str, int width) const;
 };
 
 #endif // OUTPUT_H

@@ -33,7 +33,7 @@ using json = nlohmann::json;
 
 std::string TokensFile::filePath()
 {
-    return Config::daemonTokensPath().toStdString();
+    return Config::daemonTokensPath();
 }
 
 namespace {
@@ -271,7 +271,7 @@ TokenStore::TokenStore()
     // the process-global Config dir. Materialize the dir up front so
     // issueToken can write into it without first having to
     // create_directories itself.
-    const std::string tokensDir = Config::daemonTokensDir().toStdString();
+    const std::string tokensDir = Config::daemonTokensDir();
     std::error_code ec;
     fs::create_directories(tokensDir, ec);
     // Belt-and-braces dir perms (0700) so umask can't widen.
@@ -415,5 +415,5 @@ TokenStore::lookupByToken(const std::string& token,
 
 std::string TokenStore::rawTokenFilePath(const std::string& name) const
 {
-    return Config::daemonTokensDir().toStdString() + "/" + name + ".json";
+    return Config::daemonTokensDir() + "/" + name + ".json";
 }

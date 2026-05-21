@@ -1,12 +1,12 @@
 #ifndef CLIENT_H
 #define CLIENT_H
 
-#include <QString>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QVariant>
 #include <QVariantList>
 #include <functional>
+#include <string>
 
 // Abstract client interface for communicating with daemon's core_service.
 // The real implementation (RpcClient) uses LogosAPIClient from logos-cpp-sdk.
@@ -17,30 +17,30 @@ public:
 
     virtual bool connect() = 0;
     virtual bool isConnected() const = 0;
-    virtual QString lastError() const = 0;
+    virtual std::string lastError() const = 0;
 
     // Module lifecycle
-    virtual QJsonObject loadModule(const QString& name) = 0;
-    virtual QJsonObject unloadModule(const QString& name) = 0;
-    virtual QJsonObject reloadModule(const QString& name) = 0;
+    virtual QJsonObject loadModule(const std::string& name) = 0;
+    virtual QJsonObject unloadModule(const std::string& name) = 0;
+    virtual QJsonObject reloadModule(const std::string& name) = 0;
 
     // Queries
-    virtual QJsonArray listModules(const QString& filter) = 0;
+    virtual QJsonArray listModules(const std::string& filter) = 0;
     virtual QJsonObject getStatus() = 0;
-    virtual QJsonObject getModuleInfo(const QString& name) = 0;
+    virtual QJsonObject getModuleInfo(const std::string& name) = 0;
     virtual QJsonArray getModuleStats() = 0;
 
     // Proxied call
-    virtual QJsonObject callModuleMethod(const QString& module,
-                                         const QString& method,
+    virtual QJsonObject callModuleMethod(const std::string& module,
+                                         const std::string& method,
                                          const QVariantList& args) = 0;
 
     // Daemon lifecycle
     virtual QJsonObject shutdown() = 0;
 
     // Event watching
-    virtual bool watchModuleEvents(const QString& module,
-                                   const QString& eventName,
+    virtual bool watchModuleEvents(const std::string& module,
+                                   const std::string& eventName,
                                    std::function<void(const QJsonObject&)> callback) = 0;
 };
 
@@ -53,28 +53,28 @@ public:
 
     bool connect() override;
     bool isConnected() const override;
-    QString lastError() const override;
+    std::string lastError() const override;
 
-    QJsonObject loadModule(const QString& name) override;
-    QJsonObject unloadModule(const QString& name) override;
-    QJsonObject reloadModule(const QString& name) override;
-    QJsonArray listModules(const QString& filter) override;
+    QJsonObject loadModule(const std::string& name) override;
+    QJsonObject unloadModule(const std::string& name) override;
+    QJsonObject reloadModule(const std::string& name) override;
+    QJsonArray listModules(const std::string& filter) override;
     QJsonObject getStatus() override;
-    QJsonObject getModuleInfo(const QString& name) override;
+    QJsonObject getModuleInfo(const std::string& name) override;
     QJsonArray getModuleStats() override;
-    QJsonObject callModuleMethod(const QString& module,
-                                 const QString& method,
+    QJsonObject callModuleMethod(const std::string& module,
+                                 const std::string& method,
                                  const QVariantList& args) override;
     QJsonObject shutdown() override;
-    bool watchModuleEvents(const QString& module,
-                           const QString& eventName,
+    bool watchModuleEvents(const std::string& module,
+                           const std::string& eventName,
                            std::function<void(const QJsonObject&)> callback) override;
 
 private:
     struct Impl;
     Impl* d;
     bool m_connected = false;
-    QString m_lastError;
+    std::string m_lastError;
 };
 
 #endif // CLIENT_H

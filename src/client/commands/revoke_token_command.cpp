@@ -4,7 +4,7 @@
 #include "../../daemon/token_store.h"
 
 #include <QJsonObject>
-#include <QString>
+#include <fmt/format.h>
 
 int RevokeTokenCommand::execute(const std::vector<std::string>& args)
 {
@@ -20,20 +20,18 @@ int RevokeTokenCommand::execute(const std::vector<std::string>& args)
             break;
         case TokenStore::RevokeStatus::InvalidName:
             output().printError("INVALID_NAME",
-                QString("Token name '%1' is invalid (must be 1-64 chars, "
-                        "alnum/dot/dash/underscore, no traversal).")
-                    .arg(QString::fromStdString(name)));
+                fmt::format("Token name '{}' is invalid (must be 1-64 chars, "
+                            "alnum/dot/dash/underscore, no traversal).", name));
             return 1;
         case TokenStore::RevokeStatus::NotFound:
             output().printError("TOKEN_NOT_FOUND",
-                QString("No token named '%1' exists.").arg(QString::fromStdString(name)));
+                fmt::format("No token named '{}' exists.", name));
             return 3;
         case TokenStore::RevokeStatus::IoError:
             output().printError("IO_ERROR",
-                QString("Failed to update tokens.json while revoking '%1'. "
-                        "Check permissions/free space under %2.")
-                    .arg(QString::fromStdString(name),
-                         Config::daemonTokensDir()));
+                fmt::format("Failed to update tokens.json while revoking '{}'. "
+                            "Check permissions/free space under {}.",
+                            name, Config::daemonTokensDir()));
             return 1;
     }
 
@@ -43,7 +41,7 @@ int RevokeTokenCommand::execute(const std::vector<std::string>& args)
     if (output().isJsonMode()) {
         output().printSuccess(result);
     } else {
-        output().printRaw(QString("Revoked token: %1").arg(QString::fromStdString(name)));
+        output().printRaw(fmt::format("Revoked token: {}", name));
     }
     return 0;
 }

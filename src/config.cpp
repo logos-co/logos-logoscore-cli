@@ -1,60 +1,60 @@
 #include "config.h"
-#include <QDir>
 #include <cstdlib>
 
 namespace {
 // Process-wide override set by setConfigDir(). Empty = not overridden.
 // This is a plain static (not thread-local) — set once at startup from main(),
 // read many times thereafter, never mutated concurrently with reads.
-QString& configDirOverride()
+std::string& configDirOverride()
 {
-    static QString s;
+    static std::string s;
     return s;
 }
 }
 
-void Config::setConfigDir(const QString& path)
+void Config::setConfigDir(const std::string& path)
 {
     configDirOverride() = path;
 }
 
-QString Config::configDir()
+std::string Config::configDir()
 {
     // Precedence: explicit setter (from --config-dir) → LOGOSCORE_CONFIG_DIR
     // env var → ~/.logoscore. Parallel logoscore instances pick distinct
     // config trees so their daemon/ and client/ subdirs don't clash.
-    const QString& override = configDirOverride();
-    if (!override.isEmpty())
+    const std::string& override = configDirOverride();
+    if (!override.empty())
         return override;
 
     const char* envDir = std::getenv("LOGOSCORE_CONFIG_DIR");
     if (envDir && *envDir)
-        return QString::fromUtf8(envDir);
+        return std::string(envDir);
 
-    return QDir::homePath() + "/.logoscore";
+    const char* home = std::getenv("HOME");
+    return std::string(home ? home : "/tmp") + "/.logoscore";
 }
 
-QString Config::daemonDir()         { return configDir() + "/daemon"; }
-QString Config::daemonConfigPath()  { return daemonDir() + "/config.json"; }
-QString Config::daemonStatePath()   { return daemonDir() + "/state.json"; }
-QString Config::daemonTokensPath()  { return daemonDir() + "/tokens.json"; }
-QString Config::daemonTokensDir()   { return daemonDir() + "/tokens"; }
+std::string Config::daemonDir()        { return configDir() + "/daemon"; }
+std::string Config::daemonConfigPath() { return daemonDir() + "/config.json"; }
+std::string Config::daemonStatePath()  { return daemonDir() + "/state.json"; }
+std::string Config::daemonTokensPath() { return daemonDir() + "/tokens.json"; }
+std::string Config::daemonTokensDir()  { return daemonDir() + "/tokens"; }
 
-QString Config::clientDir()         { return configDir() + "/client"; }
-QString Config::clientConfigPath()  { return clientDir() + "/config.json"; }
+std::string Config::clientDir()        { return configDir() + "/client"; }
+std::string Config::clientConfigPath() { return clientDir() + "/config.json"; }
 
-QString Config::clientTokenPath(const QString& filename)
+std::string Config::clientTokenPath(const std::string& filename)
 {
     return clientDir() + "/" + filename;
 }
 
-QString Config::tokenFromEnv()
+std::string Config::tokenFromEnv()
 {
     const char* token = std::getenv("LOGOSCORE_TOKEN");
-    return token ? QString::fromUtf8(token) : QString();
+    return token ? std::string(token) : std::string();
 }
 
-QString Config::getToken()
+std::string Config::getToken()
 {
     // Priority 1: environment variable. Priority 2: the raw-token file
     // referenced by client/config.json's `token_file` field — that's
