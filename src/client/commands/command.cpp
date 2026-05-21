@@ -40,7 +40,7 @@ int Command::ensureConnected()
     return 0;
 }
 
-QStringList knownSubcommands()
+std::vector<std::string> knownSubcommands()
 {
     return {
         "daemon", "status",
@@ -52,7 +52,7 @@ QStringList knownSubcommands()
     };
 }
 
-std::unique_ptr<Command> createCommand(const QString& name, Client& client, Output& output)
+std::unique_ptr<Command> createCommand(const std::string& name, Client& client, Output& output)
 {
     if (name == "status")
         return std::make_unique<StatusCommand>(client, output);

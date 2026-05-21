@@ -13,7 +13,7 @@ using json = nlohmann::json;
 
 std::string ClientStateFile::filePath()
 {
-    return Config::clientConfigPath().toStdString();
+    return Config::clientConfigPath();
 }
 
 namespace {
@@ -159,7 +159,7 @@ bool ClientStateFile::write(const ClientState& state)
 std::string ClientStateFile::readTokenFile(const std::string& filename)
 {
     if (filename.empty()) return {};
-    std::ifstream ifs(Config::clientTokenPath(QString::fromStdString(filename)).toStdString());
+    std::ifstream ifs(Config::clientTokenPath(filename));
     if (!ifs) return {};
     json obj;
     try { obj = json::parse(ifs); }

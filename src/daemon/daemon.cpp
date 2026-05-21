@@ -15,7 +15,6 @@
 
 #include <QCoreApplication>
 #include <QDebug>
-#include <QString>
 
 #include <uuid.h>
 
@@ -181,7 +180,7 @@ int Daemon::start(int argc, char* argv[],
 
     // 4. Set persistence base path for module instance data
     std::string persistenceBase = persistencePath.empty()
-        ? Config::configDir().toStdString() + "/data"
+        ? Config::configDir() + "/data"
         : persistencePath;
     logos_core_set_persistence_base_path(persistenceBase.c_str());
 
@@ -239,7 +238,7 @@ int Daemon::start(int argc, char* argv[],
     //    core_service can publish on multiple transports simultaneously:
     //    a local QLocalSocket (back-compat) + any TCP / TCP+SSL listeners
     //    specified via --transport.
-    auto* coreServiceApi = new LogosAPI(QString("core_service"), coreTransports);
+    auto* coreServiceApi = new LogosAPI("core_service", coreTransports);
     auto* coreServiceImpl = new CoreServiceImpl();
 
     coreServiceImpl->init(coreServiceApi);
@@ -266,7 +265,7 @@ int Daemon::start(int argc, char* argv[],
     // had operator-issued entries) leaves client/config.json alone —
     // the operator has shown they're managing the client side.
     const bool tokensFileWasMissing =
-        !std::filesystem::exists(Config::daemonTokensPath().toStdString());
+        !std::filesystem::exists(Config::daemonTokensPath());
 
     TokenStore tokenStore;
     const auto autoTokenOutcome = tokenStore.issueToken("auto",
@@ -280,8 +279,7 @@ int Daemon::start(int argc, char* argv[],
     }
     const std::string autoTokenRaw = autoTokenOutcome.token;
 
-    TokenManager::instance().saveToken("cli_client",
-                                       QString::fromStdString(autoTokenRaw));
+    TokenManager::instance().saveToken("cli_client", autoTokenRaw);
 
     // 9. Write the live-instance state file. Carries the resolved
     //    transport endpoints (post-bind, with real ports), instanceId/
@@ -343,14 +341,14 @@ int Daemon::start(int argc, char* argv[],
             toAdvertised(coreTransports),
             toAdvertised(capabilityTransports))) {
         fprintf(stderr, "Warning: failed to write local client artifacts under %s\n",
-                Config::clientDir().toStdString().c_str());
+                Config::clientDir().c_str());
     }
 
     fprintf(stdout, "Logoscore daemon started (pid %lld, instance %s)\n",
             static_cast<long long>(pid), instanceId.c_str());
     fprintf(stdout, "Daemon state: %s\n", DaemonRuntimeStateFile::filePath().c_str());
     fprintf(stdout, "Local client config: %s\n",
-            Config::clientConfigPath().toStdString().c_str());
+            Config::clientConfigPath().c_str());
     fflush(stdout);
 
     // 8. Set up signal handlers for clean shutdown. SIGINT / SIGTERM

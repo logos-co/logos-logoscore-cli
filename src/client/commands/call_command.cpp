@@ -1,61 +1,59 @@
 #include "call_command.h"
-#include <QFile>
-#include <QTextStream>
+#include "../../string_utils.h"
+#include <QJsonDocument>
+#include <fmt/format.h>
+#include <fstream>
+#include <sstream>
+#include <stdexcept>
 
-QString CallCommand::resolveFileParam(const QString& param)
+std::string CallCommand::resolveFileParam(const std::string& param)
 {
-    if (!param.startsWith('@'))
+    if (!strutil::starts_with(param, '@'))
         return param;
 
-    QString filePath = param.mid(1);
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+    std::string filePath = param.substr(1);
+    std::ifstream file(filePath);
+    if (!file.is_open())
         return {};
 
-    QTextStream in(&file);
-    QString content = in.readAll();
-    file.close();
-    return content;
+    std::ostringstream ss;
+    ss << file.rdbuf();
+    return ss.str();
 }
 
 int CallCommand::execute(const std::vector<std::string>& args)
 {
-    // Parse args: either "call <module> <method> [args...]"
-    // or "module <name> method <method> [args...]"
-    QString moduleName;
-    QString methodName;
-    QStringList methodArgs;
+    std::string moduleName;
+    std::string methodName;
+    std::vector<std::string> methodArgs;
 
     if (args.empty()) {
         output().printError("INVALID_ARGS",
-                           "Usage: logoscore call <module> <method> [args...]");
+                            "Usage: logoscore call <module> <method> [args...]");
         return 1;
     }
 
     // Check for verbose "module <name> method <method>" syntax
-    // For "logoscore module <name> method <method> [args...]"
-    //   args = [<name>, method, <method>, args...]
     if (args.size() >= 3 && args[1] == "method") {
-        moduleName = QString::fromStdString(args[0]);
-        methodName = QString::fromStdString(args[2]);
+        moduleName = args[0];
+        methodName = args[2];
         for (size_t j = 3; j < args.size(); ++j)
-            methodArgs.append(QString::fromStdString(args[j]));
+            methodArgs.push_back(args[j]);
     } else {
-        // Short form: <module> <method> [args...]
         if (args.size() < 2) {
             output().printError("INVALID_ARGS",
-                               "Usage: logoscore call <module> <method> [args...]");
+                                "Usage: logoscore call <module> <method> [args...]");
             return 1;
         }
-        moduleName = QString::fromStdString(args[0]);
-        methodName = QString::fromStdString(args[1]);
+        moduleName = args[0];
+        methodName = args[1];
         for (size_t j = 2; j < args.size(); ++j)
-            methodArgs.append(QString::fromStdString(args[j]));
+            methodArgs.push_back(args[j]);
     }
 
-    if (moduleName.isEmpty() || methodName.isEmpty()) {
+    if (moduleName.empty() || methodName.empty()) {
         output().printError("INVALID_ARGS",
-                           "Usage: logoscore call <module> <method> [args...]");
+                            "Usage: logoscore call <module> <method> [args...]");
         return 1;
     }
 
@@ -65,31 +63,37 @@ int CallCommand::execute(const std::vector<std::string>& args)
 
     // Resolve @file parameters and coerce types
     QVariantList resolvedArgs;
-    for (const QString& arg : methodArgs) {
-        QString resolved = resolveFileParam(arg);
-        if (arg.startsWith('@') && resolved.isEmpty()) {
+    for (const std::string& arg : methodArgs) {
+        std::string resolved = resolveFileParam(arg);
+        if (strutil::starts_with(arg, '@') && resolved.empty()) {
             output().printError("INVALID_ARGS",
-                               QString("Failed to read file: %1").arg(arg.mid(1)));
+                                fmt::format("Failed to read file: {}", arg.substr(1)));
             return 1;
         }
 
-        // Try to coerce to native types so the RPC target can match signatures
+        // Coerce to native types so the RPC target can match signatures
         if (resolved == "true") {
             resolvedArgs.append(true);
         } else if (resolved == "false") {
             resolvedArgs.append(false);
         } else {
             bool isInt = false;
-            int intVal = resolved.toInt(&isInt);
+            int intVal = 0;
+            try { intVal = std::stoi(resolved); isInt = true; }
+            catch (...) {}
+
             if (isInt) {
                 resolvedArgs.append(intVal);
             } else {
                 bool isDouble = false;
-                double dblVal = resolved.toDouble(&isDouble);
+                double dblVal = 0.0;
+                try { dblVal = std::stod(resolved); isDouble = true; }
+                catch (...) {}
+
                 if (isDouble) {
                     resolvedArgs.append(dblVal);
                 } else {
-                    resolvedArgs.append(resolved);
+                    resolvedArgs.append(QString::fromStdString(resolved));
                 }
             }
         }
@@ -97,40 +101,38 @@ int CallCommand::execute(const std::vector<std::string>& args)
 
     QJsonObject result = client().callModuleMethod(moduleName, methodName, resolvedArgs);
 
-    QString status = result.value("status").toString();
+    std::string status = result.value("status").toString().toStdString();
     if (status == "error") {
-        QString code = result.value("code").toString();
-        int exitCode = 4; // method error
+        std::string code = result.value("code").toString().toStdString();
+        int exitCode = 4;
         if (code == "MODULE_NOT_LOADED" || code == "MODULE_NOT_FOUND")
             exitCode = 3;
-        output().printError(code, result.value("message").toString(), result);
+        output().printError(code, result.value("message").toString().toStdString(), result);
         return exitCode;
     }
 
     if (output().isJsonMode()) {
         output().printSuccess(result);
     } else {
-        // Print the result value in human mode
         QJsonValue resultValue = result.value("result");
         if (resultValue.isString()) {
-            output().printRaw(resultValue.toString());
+            output().printRaw(resultValue.toString().toStdString());
         } else if (resultValue.isDouble()) {
-            // Handles both integers and floating point
             double d = resultValue.toDouble();
             if (d == static_cast<int>(d))
-                output().printRaw(QString::number(static_cast<int>(d)));
+                output().printRaw(fmt::format("{}", static_cast<int>(d)));
             else
-                output().printRaw(QString::number(d));
+                output().printRaw(fmt::format("{}", d));
         } else if (resultValue.isBool()) {
             output().printRaw(resultValue.toBool() ? "true" : "false");
         } else if (resultValue.isNull() || resultValue.isUndefined()) {
             // Nothing useful to print
         } else if (resultValue.isArray()) {
             QJsonDocument doc(resultValue.toArray());
-            output().printRaw(QString::fromUtf8(doc.toJson(QJsonDocument::Indented)));
+            output().printRaw(doc.toJson(QJsonDocument::Indented).toStdString());
         } else if (resultValue.isObject()) {
             QJsonDocument doc(resultValue.toObject());
-            output().printRaw(QString::fromUtf8(doc.toJson(QJsonDocument::Indented)));
+            output().printRaw(doc.toJson(QJsonDocument::Indented).toStdString());
         }
     }
 

@@ -3,7 +3,6 @@
 
 #include "../client.h"
 #include "../output.h"
-#include <QStringList>
 #include <memory>
 #include <string>
 #include <vector>
@@ -14,8 +13,8 @@ public:
     virtual ~Command() = default;
 
     virtual int execute(const std::vector<std::string>& args) = 0;
-    virtual QString name() const = 0;
-    virtual QString description() const = 0;
+    virtual std::string name() const = 0;
+    virtual std::string description() const = 0;
 
 protected:
     Client& client();
@@ -30,9 +29,9 @@ private:
 };
 
 // Factory to create commands by name
-std::unique_ptr<Command> createCommand(const QString& name, Client& client, Output& output);
+std::unique_ptr<Command> createCommand(const std::string& name, Client& client, Output& output);
 
 // List of known subcommand names
-QStringList knownSubcommands();
+std::vector<std::string> knownSubcommands();
 
 #endif // COMMAND_H

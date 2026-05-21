@@ -11,8 +11,8 @@ class ListTokensCommand : public Command {
 public:
     using Command::Command;
     int execute(const std::vector<std::string>& args) override;
-    QString name() const override { return "list-tokens"; }
-    QString description() const override {
+    std::string name() const override { return "list-tokens"; }
+    std::string description() const override {
         return "List the names of issued client tokens";
     }
 };

@@ -34,7 +34,7 @@ protected:
         origConfigDir = origConfigDirSet ? cd : "";
         unsetenv("LOGOSCORE_CONFIG_DIR");
 
-        Config::setConfigDir(QString());
+        Config::setConfigDir("");
     }
 
     void TearDown() override {
@@ -43,7 +43,7 @@ protected:
             setenv("LOGOSCORE_CONFIG_DIR", origConfigDir.c_str(), 1);
         else
             unsetenv("LOGOSCORE_CONFIG_DIR");
-        Config::setConfigDir(QString());
+        Config::setConfigDir("");
         std::error_code ec;
         fs::remove_all(testDir, ec);
     }
@@ -229,7 +229,7 @@ const std::vector<TransportInfo> kLocalOnly = { TransportInfo{"local"} };
 
 fs::path clientCfgPath()
 {
-    return fs::path(Config::clientConfigPath().toStdString());
+    return fs::path(Config::clientConfigPath());
 }
 
 bool writeArtifacts(const std::string& instanceId, bool freshTokensFile)

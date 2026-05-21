@@ -8,8 +8,8 @@ public:
     using Command::Command;
 
     int execute(const std::vector<std::string>& args) override;
-    QString name() const override { return "stats"; }
-    QString description() const override { return "Show module resource usage"; }
+    std::string name() const override { return "stats"; }
+    std::string description() const override { return "Show module resource usage"; }
 };
 
 #endif // STATS_COMMAND_H

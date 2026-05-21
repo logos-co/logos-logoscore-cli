@@ -4,9 +4,9 @@
 #include "../../daemon/token_store.h"
 
 #include <CLI/CLI.hpp>
+#include <fmt/format.h>
 
 #include <QJsonObject>
-#include <QString>
 
 #include <chrono>
 #include <cstdio>
@@ -27,23 +27,14 @@ namespace {
 //     date-only.
 //
 // Returns std::nullopt on parse failure so the caller can print a
-// clear error rather than persisting garbage. Empty input returns an
-// empty string (the "no expiry" sentinel that TokensFile encodes
-// as JSON `null`).
+// clear error rather than persisting garbage.
 std::optional<std::string> resolveExpires(const std::string& s)
 {
     if (s.empty()) return std::string{};
 
-    // Relative duration: integer + suffix.
     static const std::regex relRe(R"(^(\d+)([smhd])$)");
     std::smatch m;
     if (std::regex_match(s, m, relRe)) {
-        // The regex bounds the digit-run, but a value like
-        // "999999999999999999999d" is still well-formed under the
-        // regex and overflows long. std::stol throws std::out_of_range
-        // for those, which would otherwise propagate up and crash
-        // the CLI. Map any parse / range failure to nullopt and let
-        // the caller surface a clean INVALID_EXPIRES error.
         long n = 0;
         try {
             n = std::stol(m[1].str());
@@ -52,10 +43,6 @@ std::optional<std::string> resolveExpires(const std::string& s)
         }
         const char suffix = m[2].str()[0];
         long seconds = 0;
-        // Compute seconds with overflow-safe multiplication: bail if
-        // `n * factor` would exceed LONG_MAX. (Once we fold into a
-        // chrono::seconds the math wraps to a small offset and we
-        // emit a misleading deadline.)
         auto checkedMul = [](long a, long b, long& out) {
             if (a < 0 || b <= 0) return false;
             if (a > std::numeric_limits<long>::max() / b) return false;
@@ -79,7 +66,6 @@ std::optional<std::string> resolveExpires(const std::string& s)
         return ss.str();
     }
 
-    // Absolute ISO 8601 (date-only or full timestamp).
     static const std::regex dateOnlyRe(R"(^\d{4}-\d{2}-\d{2}$)");
     static const std::regex fullRe(R"(^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$)");
     if (std::regex_match(s, dateOnlyRe))
@@ -97,7 +83,7 @@ int IssueTokenCommand::execute(const std::vector<std::string>& args)
     cli.set_help_flag();
     std::string name;
     std::string expires;
-    bool replace = false;
+    bool replace   = false;
     bool localOnly = false;
     cli.add_option("--name", name, "Name for this client token")->required();
     cli.add_option("--expires", expires,
@@ -119,8 +105,8 @@ int IssueTokenCommand::execute(const std::vector<std::string>& args)
     auto resolvedExpiry = resolveExpires(expires);
     if (!resolvedExpiry) {
         output().printError("INVALID_EXPIRES",
-            QString("Could not parse --expires '%1'. Use Ns/Nm/Nh/Nd or ISO 8601 UTC.")
-                .arg(QString::fromStdString(expires)));
+            fmt::format("Could not parse --expires '{}'. "
+                        "Use Ns/Nm/Nh/Nd or ISO 8601 UTC.", expires));
         return 1;
     }
 
@@ -131,31 +117,28 @@ int IssueTokenCommand::execute(const std::vector<std::string>& args)
             break;
         case TokenStore::IssueStatus::InvalidName:
             output().printError("INVALID_NAME",
-                QString("Token name '%1' is invalid (must be 1-64 chars, "
-                        "alnum/dot/dash/underscore, no traversal).")
-                    .arg(QString::fromStdString(name)));
+                fmt::format("Token name '{}' is invalid (must be 1-64 chars, "
+                            "alnum/dot/dash/underscore, no traversal).", name));
             return 1;
         case TokenStore::IssueStatus::AlreadyExists:
             output().printError("TOKEN_EXISTS",
-                QString("Token '%1' already exists. Use --replace to overwrite.")
-                    .arg(QString::fromStdString(name)));
+                fmt::format("Token '{}' already exists. Use --replace to overwrite.", name));
             return 3;
         case TokenStore::IssueStatus::IoError:
             output().printError("IO_ERROR",
-                QString("Failed to persist token '%1' to disk. Check "
-                        "permissions/free space under %2.")
-                    .arg(QString::fromStdString(name),
-                         Config::daemonTokensDir()));
+                fmt::format("Failed to persist token '{}' to disk. Check "
+                            "permissions/free space under {}.",
+                            name, Config::daemonTokensDir()));
             return 1;
     }
 
-    const QString rawPath = QString::fromStdString(store.rawTokenFilePath(name));
+    std::string rawPath = store.rawTokenFilePath(name);
 
     QJsonObject result;
-    result["status"]    = "ok";
-    result["name"]      = QString::fromStdString(name);
-    result["token"]     = QString::fromStdString(outcome.token);
-    result["file"]      = rawPath;
+    result["status"]     = "ok";
+    result["name"]       = QString::fromStdString(name);
+    result["token"]      = QString::fromStdString(outcome.token);
+    result["file"]       = QString::fromStdString(rawPath);
     result["local_only"] = localOnly;
     if (!resolvedExpiry->empty())
         result["expires_at"] = QString::fromStdString(*resolvedExpiry);
@@ -163,13 +146,13 @@ int IssueTokenCommand::execute(const std::vector<std::string>& args)
     if (output().isJsonMode()) {
         output().printSuccess(result);
     } else {
-        output().printRaw(QString("Issued token for '%1'").arg(QString::fromStdString(name)));
-        output().printRaw(QString("  file:  %1").arg(rawPath));
-        output().printRaw(QString("  token: %1").arg(QString::fromStdString(outcome.token)));
+        output().printRaw(fmt::format("Issued token for '{}'", name));
+        output().printRaw(fmt::format("  file:  {}", rawPath));
+        output().printRaw(fmt::format("  token: {}", outcome.token));
         if (!resolvedExpiry->empty())
-            output().printRaw(QString("  expires_at: %1").arg(QString::fromStdString(*resolvedExpiry)));
+            output().printRaw(fmt::format("  expires_at: {}", *resolvedExpiry));
         if (localOnly)
-            output().printRaw(QString("  local_only: true"));
+            output().printRaw("  local_only: true");
     }
     return 0;
 }

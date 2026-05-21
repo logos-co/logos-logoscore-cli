@@ -97,6 +97,7 @@
               pkgs.stduuid
               pkgs.cli11
               pkgs.gtest
+              pkgs.fmt
             ];
 
             cmakeFlags = [
@@ -197,6 +198,7 @@
               pkgs.stduuid
               pkgs.cli11
               pkgs.gtest
+              pkgs.fmt
               liblogosLib
               moduleClientLib
               # cppSdk propagates Boost, OpenSSL, nlohmann_json (but
@@ -284,6 +286,7 @@
               pkgs.gtest
               pkgs.stduuid
               pkgs.cli11
+              pkgs.fmt
             ];
 
             cmakeFlags = [
@@ -418,6 +421,7 @@
             pkgs.stduuid
             pkgs.cli11
             pkgs.gtest
+            pkgs.fmt
           ];
           shellHook = ''
             export LOGOS_LIBLOGOS_ROOT="${liblogos}"

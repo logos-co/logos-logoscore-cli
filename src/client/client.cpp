@@ -9,11 +9,14 @@
 #include <token_manager.h>
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
-#include <QDateTime>
 #include <QDebug>
+
+#include <fmt/format.h>
+#include <cstdlib>
 
 // ---------------------------------------------------------------------------
 // RpcClient implementation — delegates all calls to daemon's core_service
@@ -22,15 +25,16 @@
 struct RpcClient::Impl {
     LogosAPI* api = nullptr;
     LogosAPIClient* coreService = nullptr;
-    QString instanceId;
-    QString token;
+    std::string instanceId;
+    std::string token;
     ClientState clientState;
 
-    // Helper: invoke a core_service method and return a QJsonObject result
+    // Helper: invoke a core_service method and return a QVariant result.
+    // String args must be passed as QString (QVariant has no std::string ctor).
     template<typename... Args>
-    QVariant invoke(const QString& method, Args&&... args) {
+    QVariant invoke(const char* method, Args&&... args) {
         return coreService->invokeRemoteMethod(
-            QStringLiteral("core_service"), method, std::forward<Args>(args)...);
+            QString("core_service"), QString(method), std::forward<Args>(args)...);
     }
 };
 
@@ -48,18 +52,10 @@ RpcClient::~RpcClient()
 bool RpcClient::connect()
 {
     // Read client config (pure parse — doesn't probe the daemon).
-    // The client never opens daemon/state.json or daemon/config.json:
-    // the daemon's runtime state and operator preferences aren't ours
-    // to inspect. We dial whatever client/config.json says, with
-    // whatever token lives in client/<token_file>. ClientStateFile::read
-    // also serves an in-process override set by main.cpp when CLI
-    // client-config flags were passed without --persist-config — the
-    // dial spec then reflects flags + config.json + defaults for this
-    // run only.
     d->clientState = ClientStateFile::read();
     if (!d->clientState.fileOk) {
         m_lastError = "No client config at " +
-            QString::fromStdString(ClientStateFile::filePath()) +
+            ClientStateFile::filePath() +
             ". Either run the daemon locally first (it auto-emits a "
             "config), pass client flags + --persist-config, or write "
             "client/config.json + the matching token file by hand.";
@@ -68,31 +64,28 @@ bool RpcClient::connect()
 
     // Resolve token: env override wins, else read from client/<token_file>.
     d->token = Config::getToken();
-    if (d->token.isEmpty())
-        d->token = QString::fromStdString(
-            ClientStateFile::readTokenFile(d->clientState.tokenFile));
+    if (d->token.empty())
+        d->token = ClientStateFile::readTokenFile(d->clientState.tokenFile);
 
-    if (d->token.isEmpty()) {
-        m_lastError = QString("No authentication token. Expected at %1 or in $LOGOSCORE_TOKEN.")
-            .arg(QString::fromStdString(
-                Config::clientTokenPath(QString::fromStdString(d->clientState.tokenFile)).toStdString()));
+    if (d->token.empty()) {
+        m_lastError = fmt::format(
+            "No authentication token. Expected at {} or in $LOGOSCORE_TOKEN.",
+            Config::clientTokenPath(d->clientState.tokenFile));
         return false;
     }
 
     // For LocalSocket dialing, the SDK derives the registry name from
     // `local:logos_<module>_<instance_id>`, so we need the daemon's
     // instance id. The daemon's auto-emitted client/config.json carries it;
-    // remote clients (TCP / TCP-SSL) don't need it. The client never
-    // opens daemon-side files — by design.
+    // remote clients (TCP / TCP-SSL) don't need it.
     if (!d->clientState.instanceId.empty()) {
-        d->instanceId = QString::fromStdString(d->clientState.instanceId);
-        qputenv("LOGOS_INSTANCE_ID", d->instanceId.toUtf8());
+        d->instanceId = d->clientState.instanceId;
+        setenv("LOGOS_INSTANCE_ID", d->instanceId.c_str(), 1);
     }
 
     TokenManager::instance().saveToken("cli_client", d->token);
 
     // Translate ClientModuleTransport (client-side) into LogosTransportConfig
-    // (SDK-side) — this is the actual dial spec.
     auto toCfg = [](const ClientModuleTransport& t) {
         LogosTransportConfig cfg;
         if      (t.protocol == "tcp")     cfg.protocol = LogosProtocol::Tcp;
@@ -114,26 +107,14 @@ bool RpcClient::connect()
     }
     const LogosTransportConfig coreServiceCfg = toCfg(coreIt->second);
 
-    // Create LogosAPI for this CLI client. Keep the global default at
-    // LocalSocket so the implicit provider in LogosAPI's ctor doesn't
-    // try to bind a TLS server on the client side.
     d->api = new LogosAPI("cli_client");
 
-    // Wire up capability_module's per-module transport. Required by the
-    // SDK's auto-`requestModule` flow inside LogosAPIClient. If
-    // client/config.json omits it, fall through to LocalSocket — same as the
-    // SDK's global default.
+    // Wire up capability_module's per-module transport.
     if (auto capIt = d->clientState.daemon.find("capability_module");
         capIt != d->clientState.daemon.end()) {
         d->api->setCapabilityModuleTransport(toCfg(capIt->second));
     }
 
-    // Get a client handle to the daemon's core_service module.
-    // client/config.json's per-module entry is the dial spec, full stop —
-    // no env-var overrides, no daemon-advertised list to pick from.
-    // If the operator wants a different transport, they re-run
-    // `logoscore <subcommand> --client-transport ...` which
-    // regenerates client/config.json (step 7).
     d->coreService = d->api->getClient("core_service", coreServiceCfg);
     if (!d->coreService) {
         m_lastError = "Failed to get core_service client handle.";
@@ -149,7 +130,7 @@ bool RpcClient::isConnected() const
     return m_connected;
 }
 
-QString RpcClient::lastError() const
+std::string RpcClient::lastError() const
 {
     return m_lastError;
 }
@@ -158,43 +139,45 @@ QString RpcClient::lastError() const
 // Module lifecycle — delegate to core_service
 // ---------------------------------------------------------------------------
 
-QJsonObject RpcClient::loadModule(const QString& name)
+QJsonObject RpcClient::loadModule(const std::string& name)
 {
-    QVariant ret = d->invoke("loadModule", name);
+    QVariant ret = d->invoke("loadModule", QString::fromStdString(name));
     if (ret.canConvert<QJsonObject>())
         return ret.toJsonObject();
 
-    // Fallback: construct error
     QJsonObject result;
-    result["status"] = "error";
-    result["code"] = "RPC_FAILED";
-    result["message"] = QString("loadModule('%1') RPC call failed.").arg(name);
+    result["status"]  = "error";
+    result["code"]    = "RPC_FAILED";
+    result["message"] = QString::fromStdString(
+        fmt::format("loadModule('{}') RPC call failed.", name));
     return result;
 }
 
-QJsonObject RpcClient::unloadModule(const QString& name)
+QJsonObject RpcClient::unloadModule(const std::string& name)
 {
-    QVariant ret = d->invoke("unloadModule", name);
+    QVariant ret = d->invoke("unloadModule", QString::fromStdString(name));
     if (ret.canConvert<QJsonObject>())
         return ret.toJsonObject();
 
     QJsonObject result;
-    result["status"] = "error";
-    result["code"] = "RPC_FAILED";
-    result["message"] = QString("unloadModule('%1') RPC call failed.").arg(name);
+    result["status"]  = "error";
+    result["code"]    = "RPC_FAILED";
+    result["message"] = QString::fromStdString(
+        fmt::format("unloadModule('{}') RPC call failed.", name));
     return result;
 }
 
-QJsonObject RpcClient::reloadModule(const QString& name)
+QJsonObject RpcClient::reloadModule(const std::string& name)
 {
-    QVariant ret = d->invoke("reloadModule", name);
+    QVariant ret = d->invoke("reloadModule", QString::fromStdString(name));
     if (ret.canConvert<QJsonObject>())
         return ret.toJsonObject();
 
     QJsonObject result;
-    result["status"] = "error";
-    result["code"] = "RPC_FAILED";
-    result["message"] = QString("reloadModule('%1') RPC call failed.").arg(name);
+    result["status"]  = "error";
+    result["code"]    = "RPC_FAILED";
+    result["message"] = QString::fromStdString(
+        fmt::format("reloadModule('{}') RPC call failed.", name));
     return result;
 }
 
@@ -202,9 +185,9 @@ QJsonObject RpcClient::reloadModule(const QString& name)
 // Queries — delegate to core_service
 // ---------------------------------------------------------------------------
 
-QJsonArray RpcClient::listModules(const QString& filter)
+QJsonArray RpcClient::listModules(const std::string& filter)
 {
-    QVariant ret = d->invoke("listModules", filter);
+    QVariant ret = d->invoke("listModules", QString::fromStdString(filter));
     if (ret.canConvert<QJsonArray>())
         return qvariant_cast<QJsonArray>(ret);
     return {};
@@ -216,33 +199,29 @@ QJsonObject RpcClient::getStatus()
     if (ret.canConvert<QJsonObject>())
         return ret.toJsonObject();
 
-    // If the RPC failed, we don't have detailed daemon info to fall
-    // back on — the client never opens daemon-side files by design, so pid /
-    // started_at / advertised modules are not in our hands. Surface
-    // what we know (the instance_id from client/config.json, if local) and
-    // tag the response as RPC-degraded so callers exit non-zero.
     QJsonObject status;
     QJsonObject daemon;
     daemon["status"] = "not_running";
-    if (!d->instanceId.isEmpty())
-        daemon["instance_id"] = d->instanceId;
+    if (!d->instanceId.empty())
+        daemon["instance_id"] = QString::fromStdString(d->instanceId);
     daemon["version"] = QCoreApplication::applicationVersion();
-    status["daemon"] = daemon;
-    status["modules"] = QJsonArray();
+    status["daemon"]    = daemon;
+    status["modules"]   = QJsonArray();
     status["rpc_error"] = "core_service not reachable";
     return status;
 }
 
-QJsonObject RpcClient::getModuleInfo(const QString& name)
+QJsonObject RpcClient::getModuleInfo(const std::string& name)
 {
-    QVariant ret = d->invoke("getModuleInfo", name);
+    QVariant ret = d->invoke("getModuleInfo", QString::fromStdString(name));
     if (ret.canConvert<QJsonObject>())
         return ret.toJsonObject();
 
     QJsonObject result;
-    result["status"] = "error";
-    result["code"] = "RPC_FAILED";
-    result["message"] = QString("getModuleInfo('%1') RPC call failed.").arg(name);
+    result["status"]  = "error";
+    result["code"]    = "RPC_FAILED";
+    result["message"] = QString::fromStdString(
+        fmt::format("getModuleInfo('{}') RPC call failed.", name));
     return result;
 }
 
@@ -258,18 +237,22 @@ QJsonArray RpcClient::getModuleStats()
 // Proxied call — delegate to core_service
 // ---------------------------------------------------------------------------
 
-QJsonObject RpcClient::callModuleMethod(const QString& module,
-                                         const QString& method,
+QJsonObject RpcClient::callModuleMethod(const std::string& module,
+                                         const std::string& method,
                                          const QVariantList& args)
 {
-    QVariant ret = d->invoke("callModuleMethod", module, method, args);
+    QVariant ret = d->invoke("callModuleMethod",
+                             QString::fromStdString(module),
+                             QString::fromStdString(method),
+                             args);
     if (ret.canConvert<QJsonObject>())
         return ret.toJsonObject();
 
     QJsonObject result;
-    result["status"] = "error";
-    result["code"] = "RPC_FAILED";
-    result["message"] = QString("callModuleMethod('%1', '%2') RPC call failed.").arg(module, method);
+    result["status"]  = "error";
+    result["code"]    = "RPC_FAILED";
+    result["message"] = QString::fromStdString(
+        fmt::format("callModuleMethod('{}', '{}') RPC call failed.", module, method));
     return result;
 }
 
@@ -284,8 +267,8 @@ QJsonObject RpcClient::shutdown()
         return ret.toJsonObject();
 
     QJsonObject result;
-    result["status"] = "error";
-    result["code"] = "RPC_FAILED";
+    result["status"]  = "error";
+    result["code"]    = "RPC_FAILED";
     result["message"] = "shutdown RPC call failed.";
     return result;
 }
@@ -294,42 +277,39 @@ QJsonObject RpcClient::shutdown()
 // Event watching — uses SDK directly for real-time events
 // ---------------------------------------------------------------------------
 
-bool RpcClient::watchModuleEvents(const QString& module,
-                                   const QString& eventName,
+bool RpcClient::watchModuleEvents(const std::string& module,
+                                   const std::string& eventName,
                                    std::function<void(const QJsonObject&)> callback)
 {
     if (!m_connected)
         return false;
 
-    // First, tell core_service to start forwarding events from the target module
-    QVariant subscribed = d->invoke("watchModuleEvents", module, eventName);
+    QVariant subscribed = d->invoke("watchModuleEvents",
+                                    QString::fromStdString(module),
+                                    QString::fromStdString(eventName));
     if (!subscribed.toBool())
         return false;
 
-    // Subscribe to core_service's forwarded "module_event" events
     LogosObject* obj = d->coreService->requestObject("core_service");
     if (!obj)
         return false;
 
-    d->coreService->onEvent(obj, QStringLiteral("module_event"),
+    d->coreService->onEvent(obj, "module_event",
         [module, callback](const QString& event, const QVariantList& data) {
             Q_UNUSED(event);
-            // data format: [sourceModule, eventName, ...eventData]
             if (data.size() < 2)
                 return;
-            QString srcModule = data.at(0).toString();
-            if (srcModule != module)
+            if (data.at(0).toString().toStdString() != module)
                 return;
 
             QJsonObject eventObj;
             eventObj["timestamp"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-            eventObj["module"] = srcModule;
-            eventObj["event"] = data.at(1).toString();
+            eventObj["module"]    = data.at(0).toString();
+            eventObj["event"]     = data.at(1).toString();
 
             QJsonObject eventData;
-            for (int i = 2; i < data.size(); ++i) {
+            for (int i = 2; i < data.size(); ++i)
                 eventData[QString("arg%1").arg(i - 2)] = QJsonValue::fromVariant(data.at(i));
-            }
             eventObj["data"] = eventData;
             callback(eventObj);
         });

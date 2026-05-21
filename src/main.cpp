@@ -115,7 +115,7 @@ static int runInlineMode(int argc, char* argv[],
     // Set persistence base path (user-specified or default)
     std::string resolvedPersistence = persistencePath;
     if (resolvedPersistence.empty()) {
-        resolvedPersistence = Config::configDir().toStdString() + "/data";
+        resolvedPersistence = Config::configDir() + "/data";
     }
     logos_core_set_persistence_base_path(resolvedPersistence.c_str());
 
@@ -126,7 +126,7 @@ static int runInlineMode(int argc, char* argv[],
             if (moduleName.empty())
                 continue;
             if (!logos_core_load_module(moduleName.c_str(), true)) {
-                qWarning() << "Failed to load module:" << QString::fromStdString(moduleName);
+                fprintf(stderr, "Warning: Failed to load module: %s\n", moduleName.c_str());
             }
         }
     }
@@ -170,9 +170,9 @@ int main(int argc, char *argv[])
             std::error_code ec;
             const std::filesystem::path absCfgPath =
                 std::filesystem::absolute(preDir, ec);
-            if (!ec)
-                Config::setConfigDir(QString::fromStdString(absCfgPath.string()));
-        }
+        if (!ec)
+                Config::setConfigDir(absCfgPath.string());
+    }
     }
 
     // The config tree splits by lifetime under <configDir>/:
@@ -388,9 +388,8 @@ int main(int argc, char *argv[])
                       << "': " << ec.message() << std::endl;
             return 1;
         }
-        const QString absCfg = QString::fromStdString(absCfgPath.string());
-        Config::setConfigDir(absCfg);
-        qputenv("LOGOSCORE_CONFIG_DIR", absCfg.toUtf8());
+        Config::setConfigDir(absCfgPath.string());
+        setenv("LOGOSCORE_CONFIG_DIR", absCfgPath.string().c_str(), 1);
     }
 
     // ── Daemon mode ──────────────────────────────────────────────────────────
@@ -709,11 +708,10 @@ int main(int argc, char *argv[])
                 // tokens/<name>.json into place themselves.
                 std::error_code ec;
                 if (!std::filesystem::exists(
-                        Config::clientTokenPath(QString::fromStdString(clientTokenFile))
-                            .toStdString(), ec)) {
+                        Config::clientTokenPath(clientTokenFile), ec)) {
                     std::cerr << "Error: --token-file '" << clientTokenFile
                               << "' does not exist at "
-                              << Config::clientDir().toStdString() << "/" << clientTokenFile
+                              << Config::clientDir() << "/" << clientTokenFile
                               << ". Copy it from the daemon's daemon/tokens/ dir first."
                               << std::endl;
                     return 1;
@@ -747,23 +745,23 @@ int main(int argc, char *argv[])
     }
 
     // ── Client mode ──────────────────────────────────────────────────────────
-    struct SubInfo { CLI::App* sub; QString name; };
+    struct SubInfo { CLI::App* sub; std::string name; };
     std::vector<SubInfo> clientSubs = {
-        {statusSub, "status"},
-        {loadModuleSub, "load-module"},
+        {statusSub,       "status"},
+        {loadModuleSub,   "load-module"},
         {unloadModuleSub, "unload-module"},
         {reloadModuleSub, "reload-module"},
-        {listModulesSub, "list-modules"},
-        {moduleInfoSub, "module-info"},
-        {infoSub, "info"},
-        {callSub, "call"},
-        {moduleSub, "module"},
-        {watchSub, "watch"},
-        {statsSub, "stats"},
-        {stopSub, "stop"},
-        {issueTokenSub,  "issue-token"},
-        {revokeTokenSub, "revoke-token"},
-        {listTokensSub,  "list-tokens"},
+        {listModulesSub,  "list-modules"},
+        {moduleInfoSub,   "module-info"},
+        {infoSub,         "info"},
+        {callSub,         "call"},
+        {moduleSub,       "module"},
+        {watchSub,        "watch"},
+        {statsSub,        "stats"},
+        {stopSub,         "stop"},
+        {issueTokenSub,   "issue-token"},
+        {revokeTokenSub,  "revoke-token"},
+        {listTokensSub,   "list-tokens"},
     };
 
     for (auto& [sub, name] : clientSubs) {
@@ -794,7 +792,7 @@ int main(int argc, char *argv[])
         auto cmd = createCommand(name, rpcClient, output);
         if (!cmd) {
             output.printError("INVALID_ARGS",
-                             QString("Unknown command: %1. Run 'logoscore --help' for usage.").arg(name));
+                              "Unknown command: " + name + ". Run 'logoscore --help' for usage.");
             return 1;
         }
 

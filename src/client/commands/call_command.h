@@ -8,11 +8,11 @@ public:
     using Command::Command;
 
     int execute(const std::vector<std::string>& args) override;
-    QString name() const override { return "call"; }
-    QString description() const override { return "Call a method on a loaded module"; }
+    std::string name() const override { return "call"; }
+    std::string description() const override { return "Call a method on a loaded module"; }
 
 private:
-    QString resolveFileParam(const QString& param);
+    std::string resolveFileParam(const std::string& param);
 };
 
 #endif // CALL_COMMAND_H

@@ -1,7 +1,11 @@
 #include <gtest/gtest.h>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QJsonDocument>
+#include <algorithm>
 #include <sstream>
+#include <string>
+#include <vector>
 #include "client/client.h"
 #include "client/output.h"
 #include "client/commands/command.h"
@@ -11,7 +15,7 @@ class MockClient : public Client {
 public:
     // Control mock behavior
     bool shouldConnect = true;
-    QString connectError = "No running logoscore daemon. Start one with: logoscore -D";
+    std::string connectError = "No running logoscore daemon. Start one with: logoscore -D";
     QJsonObject loadModuleResult;
     QJsonObject unloadModuleResult;
     QJsonObject reloadModuleResult;
@@ -24,16 +28,16 @@ public:
 
     // Track calls
     bool shutdownCalled = false;
-    QString lastLoadedModule;
-    QString lastUnloadedModule;
-    QString lastReloadedModule;
-    QString lastInfoModule;
-    QString lastCallModule;
-    QString lastCallMethod;
+    std::string lastLoadedModule;
+    std::string lastUnloadedModule;
+    std::string lastReloadedModule;
+    std::string lastInfoModule;
+    std::string lastCallModule;
+    std::string lastCallMethod;
     QVariantList lastCallArgs;
-    QString lastListFilter;
-    QString lastWatchModule;
-    QString lastWatchEventName;
+    std::string lastListFilter;
+    std::string lastWatchModule;
+    std::string lastWatchEventName;
     bool watchShouldSucceed = false;
 
     bool connect() override {
@@ -43,38 +47,38 @@ public:
     }
 
     bool isConnected() const override { return m_connected; }
-    QString lastError() const override { return m_lastError; }
+    std::string lastError() const override { return m_lastError; }
 
-    QJsonObject loadModule(const QString& name) override {
+    QJsonObject loadModule(const std::string& name) override {
         lastLoadedModule = name;
         return loadModuleResult;
     }
 
-    QJsonObject unloadModule(const QString& name) override {
+    QJsonObject unloadModule(const std::string& name) override {
         lastUnloadedModule = name;
         return unloadModuleResult;
     }
 
-    QJsonObject reloadModule(const QString& name) override {
+    QJsonObject reloadModule(const std::string& name) override {
         lastReloadedModule = name;
         return reloadModuleResult;
     }
 
-    QJsonArray listModules(const QString& filter) override {
+    QJsonArray listModules(const std::string& filter) override {
         lastListFilter = filter;
         return listModulesResult;
     }
 
     QJsonObject getStatus() override { return statusResult; }
 
-    QJsonObject getModuleInfo(const QString& name) override {
+    QJsonObject getModuleInfo(const std::string& name) override {
         lastInfoModule = name;
         return moduleInfoResult;
     }
 
     QJsonArray getModuleStats() override { return moduleStatsResult; }
 
-    QJsonObject callModuleMethod(const QString& module, const QString& method,
+    QJsonObject callModuleMethod(const std::string& module, const std::string& method,
                                   const QVariantList& args) override {
         lastCallModule = module;
         lastCallMethod = method;
@@ -87,17 +91,17 @@ public:
         return shutdownResult;
     }
 
-    bool watchModuleEvents(const QString& module, const QString& eventName,
+    bool watchModuleEvents(const std::string& module, const std::string& eventName,
                             std::function<void(const QJsonObject&)> callback) override {
-        Q_UNUSED(callback);
-        lastWatchModule = module;
-        lastWatchEventName = eventName;
+        (void)callback;
+        lastWatchModule     = module;
+        lastWatchEventName  = eventName;
         return m_connected && watchShouldSucceed;
     }
 
 private:
     bool m_connected = false;
-    QString m_lastError;
+    std::string m_lastError;
 };
 
 class CommandTest : public ::testing::Test {
@@ -122,21 +126,21 @@ protected:
 
 TEST_F(CommandTest, CreateCommand_KnownCommands)
 {
-    EXPECT_NE(createCommand("status", mockClient, output), nullptr);
-    EXPECT_NE(createCommand("load-module", mockClient, output), nullptr);
+    EXPECT_NE(createCommand("status",        mockClient, output), nullptr);
+    EXPECT_NE(createCommand("load-module",   mockClient, output), nullptr);
     EXPECT_NE(createCommand("unload-module", mockClient, output), nullptr);
     EXPECT_NE(createCommand("reload-module", mockClient, output), nullptr);
-    EXPECT_NE(createCommand("list-modules", mockClient, output), nullptr);
-    EXPECT_NE(createCommand("module-info", mockClient, output), nullptr);
-    EXPECT_NE(createCommand("info", mockClient, output), nullptr);
-    EXPECT_NE(createCommand("call", mockClient, output), nullptr);
-    EXPECT_NE(createCommand("module", mockClient, output), nullptr);
-    EXPECT_NE(createCommand("watch", mockClient, output), nullptr);
-    EXPECT_NE(createCommand("stats", mockClient, output), nullptr);
-    EXPECT_NE(createCommand("stop", mockClient, output), nullptr);
-    EXPECT_NE(createCommand("issue-token", mockClient, output), nullptr);
-    EXPECT_NE(createCommand("revoke-token", mockClient, output), nullptr);
-    EXPECT_NE(createCommand("list-tokens", mockClient, output), nullptr);
+    EXPECT_NE(createCommand("list-modules",  mockClient, output), nullptr);
+    EXPECT_NE(createCommand("module-info",   mockClient, output), nullptr);
+    EXPECT_NE(createCommand("info",          mockClient, output), nullptr);
+    EXPECT_NE(createCommand("call",          mockClient, output), nullptr);
+    EXPECT_NE(createCommand("module",        mockClient, output), nullptr);
+    EXPECT_NE(createCommand("watch",         mockClient, output), nullptr);
+    EXPECT_NE(createCommand("stats",         mockClient, output), nullptr);
+    EXPECT_NE(createCommand("stop",          mockClient, output), nullptr);
+    EXPECT_NE(createCommand("issue-token",   mockClient, output), nullptr);
+    EXPECT_NE(createCommand("revoke-token",  mockClient, output), nullptr);
+    EXPECT_NE(createCommand("list-tokens",   mockClient, output), nullptr);
 }
 
 TEST_F(CommandTest, CreateCommand_Unknown_ReturnsNull)
@@ -148,22 +152,25 @@ TEST_F(CommandTest, CreateCommand_Unknown_ReturnsNull)
 
 TEST_F(CommandTest, KnownSubcommands_ContainsExpected)
 {
-    QStringList cmds = knownSubcommands();
-    EXPECT_TRUE(cmds.contains("status"));
-    EXPECT_TRUE(cmds.contains("load-module"));
-    EXPECT_TRUE(cmds.contains("unload-module"));
-    EXPECT_TRUE(cmds.contains("reload-module"));
-    EXPECT_TRUE(cmds.contains("list-modules"));
-    EXPECT_TRUE(cmds.contains("module-info"));
-    EXPECT_TRUE(cmds.contains("info"));
-    EXPECT_TRUE(cmds.contains("call"));
-    EXPECT_TRUE(cmds.contains("watch"));
-    EXPECT_TRUE(cmds.contains("stats"));
-    EXPECT_TRUE(cmds.contains("stop"));
-    EXPECT_TRUE(cmds.contains("daemon"));
-    EXPECT_TRUE(cmds.contains("issue-token"));
-    EXPECT_TRUE(cmds.contains("revoke-token"));
-    EXPECT_TRUE(cmds.contains("list-tokens"));
+    auto cmds = knownSubcommands();
+    auto has  = [&](const std::string& s) {
+        return std::find(cmds.begin(), cmds.end(), s) != cmds.end();
+    };
+    EXPECT_TRUE(has("status"));
+    EXPECT_TRUE(has("load-module"));
+    EXPECT_TRUE(has("unload-module"));
+    EXPECT_TRUE(has("reload-module"));
+    EXPECT_TRUE(has("list-modules"));
+    EXPECT_TRUE(has("module-info"));
+    EXPECT_TRUE(has("info"));
+    EXPECT_TRUE(has("call"));
+    EXPECT_TRUE(has("watch"));
+    EXPECT_TRUE(has("stats"));
+    EXPECT_TRUE(has("stop"));
+    EXPECT_TRUE(has("daemon"));
+    EXPECT_TRUE(has("issue-token"));
+    EXPECT_TRUE(has("revoke-token"));
+    EXPECT_TRUE(has("list-tokens"));
 }
 
 // ── Connection Error Handling ────────────────────────────────────────────────
@@ -388,7 +395,6 @@ TEST_F(CommandTest, Call_VerboseSyntax)
         {"status", "ok"}, {"module", "chat"}, {"method", "send_message"}
     };
 
-    // "module <name> method <method> [args...]" -> args = [<name>, "method", <method>, args...]
     auto cmd = createCommand("module", mockClient, output);
     std::string out = captureOutput([&]() {
         int exitCode = cmd->execute({"chat", "method", "send_message", "hello"});
@@ -467,9 +473,6 @@ TEST_F(CommandTest, Watch_MissingArgs)
     });
 }
 
-// Regression: CLI11 parses vector args from the back, so watch_command must
-// reverse them before calling cli.parse(). Without the reverse, the --event
-// value leaked into the positional <module> slot.
 TEST_F(CommandTest, Watch_ParsesModuleAndEventName)
 {
     auto cmd = createCommand("watch", mockClient, output);
@@ -478,7 +481,7 @@ TEST_F(CommandTest, Watch_ParsesModuleAndEventName)
         EXPECT_EQ(exitCode, 3);  // watchShouldSucceed=false => MODULE_NOT_LOADED
     });
 
-    EXPECT_EQ(mockClient.lastWatchModule, "chat");
+    EXPECT_EQ(mockClient.lastWatchModule,    "chat");
     EXPECT_EQ(mockClient.lastWatchEventName, "message");
 }
 
@@ -489,7 +492,7 @@ TEST_F(CommandTest, Watch_ParsesModuleOnly)
         cmd->execute({"waku"});
     });
 
-    EXPECT_EQ(mockClient.lastWatchModule, "waku");
+    EXPECT_EQ(mockClient.lastWatchModule,    "waku");
     EXPECT_EQ(mockClient.lastWatchEventName, "");
 }
 
@@ -503,7 +506,6 @@ TEST_F(CommandTest, Watch_ModuleNotLoaded_ReturnsExit3)
 
     QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(out));
     EXPECT_EQ(doc.object().value("code").toString(), "MODULE_NOT_LOADED");
-    // Error message must name the original module, not a flag value.
     EXPECT_TRUE(doc.object().value("message").toString().contains("'missing'"));
 }
 

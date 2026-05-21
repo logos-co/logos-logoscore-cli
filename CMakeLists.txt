@@ -89,6 +89,20 @@ find_package(OpenSSL REQUIRED)
 # ── stduuid (header-only) ────────────────────────────────────────────────────
 find_package(stduuid REQUIRED)
 
+# ── fmt (formatting library) ─────────────────────────────────────────────────
+find_package(fmt QUIET)
+if(NOT fmt_FOUND)
+    message(STATUS "fmt not found via find_package, using FetchContent")
+    include(FetchContent)
+    FetchContent_Declare(fmt
+        GIT_REPOSITORY https://github.com/fmtlib/fmt
+        GIT_TAG 10.2.1
+    )
+    FetchContent_MakeAvailable(fmt)
+else()
+    message(STATUS "Using system fmt")
+endif()
+
 # ── CLI11 (header-only) ──────────────────────────────────────────────────────
 find_package(CLI11 QUIET)
 if(NOT CLI11_FOUND)
@@ -155,6 +169,7 @@ target_link_libraries(logoscore PRIVATE
     stduuid
     CLI11::CLI11
     OpenSSL::Crypto
+    fmt::fmt
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::RemoteObjects
 )

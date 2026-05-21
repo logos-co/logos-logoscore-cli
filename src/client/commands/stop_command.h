@@ -8,8 +8,8 @@ public:
     using Command::Command;
 
     int execute(const std::vector<std::string>& args) override;
-    QString name() const override { return "stop"; }
-    QString description() const override { return "Stop the daemon"; }
+    std::string name() const override { return "stop"; }
+    std::string description() const override { return "Stop the daemon"; }
 };
 
 #endif // STOP_COMMAND_H

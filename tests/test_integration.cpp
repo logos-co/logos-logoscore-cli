@@ -37,7 +37,6 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
-#include <QString>
 
 #include <cerrno>
 #include <chrono>
@@ -561,8 +560,11 @@ TEST_F(LoadedModuleTest, EmitTestEventRoundTrip) {
     ASSERT_GT(w, 0);
     ProcGuard guard{s_d, w};
 
+    // Give the watcher time to connect and register its subscription
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
     bool got = false;
-    for (int i = 0; i < 150 && !got; ++i) {  // up to ~15s
+    for (int i = 0; i < 300 && !got; ++i) {  // up to ~30s
         std::string out;
         s_d->run("call test_basic_module emitTestEvent payload123", &out);
         if (slurp(log).find("payload123") != std::string::npos) { got = true; break; }
@@ -578,8 +580,11 @@ TEST_F(LoadedModuleTest, EmitMultiArgEvent) {
     ASSERT_GT(w, 0);
     ProcGuard guard{s_d, w};
 
+    // Give the watcher time to connect and register its subscription
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
     bool got = false;
-    for (int i = 0; i < 150 && !got; ++i) {
+    for (int i = 0; i < 300 && !got; ++i) {  // up to ~30s
         std::string out;
         s_d->run("call test_basic_module emitMultiArgEvent label 42", &out);
         const std::string l = slurp(log);

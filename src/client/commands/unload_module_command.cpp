@@ -1,5 +1,6 @@
 #include "unload_module_command.h"
 #include <CLI/CLI.hpp>
+#include <fmt/format.h>
 
 int UnloadModuleCommand::execute(const std::vector<std::string>& args)
 {
@@ -19,20 +20,19 @@ int UnloadModuleCommand::execute(const std::vector<std::string>& args)
     if (err != 0)
         return err;
 
-    QString moduleName = QString::fromStdString(name);
-    QJsonObject result = client().unloadModule(moduleName);
+    QJsonObject result = client().unloadModule(name);
 
-    QString status = result.value("status").toString();
+    std::string status = result.value("status").toString().toStdString();
     if (status == "error") {
-        output().printError(result.value("code").toString(),
-                           result.value("message").toString(), result);
+        output().printError(result.value("code").toString().toStdString(),
+                            result.value("message").toString().toStdString(), result);
         return 3;
     }
 
     if (output().isJsonMode()) {
         output().printSuccess(result);
     } else {
-        output().printRaw(QString("Unloaded module: %1").arg(moduleName));
+        output().printRaw(fmt::format("Unloaded module: {}", name));
     }
 
     return 0;

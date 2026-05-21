@@ -1,6 +1,14 @@
 #include <gtest/gtest.h>
-#include <QStringList>
+#include <algorithm>
+#include <string>
+#include <vector>
 #include "client/commands/command.h"
+
+namespace {
+bool contains(const std::vector<std::string>& v, const std::string& s) {
+    return std::find(v.begin(), v.end(), s) != v.end();
+}
+}
 
 // Test knownSubcommands() and basic mode detection logic.
 // The actual detectMode() function is in main.cpp and uses argc/argv,
@@ -8,62 +16,51 @@
 
 TEST(ModeDetectionTest, KnownSubcommands_Complete)
 {
-    QStringList cmds = knownSubcommands();
-    EXPECT_GE(cmds.size(), 10);
+    auto cmds = knownSubcommands();
+    EXPECT_GE(cmds.size(), 10u);
 
     // All expected commands present
-    EXPECT_TRUE(cmds.contains("daemon"));
-    EXPECT_TRUE(cmds.contains("status"));
-    EXPECT_TRUE(cmds.contains("load-module"));
-    EXPECT_TRUE(cmds.contains("unload-module"));
-    EXPECT_TRUE(cmds.contains("reload-module"));
-    EXPECT_TRUE(cmds.contains("list-modules"));
-    EXPECT_TRUE(cmds.contains("module-info"));
-    EXPECT_TRUE(cmds.contains("info"));
-    EXPECT_TRUE(cmds.contains("call"));
-    EXPECT_TRUE(cmds.contains("module"));
-    EXPECT_TRUE(cmds.contains("watch"));
-    EXPECT_TRUE(cmds.contains("stats"));
+    EXPECT_TRUE(contains(cmds, "daemon"));
+    EXPECT_TRUE(contains(cmds, "status"));
+    EXPECT_TRUE(contains(cmds, "load-module"));
+    EXPECT_TRUE(contains(cmds, "unload-module"));
+    EXPECT_TRUE(contains(cmds, "reload-module"));
+    EXPECT_TRUE(contains(cmds, "list-modules"));
+    EXPECT_TRUE(contains(cmds, "module-info"));
+    EXPECT_TRUE(contains(cmds, "info"));
+    EXPECT_TRUE(contains(cmds, "call"));
+    EXPECT_TRUE(contains(cmds, "module"));
+    EXPECT_TRUE(contains(cmds, "watch"));
+    EXPECT_TRUE(contains(cmds, "stats"));
 }
 
 TEST(ModeDetectionTest, DaemonDetection)
 {
-    // The mode detection logic:
-    // "-D" or "daemon" → Daemon
-    // argv[1] is known subcommand → Client
-    // -m, -l, -c → Inline
-    // else → Help
-
-    // We verify the logic patterns here:
-    QStringList cmds = knownSubcommands();
-    EXPECT_TRUE(cmds.contains("daemon")); // "daemon" is a known subcommand
-
-    // "-D" flag detection would be in the actual argv scanning
-    // We just verify "daemon" is recognized
+    auto cmds = knownSubcommands();
+    EXPECT_TRUE(contains(cmds, "daemon"));
 }
 
 TEST(ModeDetectionTest, ClientSubcommandsRecognized)
 {
-    QStringList cmds = knownSubcommands();
+    auto cmds = knownSubcommands();
 
-    // All client commands should be recognized
-    QStringList clientCmds = {
+    std::vector<std::string> clientCmds = {
         "status", "load-module", "unload-module", "reload-module",
         "list-modules", "module-info", "info", "call", "module",
         "watch", "stats", "stop"
     };
 
-    for (const QString& cmd : clientCmds) {
-        EXPECT_TRUE(cmds.contains(cmd)) << "Missing subcommand: " << cmd.toStdString();
+    for (const auto& cmd : clientCmds) {
+        EXPECT_TRUE(contains(cmds, cmd)) << "Missing subcommand: " << cmd;
     }
 }
 
 TEST(ModeDetectionTest, UnknownCommandNotInList)
 {
-    QStringList cmds = knownSubcommands();
-    EXPECT_FALSE(cmds.contains("nonexistent"));
-    EXPECT_FALSE(cmds.contains("help"));  // help is --help flag, not a subcommand
-    EXPECT_FALSE(cmds.contains("version")); // version is --version flag
+    auto cmds = knownSubcommands();
+    EXPECT_FALSE(contains(cmds, "nonexistent"));
+    EXPECT_FALSE(contains(cmds, "help"));
+    EXPECT_FALSE(contains(cmds, "version"));
 }
 
 // Test exit code mapping per spec

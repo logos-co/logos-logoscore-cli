@@ -1,10 +1,12 @@
 #include "load_module_command.h"
+#include "../../string_utils.h"
 #include <CLI/CLI.hpp>
+#include <fmt/format.h>
 
 int LoadModuleCommand::execute(const std::vector<std::string>& args)
 {
     CLI::App cli{"load-module"};
-    cli.set_help_flag();  // help handled at top level
+    cli.set_help_flag();
     std::string name;
     cli.add_option("name", name, "Module name")->required();
     try {
@@ -19,28 +21,28 @@ int LoadModuleCommand::execute(const std::vector<std::string>& args)
     if (err != 0)
         return err;
 
-    QString moduleName = QString::fromStdString(name);
-    QJsonObject result = client().loadModule(moduleName);
+    QJsonObject result = client().loadModule(name);
 
-    QString status = result.value("status").toString();
+    std::string status = result.value("status").toString().toStdString();
     if (status == "error") {
-        QString code = result.value("code").toString();
-        output().printError(code, result.value("message").toString(), result);
+        output().printError(result.value("code").toString().toStdString(),
+                            result.value("message").toString().toStdString(), result);
         return 3;
     }
 
     if (output().isJsonMode()) {
         output().printSuccess(result);
     } else {
-        QString version = result.value("version").toString();
-        QJsonArray deps = result.value("dependencies_loaded").toArray();
+        std::string version = result.value("version").toString().toStdString();
+        QJsonArray deps     = result.value("dependencies_loaded").toArray();
 
-        output().printRaw(QString("Loaded module: %1 (v%2)").arg(moduleName, version));
+        output().printRaw(fmt::format("Loaded module: {} (v{})", name, version));
         if (!deps.isEmpty()) {
-            QStringList depNames;
+            std::vector<std::string> depNames;
             for (const QJsonValue& v : deps)
-                depNames.append(v.toString());
-            output().printRaw(QString("  Dependencies loaded: %1").arg(depNames.join(", ")));
+                depNames.push_back(v.toString().toStdString());
+            output().printRaw(fmt::format("  Dependencies loaded: {}",
+                                          strutil::join(depNames, ", ")));
         }
     }
 

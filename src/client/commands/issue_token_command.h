@@ -13,8 +13,8 @@ class IssueTokenCommand : public Command {
 public:
     using Command::Command;
     int execute(const std::vector<std::string>& args) override;
-    QString name() const override { return "issue-token"; }
-    QString description() const override {
+    std::string name() const override { return "issue-token"; }
+    std::string description() const override {
         return "Issue a new client token under a given name";
     }
 };
