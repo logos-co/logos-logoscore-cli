@@ -13,7 +13,6 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
-#include <QDebug>
 
 #include <fmt/format.h>
 #include <cstdlib>

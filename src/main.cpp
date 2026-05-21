@@ -1,6 +1,5 @@
 #include <CLI/CLI.hpp>
 #include <QCoreApplication>
-#include <QDebug>
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -102,14 +101,16 @@ static int runInlineMode(int argc, char* argv[],
         std::error_code ec;
         std::string absDir = std::filesystem::absolute(dir, ec).string();
         const char* resolved = ec ? dir.c_str() : absDir.c_str();
-        qDebug() << "Added plugins directory:" << resolved;
+        if (g_verbose)
+            fprintf(stderr, "Added plugins directory: %s\n", resolved);
         logos_core_add_modules_dir(resolved);
     }
 
     std::string bundledDir = paths::bundledModulesDir();
     if (!bundledDir.empty()) {
         logos_core_add_modules_dir(bundledDir.c_str());
-        qDebug() << "Added bundled modules directory:" << bundledDir.c_str();
+        if (g_verbose)
+            fprintf(stderr, "Added bundled modules directory: %s\n", bundledDir.c_str());
     }
 
     // Set persistence base path (user-specified or default)
@@ -657,7 +658,7 @@ int main(int argc, char *argv[])
             }
         }
 
-        return Daemon::start(argc, argv, mergedCfg, configSource, persistConfig);
+        return Daemon::start(argc, argv, mergedCfg, configSource, persistConfig, g_verbose);
     }
 
     // ── Client-side per-flag merge ───────────────────────────────────────────

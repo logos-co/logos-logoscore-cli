@@ -36,7 +36,8 @@ public:
     static int start(int argc, char* argv[],
                      const DaemonConfig& cfg,
                      const std::string& configSource,
-                     bool persistConfig);
+                     bool persistConfig,
+                     bool verbose = false);
 
 private:
     static void setupSignalHandlers();
