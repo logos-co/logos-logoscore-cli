@@ -5,12 +5,16 @@
 #include <logos_types.h>
 
 #include <QCoreApplication>
-#include <QDateTime>
 #include <QJsonDocument>
-#include <QDebug>
+#include <QJsonObject>
+#include <QJsonArray>
 #include <QMetaType>
 #include <QTimer>
+#include <QString>
+#include <QVariant>
+#include <algorithm>
 #include <cstdlib>
+#include <unistd.h>
 
 void CoreServiceImpl::onInit(LogosAPI* api)
 {
@@ -18,16 +22,16 @@ void CoreServiceImpl::onInit(LogosAPI* api)
 }
 
 // ---------------------------------------------------------------------------
-// Helpers to convert C API char** to QStringList
+// Helpers to convert C API char** to std::vector<std::string>
 // ---------------------------------------------------------------------------
 
-QStringList CoreServiceImpl::getKnownModuleNames()
+std::vector<std::string> CoreServiceImpl::getKnownModuleNames()
 {
-    QStringList result;
+    std::vector<std::string> result;
     char** modules = logos_core_get_known_modules();
     if (modules) {
         for (int i = 0; modules[i] != nullptr; ++i) {
-            result.append(QString::fromUtf8(modules[i]));
+            result.emplace_back(modules[i]);
             free(modules[i]);
         }
         free(modules);
@@ -35,147 +39,148 @@ QStringList CoreServiceImpl::getKnownModuleNames()
     return result;
 }
 
-QStringList CoreServiceImpl::getLoadedModuleNames()
+std::vector<std::string> CoreServiceImpl::getLoadedModuleNames()
 {
-    QStringList result;
+    std::vector<std::string> result;
     char** modules = logos_core_get_loaded_modules();
     if (modules) {
         for (int i = 0; modules[i] != nullptr; ++i) {
-            result.append(QString::fromUtf8(modules[i]));
+            result.emplace_back(modules[i]);
             free(modules[i]);
         }
         free(modules);
     }
     return result;
+}
+
+static bool containsName(const std::vector<std::string>& v, const std::string& name)
+{
+    return std::find(v.begin(), v.end(), name) != v.end();
 }
 
 // ---------------------------------------------------------------------------
 // Module lifecycle
 // ---------------------------------------------------------------------------
 
-QVariant CoreServiceImpl::loadModule(const QString& name)
+StdLogosResult CoreServiceImpl::loadModule(const std::string& name)
 {
-    QJsonObject result;
-
-    bool ok = logos_core_load_module(name.toUtf8().constData(), true);
+    bool ok = logos_core_load_module(name.c_str(), true);
     if (!ok) {
-        result["status"] = "error";
-        result["code"] = "MODULE_LOAD_FAILED";
-        result["message"] = QString("Failed to load module '%1'.").arg(name);
+        LogosMap errResult;
+        errResult["status"] = "error";
+        errResult["code"] = "MODULE_LOAD_FAILED";
+        errResult["message"] = "Failed to load module '" + name + "'.";
 
-        // Include known modules for context
-        QStringList known = getKnownModuleNames();
-        QJsonArray names;
-        for (const QString& n : known)
-            names.append(n);
-        result["known_modules"] = names;
-        return QVariant::fromValue(result);
+        auto known = getKnownModuleNames();
+        LogosList names = LogosList::array();
+        for (const auto& n : known)
+            names.push_back(n);
+        errResult["known_modules"] = names;
+        return {false, errResult, "Failed to load module '" + name + "'."};
     }
 
+    LogosMap result;
     result["status"] = "ok";
     result["module"] = name;
-    result["dependencies_loaded"] = QJsonArray();
-    return QVariant::fromValue(result);
+    result["dependencies_loaded"] = LogosList::array();
+    return {true, result};
 }
 
-QVariant CoreServiceImpl::unloadModule(const QString& name)
+StdLogosResult CoreServiceImpl::unloadModule(const std::string& name)
 {
-    QJsonObject result;
+    logos_core_unload_module(name.c_str(), false);
 
-    logos_core_unload_module(name.toUtf8().constData(), false);
-
-    // Check if it was actually unloaded
-    QStringList loaded = getLoadedModuleNames();
-    if (loaded.contains(name)) {
-        result["status"] = "error";
-        result["code"] = "MODULE_NOT_LOADED";
-        result["message"] = QString("Module '%1' is not loaded.").arg(name);
-        return QVariant::fromValue(result);
+    auto loaded = getLoadedModuleNames();
+    if (containsName(loaded, name)) {
+        LogosMap errResult;
+        errResult["status"] = "error";
+        errResult["code"] = "MODULE_NOT_LOADED";
+        errResult["message"] = "Module '" + name + "' is not loaded.";
+        return {false, errResult, "Module '" + name + "' is not loaded."};
     }
 
+    LogosMap result;
     result["status"] = "ok";
     result["module"] = name;
-    return QVariant::fromValue(result);
+    return {true, result};
 }
 
-QVariant CoreServiceImpl::reloadModule(const QString& name)
+StdLogosResult CoreServiceImpl::reloadModule(const std::string& name)
 {
-    QJsonObject result;
+    LogosMap result;
     result["action"] = "reload";
     result["module"] = name;
 
-    QStringList loaded = getLoadedModuleNames();
-    QString previousStatus = loaded.contains(name) ? "loaded" : "not_loaded";
+    auto loaded = getLoadedModuleNames();
+    std::string previousStatus = containsName(loaded, name) ? "loaded" : "not_loaded";
     result["previous_status"] = previousStatus;
 
-    // Unload if loaded
-    if (loaded.contains(name)) {
-        logos_core_unload_module(name.toUtf8().constData(), false);
+    if (containsName(loaded, name)) {
+        logos_core_unload_module(name.c_str(), false);
     }
 
-    // Load
-    bool ok = logos_core_load_module(name.toUtf8().constData(), true);
+    bool ok = logos_core_load_module(name.c_str(), true);
     if (!ok) {
         result["status"] = "error";
         result["error"] = "module failed to start";
-        return QVariant::fromValue(result);
+        return {false, result, "module failed to start"};
     }
 
     result["status"] = "loaded";
-    return QVariant::fromValue(result);
+    return {true, result};
 }
 
 // ---------------------------------------------------------------------------
 // Queries
 // ---------------------------------------------------------------------------
 
-QJsonArray CoreServiceImpl::listModules(const QString& filter)
+LogosList CoreServiceImpl::listModules(const std::string& filter)
 {
-    QJsonArray modules;
+    LogosList modules = LogosList::array();
 
-    QStringList known = getKnownModuleNames();
-    QStringList loaded = getLoadedModuleNames();
+    auto known = getKnownModuleNames();
+    auto loaded = getLoadedModuleNames();
 
-    for (const QString& name : known) {
-        QJsonObject mod;
+    for (const auto& name : known) {
+        LogosMap mod;
         mod["name"] = name;
 
-        if (loaded.contains(name)) {
+        if (containsName(loaded, name)) {
             mod["status"] = "loaded";
         } else {
             mod["status"] = "not_loaded";
         }
 
-        if (filter == "loaded" && !loaded.contains(name))
+        if (filter == "loaded" && !containsName(loaded, name))
             continue;
 
-        modules.append(mod);
+        modules.push_back(mod);
     }
 
     return modules;
 }
 
-QJsonObject CoreServiceImpl::getStatus()
+LogosMap CoreServiceImpl::getStatus()
 {
-    QJsonObject status;
+    LogosMap status;
 
-    QJsonObject daemon;
+    LogosMap daemon;
     daemon["status"] = "running";
-    daemon["pid"] = QCoreApplication::applicationPid();
-    daemon["version"] = QCoreApplication::applicationVersion();
+    daemon["pid"] = static_cast<int64_t>(getpid());
+    daemon["version"] = version();
     status["daemon"] = daemon;
 
-    QJsonArray modules = listModules("all");
+    LogosList modules = listModules("all");
     status["modules"] = modules;
 
     int loadedCount = 0, crashed = 0, notLoaded = 0;
-    for (const QJsonValue& v : modules) {
-        QString s = v.toObject().value("status").toString();
+    for (const auto& v : modules) {
+        std::string s = v.value("status", "");
         if (s == "loaded") loadedCount++;
         else if (s == "crashed") crashed++;
         else notLoaded++;
     }
-    QJsonObject summary;
+    LogosMap summary;
     summary["loaded"] = loadedCount;
     summary["crashed"] = crashed;
     summary["not_loaded"] = notLoaded;
@@ -184,31 +189,35 @@ QJsonObject CoreServiceImpl::getStatus()
     return status;
 }
 
-QJsonObject CoreServiceImpl::getModuleInfo(const QString& name)
+LogosMap CoreServiceImpl::getModuleInfo(const std::string& name)
 {
-    QJsonObject info;
+    LogosMap info;
 
-    QStringList known = getKnownModuleNames();
-    if (!known.contains(name)) {
+    auto known = getKnownModuleNames();
+    if (!containsName(known, name)) {
         info["status"] = "error";
         info["code"] = "MODULE_NOT_FOUND";
-        info["message"] = QString("Module '%1' not found.").arg(name);
+        info["message"] = "Module '" + name + "' not found.";
         return info;
     }
 
     info["name"] = name;
 
-    QStringList loaded = getLoadedModuleNames();
-    if (loaded.contains(name)) {
+    auto loaded = getLoadedModuleNames();
+    if (containsName(loaded, name)) {
         info["status"] = "loaded";
 
         // Query the module's published methods via SDK
         if (m_api) {
-            LogosAPIClient* moduleClient = m_api->getClient(name);
+            QString qName = QString::fromStdString(name);
+            LogosAPIClient* moduleClient = m_api->getClient(qName);
             if (moduleClient) {
-                QVariant ret = moduleClient->invokeRemoteMethod(name, "getPluginMethods");
+                QVariant ret = moduleClient->invokeRemoteMethod(qName, "getPluginMethods");
                 if (ret.canConvert<QJsonArray>()) {
-                    info["methods"] = qvariant_cast<QJsonArray>(ret);
+                    QJsonArray methods = qvariant_cast<QJsonArray>(ret);
+                    QJsonDocument doc(methods);
+                    info["methods"] = nlohmann::json::parse(
+                        doc.toJson(QJsonDocument::Compact).toStdString());
                 }
             }
         }
@@ -219,14 +228,14 @@ QJsonObject CoreServiceImpl::getModuleInfo(const QString& name)
     return info;
 }
 
-QJsonArray CoreServiceImpl::getModuleStats()
+LogosList CoreServiceImpl::getModuleStats()
 {
-    QJsonArray stats;
+    LogosList stats = LogosList::array();
     char* json = logos_core_get_module_stats();
     if (json) {
-        QJsonDocument doc = QJsonDocument::fromJson(QByteArray(json));
-        if (doc.isArray())
-            stats = doc.array();
+        try {
+            stats = nlohmann::json::parse(json);
+        } catch (...) {}
         free(json);
     }
     return stats;
@@ -236,34 +245,61 @@ QJsonArray CoreServiceImpl::getModuleStats()
 // Proxied call
 // ---------------------------------------------------------------------------
 
-QVariant CoreServiceImpl::callModuleMethod(const QString& module,
-                                           const QString& method,
-                                           const QVariantList& args)
+StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
+                                                 const std::string& method,
+                                                 const LogosList& args)
 {
-    QJsonObject result;
+    LogosMap result;
 
     if (!m_api) {
         result["status"] = "error";
         result["code"] = "INTERNAL_ERROR";
         result["message"] = "core_service not initialized.";
-        return QVariant::fromValue(result);
+        return {false, result, "core_service not initialized."};
     }
 
-    LogosAPIClient* moduleClient = m_api->getClient(module);
+    QString qModule = QString::fromStdString(module);
+    QString qMethod = QString::fromStdString(method);
+
+    LogosAPIClient* moduleClient = m_api->getClient(qModule);
     if (!moduleClient) {
         result["status"] = "error";
         result["code"] = "MODULE_NOT_LOADED";
-        result["message"] = QString("Module '%1' is not loaded. Load it with: logoscore load-module %1").arg(module);
-        return QVariant::fromValue(result);
+        result["message"] = "Module '" + module + "' is not loaded. Load it with: logoscore load-module " + module;
+        return {false, result, "Module '" + module + "' is not loaded."};
     }
 
-    QVariant ret = moduleClient->invokeRemoteMethod(module, method, args);
+    // Convert LogosList args to QVariantList for the Qt SDK call
+    QVariantList qArgs;
+    for (const auto& arg : args) {
+        if (arg.is_string())
+            qArgs.append(QString::fromStdString(arg.get<std::string>()));
+        else if (arg.is_number_integer())
+            qArgs.append(static_cast<qlonglong>(arg.get<int64_t>()));
+        else if (arg.is_number_float())
+            qArgs.append(arg.get<double>());
+        else if (arg.is_boolean())
+            qArgs.append(arg.get<bool>());
+        else if (arg.is_array()) {
+            QJsonDocument doc = QJsonDocument::fromJson(
+                QByteArray::fromStdString(arg.dump()));
+            qArgs.append(QVariant::fromValue(doc.array()));
+        } else if (arg.is_object()) {
+            QJsonDocument doc = QJsonDocument::fromJson(
+                QByteArray::fromStdString(arg.dump()));
+            qArgs.append(QVariant::fromValue(doc.object()));
+        } else {
+            qArgs.append(QVariant());
+        }
+    }
+
+    QVariant ret = moduleClient->invokeRemoteMethod(qModule, qMethod, qArgs);
 
     if (!ret.isValid()) {
         result["status"] = "error";
         result["code"] = "METHOD_FAILED";
-        result["message"] = QString("Call to %1.%2 failed.").arg(module, method);
-        return QVariant::fromValue(result);
+        result["message"] = "Call to " + module + "." + method + " failed.";
+        return {false, result, "Call to " + module + "." + method + " failed."};
     }
 
     result["status"] = "ok";
@@ -280,49 +316,97 @@ QVariant CoreServiceImpl::callModuleMethod(const QString& module,
     if (logosResultId != QMetaType::UnknownType
             && ret.userType() == logosResultId) {
         const LogosResult lr = ret.value<LogosResult>();
-        QJsonObject obj;
+        LogosMap obj;
         obj["success"] = lr.success;
-        obj["value"]   = QJsonValue::fromVariant(lr.value);
-        obj["error"]   = QJsonValue::fromVariant(lr.error);
+        QJsonValue valJson = QJsonValue::fromVariant(lr.value);
+        QJsonValue errJson = QJsonValue::fromVariant(lr.error);
+        QJsonDocument valDoc;
+        if (valJson.isObject()) valDoc = QJsonDocument(valJson.toObject());
+        else if (valJson.isArray()) valDoc = QJsonDocument(valJson.toArray());
+        if (!valDoc.isNull())
+            obj["value"] = nlohmann::json::parse(valDoc.toJson(QJsonDocument::Compact).toStdString());
+        else if (valJson.isString())
+            obj["value"] = valJson.toString().toStdString();
+        else if (valJson.isBool())
+            obj["value"] = valJson.toBool();
+        else if (valJson.isDouble())
+            obj["value"] = valJson.toDouble();
+        else
+            obj["value"] = nullptr;
+        if (errJson.isString())
+            obj["error"] = errJson.toString().toStdString();
+        else
+            obj["error"] = nullptr;
         result["result"] = obj;
     } else if (ret.canConvert<QJsonObject>()) {
-        result["result"] = ret.toJsonObject();
+        QJsonDocument doc(ret.toJsonObject());
+        result["result"] = nlohmann::json::parse(
+            doc.toJson(QJsonDocument::Compact).toStdString());
     } else if (ret.canConvert<QJsonArray>()) {
-        result["result"] = ret.toJsonArray();
+        QJsonDocument doc(ret.toJsonArray());
+        result["result"] = nlohmann::json::parse(
+            doc.toJson(QJsonDocument::Compact).toStdString());
     } else {
-        result["result"] = QJsonValue::fromVariant(ret);
+        QJsonValue jv = QJsonValue::fromVariant(ret);
+        if (jv.isString())
+            result["result"] = jv.toString().toStdString();
+        else if (jv.isBool())
+            result["result"] = jv.toBool();
+        else if (jv.isDouble())
+            result["result"] = jv.toDouble();
+        else
+            result["result"] = nullptr;
     }
 
-    return QVariant::fromValue(result);
+    return {true, result};
 }
 
 // ---------------------------------------------------------------------------
 // Event forwarding
 // ---------------------------------------------------------------------------
 
-bool CoreServiceImpl::watchModuleEvents(const QString& module,
-                                        const QString& eventName)
+bool CoreServiceImpl::watchModuleEvents(const std::string& module,
+                                        const std::string& eventName)
 {
     if (!m_api)
         return false;
 
-    LogosAPIClient* moduleClient = m_api->getClient(module);
+    QString qModule = QString::fromStdString(module);
+    QString qEventName = QString::fromStdString(eventName);
+
+    LogosAPIClient* moduleClient = m_api->getClient(qModule);
     if (!moduleClient)
         return false;
 
-    LogosObject* obj = moduleClient->requestObject(module);
+    LogosObject* obj = moduleClient->requestObject(qModule);
     if (!obj)
         return false;
 
-    moduleClient->onEvent(obj, eventName,
+    moduleClient->onEvent(obj, qEventName,
         [this, module](const QString& event, const QVariantList& data) {
-            // Forward the event through core_service's event system
-            QVariantList forwardData;
-            forwardData.append(module);
-            forwardData.append(event);
-            for (const QVariant& d : data)
-                forwardData.append(d);
-            emitEvent("module_event", forwardData);
+            nlohmann::json forwardData = nlohmann::json::array();
+            forwardData.push_back(module);
+            forwardData.push_back(event.toStdString());
+            for (const QVariant& d : data) {
+                QJsonValue jv = QJsonValue::fromVariant(d);
+                if (jv.isString())
+                    forwardData.push_back(jv.toString().toStdString());
+                else if (jv.isBool())
+                    forwardData.push_back(jv.toBool());
+                else if (jv.isDouble())
+                    forwardData.push_back(jv.toDouble());
+                else if (jv.isObject() || jv.isArray()) {
+                    QJsonDocument doc;
+                    if (jv.isObject()) doc = QJsonDocument(jv.toObject());
+                    else doc = QJsonDocument(jv.toArray());
+                    forwardData.push_back(nlohmann::json::parse(
+                        doc.toJson(QJsonDocument::Compact).toStdString()));
+                } else {
+                    forwardData.push_back(nullptr);
+                }
+            }
+            if (emitEvent)
+                emitEvent("module_event", forwardData.dump());
         });
 
     return true;
@@ -332,9 +416,9 @@ bool CoreServiceImpl::watchModuleEvents(const QString& module,
 // Daemon lifecycle
 // ---------------------------------------------------------------------------
 
-QJsonObject CoreServiceImpl::shutdown()
+LogosMap CoreServiceImpl::shutdown()
 {
-    QJsonObject result;
+    LogosMap result;
     result["status"] = "ok";
     result["message"] = "Daemon shutting down.";
 

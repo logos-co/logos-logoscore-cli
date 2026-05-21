@@ -2,49 +2,61 @@
 #define CORE_SERVICE_IMPL_H
 
 #include <logos_provider_object.h>
-#include <QJsonObject>
-#include <QJsonArray>
-#include <QVariant>
-#include <QVariantList>
-#include <QString>
+#include <functional>
+#include <string>
+#include <vector>
+#include <logos_json.h>
+#include <logos_result.h>
 
-class CoreServiceImpl : public LogosProviderBase
+class CoreServiceImpl : public LogosProviderObject
 {
-    LOGOS_PROVIDER(CoreServiceImpl, "core_service", "1.0.0")
-
 public:
+    std::function<void(const std::string& eventName, const std::string& data)> emitEvent;
+
     // Module lifecycle
-    LOGOS_METHOD QVariant loadModule(const QString& name);
-    LOGOS_METHOD QVariant unloadModule(const QString& name);
-    LOGOS_METHOD QVariant reloadModule(const QString& name);
+    StdLogosResult loadModule(const std::string& name);
+    StdLogosResult unloadModule(const std::string& name);
+    StdLogosResult reloadModule(const std::string& name);
 
     // Queries
-    LOGOS_METHOD QJsonArray listModules(const QString& filter);
-    LOGOS_METHOD QJsonObject getStatus();
-    LOGOS_METHOD QJsonObject getModuleInfo(const QString& name);
-    LOGOS_METHOD QJsonArray getModuleStats();
+    LogosList listModules(const std::string& filter);
+    LogosMap getStatus();
+    LogosMap getModuleInfo(const std::string& name);
+    LogosList getModuleStats();
 
     // Proxied call -- delegates to target module
-    LOGOS_METHOD QVariant callModuleMethod(const QString& module,
-                                          const QString& method,
-                                          const QVariantList& args);
+    StdLogosResult callModuleMethod(const std::string& module,
+                                    const std::string& method,
+                                    const LogosList& args);
 
     // Event forwarding
-    LOGOS_METHOD bool watchModuleEvents(const QString& module,
-                                       const QString& eventName);
+    bool watchModuleEvents(const std::string& module,
+                           const std::string& eventName);
 
     // Daemon lifecycle
-    LOGOS_METHOD QJsonObject shutdown();
+    LogosMap shutdown();
 
-protected:
-    void onInit(LogosAPI* api) override;
+    std::string name() const { return "core_service"; }
+    std::string version() const { return "1.0.0"; }
+
+    void onInit(LogosAPI* api);
+
+    // LogosProviderObject interface (implemented in core_service_dispatch.cpp)
+    QVariant callMethod(const QString& methodName, const QVariantList& args) override;
+    QJsonArray getMethods() override;
+    QString providerName() const override;
+    QString providerVersion() const override;
+    void setEventListener(EventCallback callback) override;
+    bool informModuleToken(const QString& moduleName, const QString& token) override;
+    void init(void* apiInstance) override;
 
 private:
+    EventCallback m_eventCallback;
     LogosAPI* m_api = nullptr;
 
     // Helpers
-    QStringList getKnownModuleNames();
-    QStringList getLoadedModuleNames();
+    std::vector<std::string> getKnownModuleNames();
+    std::vector<std::string> getLoadedModuleNames();
 };
 
 #endif // CORE_SERVICE_IMPL_H
