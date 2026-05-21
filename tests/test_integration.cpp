@@ -37,7 +37,6 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
-#include <QString>
 
 #include <cerrno>
 #include <chrono>

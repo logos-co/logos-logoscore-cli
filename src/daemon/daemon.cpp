@@ -15,7 +15,6 @@
 
 #include <QCoreApplication>
 #include <QDebug>
-#include <QString>
 
 #include <uuid.h>
 
@@ -239,7 +238,7 @@ int Daemon::start(int argc, char* argv[],
     //    core_service can publish on multiple transports simultaneously:
     //    a local QLocalSocket (back-compat) + any TCP / TCP+SSL listeners
     //    specified via --transport.
-    auto* coreServiceApi = new LogosAPI(QString("core_service"), coreTransports);
+    auto* coreServiceApi = new LogosAPI("core_service", coreTransports);
     auto* coreServiceImpl = new CoreServiceImpl();
 
     coreServiceImpl->init(coreServiceApi);
