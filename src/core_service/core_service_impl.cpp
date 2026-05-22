@@ -4,8 +4,9 @@
 #include <logos_api_client.h>
 
 #include <QCoreApplication>
-#include <QTimer>
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <cstdlib>
 #include <unistd.h>
 
@@ -317,7 +318,10 @@ LogosMap CoreServiceImpl::shutdown()
     result["status"] = "ok";
     result["message"] = "Daemon shutting down.";
 
-    QTimer::singleShot(200, QCoreApplication::instance(), &QCoreApplication::quit);
+    std::thread([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        QCoreApplication::quit();
+    }).detach();
 
     return result;
 }
