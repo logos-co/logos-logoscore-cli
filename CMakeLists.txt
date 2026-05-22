@@ -183,6 +183,7 @@ endif()
 
 target_include_directories(logoscore PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${LOGOS_CPP_SDK_ROOT}/include/cpp
     ${LOGOS_LIBLOGOS_ROOT}/include
     ${LOGOS_LIBLOGOS_ROOT}/include/cpp
     ${LOGOS_MODULE_CLIENT_ROOT}/include

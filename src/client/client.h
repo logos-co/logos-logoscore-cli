@@ -1,12 +1,10 @@
 #ifndef CLIENT_H
 #define CLIENT_H
 
-#include <QJsonObject>
-#include <QJsonArray>
-#include <QVariant>
-#include <QVariantList>
+#include <logos_json.h>
 #include <functional>
 #include <string>
+#include <vector>
 
 // Abstract client interface for communicating with daemon's core_service.
 // The real implementation (RpcClient) uses LogosAPIClient from logos-cpp-sdk.
@@ -20,28 +18,28 @@ public:
     virtual std::string lastError() const = 0;
 
     // Module lifecycle
-    virtual QJsonObject loadModule(const std::string& name) = 0;
-    virtual QJsonObject unloadModule(const std::string& name) = 0;
-    virtual QJsonObject reloadModule(const std::string& name) = 0;
+    virtual LogosMap loadModule(const std::string& name) = 0;
+    virtual LogosMap unloadModule(const std::string& name) = 0;
+    virtual LogosMap reloadModule(const std::string& name) = 0;
 
     // Queries
-    virtual QJsonArray listModules(const std::string& filter) = 0;
-    virtual QJsonObject getStatus() = 0;
-    virtual QJsonObject getModuleInfo(const std::string& name) = 0;
-    virtual QJsonArray getModuleStats() = 0;
+    virtual LogosList listModules(const std::string& filter) = 0;
+    virtual LogosMap getStatus() = 0;
+    virtual LogosMap getModuleInfo(const std::string& name) = 0;
+    virtual LogosList getModuleStats() = 0;
 
-    // Proxied call
-    virtual QJsonObject callModuleMethod(const std::string& module,
-                                         const std::string& method,
-                                         const QVariantList& args) = 0;
+    // Proxied call — args is a json array of scalar/object arguments
+    virtual LogosMap callModuleMethod(const std::string& module,
+                                      const std::string& method,
+                                      const LogosList& args) = 0;
 
     // Daemon lifecycle
-    virtual QJsonObject shutdown() = 0;
+    virtual LogosMap shutdown() = 0;
 
     // Event watching
     virtual bool watchModuleEvents(const std::string& module,
                                    const std::string& eventName,
-                                   std::function<void(const QJsonObject&)> callback) = 0;
+                                   std::function<void(const LogosMap&)> callback) = 0;
 };
 
 // Real RPC client implementation that connects to the daemon.
@@ -55,20 +53,20 @@ public:
     bool isConnected() const override;
     std::string lastError() const override;
 
-    QJsonObject loadModule(const std::string& name) override;
-    QJsonObject unloadModule(const std::string& name) override;
-    QJsonObject reloadModule(const std::string& name) override;
-    QJsonArray listModules(const std::string& filter) override;
-    QJsonObject getStatus() override;
-    QJsonObject getModuleInfo(const std::string& name) override;
-    QJsonArray getModuleStats() override;
-    QJsonObject callModuleMethod(const std::string& module,
-                                 const std::string& method,
-                                 const QVariantList& args) override;
-    QJsonObject shutdown() override;
+    LogosMap loadModule(const std::string& name) override;
+    LogosMap unloadModule(const std::string& name) override;
+    LogosMap reloadModule(const std::string& name) override;
+    LogosList listModules(const std::string& filter) override;
+    LogosMap getStatus() override;
+    LogosMap getModuleInfo(const std::string& name) override;
+    LogosList getModuleStats() override;
+    LogosMap callModuleMethod(const std::string& module,
+                              const std::string& method,
+                              const LogosList& args) override;
+    LogosMap shutdown() override;
     bool watchModuleEvents(const std::string& module,
                            const std::string& eventName,
-                           std::function<void(const QJsonObject&)> callback) override;
+                           std::function<void(const LogosMap&)> callback) override;
 
 private:
     struct Impl;

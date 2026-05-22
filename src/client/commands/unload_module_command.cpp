@@ -20,12 +20,12 @@ int UnloadModuleCommand::execute(const std::vector<std::string>& args)
     if (err != 0)
         return err;
 
-    QJsonObject result = client().unloadModule(name);
+    LogosMap result = client().unloadModule(name);
 
-    std::string status = result.value("status").toString().toStdString();
+    std::string status = result.value("status", std::string{});
     if (status == "error") {
-        output().printError(result.value("code").toString().toStdString(),
-                            result.value("message").toString().toStdString(), result);
+        output().printError(result.value("code", std::string{}),
+                            result.value("message", std::string{}), result);
         return 3;
     }
 

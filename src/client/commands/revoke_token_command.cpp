@@ -3,7 +3,6 @@
 #include "../../config.h"
 #include "../../daemon/token_store.h"
 
-#include <QJsonObject>
 #include <fmt/format.h>
 
 int RevokeTokenCommand::execute(const std::vector<std::string>& args)
@@ -35,9 +34,7 @@ int RevokeTokenCommand::execute(const std::vector<std::string>& args)
             return 1;
     }
 
-    QJsonObject result;
-    result["status"] = "ok";
-    result["name"]   = QString::fromStdString(name);
+    LogosMap result{{"status","ok"},{"name", name}};
     if (output().isJsonMode()) {
         output().printSuccess(result);
     } else {

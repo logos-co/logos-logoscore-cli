@@ -19,12 +19,12 @@ int ModuleInfoCommand::execute(const std::vector<std::string>& args)
     if (err != 0)
         return err;
 
-    QJsonObject info = client().getModuleInfo(name);
+    LogosMap info = client().getModuleInfo(name);
 
-    std::string status = info.value("status").toString().toStdString();
+    std::string status = info.value("status", std::string{});
     if (status == "error") {
-        output().printError(info.value("code").toString().toStdString(),
-                            info.value("message").toString().toStdString(), info);
+        output().printError(info.value("code", std::string{}),
+                            info.value("message", std::string{}), info);
         return 3;
     }
 
