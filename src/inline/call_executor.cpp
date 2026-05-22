@@ -2,10 +2,9 @@
 #include "logos_sdk_c.h"
 #include "../string_utils.h"
 #include <logos_json.h>
-#include <QEventLoop>
-#include <QTimer>
-#include <QObject>
 #include <fmt/format.h>
+#include <chrono>
+#include <thread>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -96,26 +95,10 @@ bool CallExecutor::executeCall(const ModuleCall& call) {
         &result
     );
 
-    QEventLoop loop;
-    QTimer timeoutTimer;
-    timeoutTimer.setSingleShot(true);
-    timeoutTimer.setInterval(30000);
-
-    QTimer pollTimer;
-    pollTimer.setInterval(100);
-
-    QObject::connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    QObject::connect(&pollTimer, &QTimer::timeout, [&]() {
-        if (result.completed)
-            loop.quit();
-    });
-
-    timeoutTimer.start();
-    pollTimer.start();
-    loop.exec();
-
-    pollTimer.stop();
-    timeoutTimer.stop();
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (!result.completed && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
 
     if (!result.completed) {
         std::cerr << "Error: Timeout waiting for "

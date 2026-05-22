@@ -9,7 +9,6 @@
 #include <token_manager.h>
 
 #include <QCoreApplication>
-#include <QDateTime>
 
 #include <fmt/format.h>
 #include <chrono>
