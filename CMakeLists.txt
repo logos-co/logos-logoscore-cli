@@ -150,6 +150,9 @@ set(CLI_SOURCES
     # Inline path (legacy)
     src/inline/command_line_parser.cpp
     src/inline/call_executor.cpp
+
+    # Platform abstraction
+    src/platform/event_loop.cpp
 )
 
 add_executable(logoscore ${CLI_SOURCES})

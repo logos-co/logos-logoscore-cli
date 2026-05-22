@@ -1,5 +1,4 @@
 #include <CLI/CLI.hpp>
-#include <QCoreApplication>
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -9,6 +8,7 @@
 
 #include "config.h"
 #include "paths.h"
+#include "platform/event_loop.h"
 #include "daemon/daemon.h"
 #include "daemon/daemon_state.h"
 #include "client/client_state.h"
@@ -20,35 +20,6 @@
 #include "logos_core.h"
 
 static bool g_verbose = false;
-
-static void messageHandler(QtMsgType type, const QMessageLogContext &context, const QString &msg) {
-    QByteArray localMsg = msg.toLocal8Bit();
-    const char *file = context.file ? context.file : "";
-    const char *function = context.function ? context.function : "";
-
-    switch (type) {
-    case QtDebugMsg:
-        if (!g_verbose) return;
-        fprintf(stderr, "Debug: %s\n", localMsg.constData());
-        break;
-    case QtInfoMsg:
-        if (!g_verbose) return;
-        fprintf(stderr, "Info: %s\n", localMsg.constData());
-        break;
-    case QtWarningMsg:
-        if (!g_verbose) return;
-        fprintf(stderr, "Warning: %s\n", localMsg.constData());
-        break;
-    case QtCriticalMsg:
-        fprintf(stderr, "Critical: %s (%s:%u, %s)\n", localMsg.constData(), file, context.line, function);
-        break;
-    case QtFatalMsg:
-        fprintf(stderr, "Fatal: %s (%s:%u, %s)\n", localMsg.constData(), file, context.line, function);
-        fflush(stderr);
-        abort();
-    }
-    fflush(stderr);
-}
 
 static int runInlineMode(int argc, char* argv[],
                          const std::vector<std::string>& modulesDirs,
@@ -91,9 +62,7 @@ static int runInlineMode(int argc, char* argv[],
         }
     }
 
-    QCoreApplication app(argc, argv);
-    app.setApplicationName("logoscore");
-    app.setApplicationVersion("1.0");
+    EventLoop::init(argc, argv, "logoscore", "1.0");
 
     logos_core_init(argc, argv);
 
@@ -139,7 +108,7 @@ static int runInlineMode(int argc, char* argv[],
         }
     }
 
-    return QCoreApplication::exec();
+    return EventLoop::exec();
 }
 
 // Pre-scan argv for `--config-dir` so we can apply the override (and
@@ -369,7 +338,7 @@ int main(int argc, char *argv[])
     // ── Parse ────────────────────────────────────────────────────────────────
     CLI11_PARSE(app, argc, argv);
 
-    qInstallMessageHandler(messageHandler);
+    EventLoop::installLogFilter(g_verbose);
 
     // Apply --config-dir (if passed) before any Config::* call so the daemon,
     // client, connection_file, and any forked logos_host all see the same
@@ -395,9 +364,7 @@ int main(int argc, char *argv[])
 
     // ── Daemon mode ──────────────────────────────────────────────────────────
     if (daemonFlag || daemonSub->parsed()) {
-        QCoreApplication qapp(argc, argv);
-        qapp.setApplicationName("logoscore");
-        qapp.setApplicationVersion("1.0");
+        EventLoop::init(argc, argv, "logoscore", "1.0");
 
         // Plaintext-TCP guard: a `tcp` listener on a non-loopback host
         // sends tokens in cleartext. Refuse to start unless the
@@ -769,9 +736,7 @@ int main(int argc, char *argv[])
         if (!sub->parsed())
             continue;
 
-        QCoreApplication qapp(argc, argv);
-        qapp.setApplicationName("logoscore");
-        qapp.setApplicationVersion("1.0");
+        EventLoop::init(argc, argv, "logoscore", "1.0");
 
         // Collect remaining args from the subcommand, extracting global flags
         // (global flags placed after the subcommand end up in remaining())

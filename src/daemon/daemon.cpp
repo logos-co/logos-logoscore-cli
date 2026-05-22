@@ -13,7 +13,7 @@
 #include <token_manager.h>
 #include "../core_service/core_service_impl.h"
 
-#include <QCoreApplication>
+#include "../platform/event_loop.h"
 
 #include <uuid.h>
 
@@ -36,9 +36,7 @@ void Daemon::signalHandler(int signal)
     (void)signal;
     g_shutdownRequested = 1;
 
-    // Post a quit event to the Qt event loop
-    if (QCoreApplication::instance())
-        QCoreApplication::quit();
+    EventLoop::quit();
 }
 
 void Daemon::setupSignalHandlers()
@@ -354,19 +352,16 @@ int Daemon::start(int argc, char* argv[],
     fflush(stdout);
 
     // 8. Set up signal handlers for clean shutdown. SIGINT / SIGTERM
-    //    fire `QCoreApplication::quit()`, which makes `exec()` return
+    //    fire `EventLoop::quit()`, which makes `exec()` return
     //    and the explicit cleanup below runs. We also subscribe to
-    //    `aboutToQuit` as a defense-in-depth: any future code path
+    //    `onAboutToQuit` as a defense-in-depth: any future code path
     //    that calls `quit()` without going through the explicit
-    //    cleanup (e.g. an exception caught by the event loop) still
-    //    unlinks state.json so a co-resident client can detect
-    //    "no live daemon".
+    //    cleanup still unlinks state.json so a co-resident client
+    //    can detect "no live daemon".
     setupSignalHandlers();
-    QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
-                     []() { DaemonRuntimeStateFile::remove(); });
+    EventLoop::onAboutToQuit([]() { DaemonRuntimeStateFile::remove(); });
 
-    // 9. Run Qt event loop (blocks)
-    int result = QCoreApplication::exec();
+    int result = EventLoop::exec();
 
     // 10. Cleanup
     fprintf(stdout, "Shutting down logoscore daemon...\n");
