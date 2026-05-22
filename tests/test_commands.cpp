@@ -1,7 +1,5 @@
 #include <gtest/gtest.h>
-#include <QJsonObject>
-#include <QJsonArray>
-#include <QJsonDocument>
+#include <logos_json.h>
 #include <algorithm>
 #include <sstream>
 #include <string>
@@ -16,15 +14,15 @@ public:
     // Control mock behavior
     bool shouldConnect = true;
     std::string connectError = "No running logoscore daemon. Start one with: logoscore -D";
-    QJsonObject loadModuleResult;
-    QJsonObject unloadModuleResult;
-    QJsonObject reloadModuleResult;
-    QJsonArray listModulesResult;
-    QJsonObject statusResult;
-    QJsonObject moduleInfoResult;
-    QJsonArray moduleStatsResult;
-    QJsonObject callMethodResult;
-    QJsonObject shutdownResult;
+    LogosMap  loadModuleResult;
+    LogosMap  unloadModuleResult;
+    LogosMap  reloadModuleResult;
+    LogosList listModulesResult;
+    LogosMap  statusResult;
+    LogosMap  moduleInfoResult;
+    LogosList moduleStatsResult;
+    LogosMap  callMethodResult;
+    LogosMap  shutdownResult;
 
     // Track calls
     bool shutdownCalled = false;
@@ -34,7 +32,7 @@ public:
     std::string lastInfoModule;
     std::string lastCallModule;
     std::string lastCallMethod;
-    QVariantList lastCallArgs;
+    LogosList   lastCallArgs;
     std::string lastListFilter;
     std::string lastWatchModule;
     std::string lastWatchEventName;
@@ -49,53 +47,53 @@ public:
     bool isConnected() const override { return m_connected; }
     std::string lastError() const override { return m_lastError; }
 
-    QJsonObject loadModule(const std::string& name) override {
+    LogosMap loadModule(const std::string& name) override {
         lastLoadedModule = name;
         return loadModuleResult;
     }
 
-    QJsonObject unloadModule(const std::string& name) override {
+    LogosMap unloadModule(const std::string& name) override {
         lastUnloadedModule = name;
         return unloadModuleResult;
     }
 
-    QJsonObject reloadModule(const std::string& name) override {
+    LogosMap reloadModule(const std::string& name) override {
         lastReloadedModule = name;
         return reloadModuleResult;
     }
 
-    QJsonArray listModules(const std::string& filter) override {
+    LogosList listModules(const std::string& filter) override {
         lastListFilter = filter;
         return listModulesResult;
     }
 
-    QJsonObject getStatus() override { return statusResult; }
+    LogosMap getStatus() override { return statusResult; }
 
-    QJsonObject getModuleInfo(const std::string& name) override {
+    LogosMap getModuleInfo(const std::string& name) override {
         lastInfoModule = name;
         return moduleInfoResult;
     }
 
-    QJsonArray getModuleStats() override { return moduleStatsResult; }
+    LogosList getModuleStats() override { return moduleStatsResult; }
 
-    QJsonObject callModuleMethod(const std::string& module, const std::string& method,
-                                  const QVariantList& args) override {
+    LogosMap callModuleMethod(const std::string& module, const std::string& method,
+                               const LogosList& args) override {
         lastCallModule = module;
         lastCallMethod = method;
-        lastCallArgs = args;
+        lastCallArgs   = args;
         return callMethodResult;
     }
 
-    QJsonObject shutdown() override {
+    LogosMap shutdown() override {
         shutdownCalled = true;
         return shutdownResult;
     }
 
     bool watchModuleEvents(const std::string& module, const std::string& eventName,
-                            std::function<void(const QJsonObject&)> callback) override {
+                            std::function<void(const LogosMap&)> callback) override {
         (void)callback;
-        lastWatchModule     = module;
-        lastWatchEventName  = eventName;
+        lastWatchModule    = module;
+        lastWatchEventName = eventName;
         return m_connected && watchShouldSucceed;
     }
 
@@ -119,6 +117,10 @@ protected:
         fn();
         std::cout.rdbuf(oldBuf);
         return buffer.str();
+    }
+
+    nlohmann::json parseJson(const std::string& s) {
+        return nlohmann::json::parse(s);
     }
 };
 
@@ -185,17 +187,17 @@ TEST_F(CommandTest, LoadModule_NoDaemon_ReturnsExit2)
         EXPECT_EQ(exitCode, 2);
     });
 
-    QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(out));
-    EXPECT_EQ(doc.object().value("code").toString(), "NO_DAEMON");
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["code"].get<std::string>(), "NO_DAEMON");
 }
 
 // ── load-module ──────────────────────────────────────────────────────────────
 
 TEST_F(CommandTest, LoadModule_Success)
 {
-    mockClient.loadModuleResult = QJsonObject{
+    mockClient.loadModuleResult = LogosMap{
         {"status", "ok"}, {"module", "waku"}, {"version", "0.1.0"},
-        {"dependencies_loaded", QJsonArray{"store"}}
+        {"dependencies_loaded", nlohmann::json::array({"store"})}
     };
 
     auto cmd = createCommand("load-module", mockClient, output);
@@ -206,14 +208,14 @@ TEST_F(CommandTest, LoadModule_Success)
 
     EXPECT_EQ(mockClient.lastLoadedModule, "waku");
 
-    QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(out));
-    EXPECT_EQ(doc.object().value("status").toString(), "ok");
-    EXPECT_EQ(doc.object().value("module").toString(), "waku");
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["status"].get<std::string>(), "ok");
+    EXPECT_EQ(doc["module"].get<std::string>(), "waku");
 }
 
 TEST_F(CommandTest, LoadModule_NotFound)
 {
-    mockClient.loadModuleResult = QJsonObject{
+    mockClient.loadModuleResult = LogosMap{
         {"status", "error"}, {"code", "MODULE_NOT_FOUND"},
         {"message", "Module 'nonexistent' not found."}
     };
@@ -224,8 +226,8 @@ TEST_F(CommandTest, LoadModule_NotFound)
         EXPECT_EQ(exitCode, 3);
     });
 
-    QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(out));
-    EXPECT_EQ(doc.object().value("code").toString(), "MODULE_NOT_FOUND");
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["code"].get<std::string>(), "MODULE_NOT_FOUND");
 }
 
 TEST_F(CommandTest, LoadModule_MissingArg)
@@ -236,15 +238,15 @@ TEST_F(CommandTest, LoadModule_MissingArg)
         EXPECT_EQ(exitCode, 1);
     });
 
-    QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(out));
-    EXPECT_EQ(doc.object().value("code").toString(), "INVALID_ARGS");
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["code"].get<std::string>(), "INVALID_ARGS");
 }
 
 // ── unload-module ────────────────────────────────────────────────────────────
 
 TEST_F(CommandTest, UnloadModule_Success)
 {
-    mockClient.unloadModuleResult = QJsonObject{
+    mockClient.unloadModuleResult = LogosMap{
         {"status", "ok"}, {"module", "waku"}
     };
 
@@ -261,7 +263,7 @@ TEST_F(CommandTest, UnloadModule_Success)
 
 TEST_F(CommandTest, ReloadModule_Success)
 {
-    mockClient.reloadModuleResult = QJsonObject{
+    mockClient.reloadModuleResult = LogosMap{
         {"action", "reload"}, {"module", "chat"}, {"version", "0.2.0"},
         {"status", "loaded"}, {"pid", 51203}
     };
@@ -277,7 +279,7 @@ TEST_F(CommandTest, ReloadModule_Success)
 
 TEST_F(CommandTest, ReloadModule_Error)
 {
-    mockClient.reloadModuleResult = QJsonObject{
+    mockClient.reloadModuleResult = LogosMap{
         {"status", "error"}, {"code", "MODULE_LOAD_FAILED"},
         {"message", "Module failed to start."}
     };
@@ -293,10 +295,10 @@ TEST_F(CommandTest, ReloadModule_Error)
 
 TEST_F(CommandTest, ListModules_All)
 {
-    mockClient.listModulesResult = QJsonArray{
-        QJsonObject{{"name", "waku"}, {"status", "loaded"}},
-        QJsonObject{{"name", "chat"}, {"status", "not_loaded"}}
-    };
+    mockClient.listModulesResult = nlohmann::json::array({
+        LogosMap{{"name", "waku"}, {"status", "loaded"}},
+        LogosMap{{"name", "chat"}, {"status", "not_loaded"}}
+    });
 
     auto cmd = createCommand("list-modules", mockClient, output);
     std::string out = captureOutput([&]() {
@@ -309,9 +311,9 @@ TEST_F(CommandTest, ListModules_All)
 
 TEST_F(CommandTest, ListModules_LoadedFilter)
 {
-    mockClient.listModulesResult = QJsonArray{
-        QJsonObject{{"name", "waku"}, {"status", "loaded"}}
-    };
+    mockClient.listModulesResult = nlohmann::json::array({
+        LogosMap{{"name", "waku"}, {"status", "loaded"}}
+    });
 
     auto cmd = createCommand("list-modules", mockClient, output);
     std::string out = captureOutput([&]() {
@@ -326,7 +328,7 @@ TEST_F(CommandTest, ListModules_LoadedFilter)
 
 TEST_F(CommandTest, ModuleInfo_Success)
 {
-    mockClient.moduleInfoResult = QJsonObject{
+    mockClient.moduleInfoResult = LogosMap{
         {"name", "chat"}, {"version", "0.2.0"}, {"status", "loaded"},
         {"pid", 23457}, {"uptime_seconds", 8040}
     };
@@ -342,7 +344,7 @@ TEST_F(CommandTest, ModuleInfo_Success)
 
 TEST_F(CommandTest, InfoAlias_SameAsModuleInfo)
 {
-    mockClient.moduleInfoResult = QJsonObject{
+    mockClient.moduleInfoResult = LogosMap{
         {"name", "chat"}, {"version", "0.2.0"}, {"status", "loaded"}
     };
 
@@ -357,7 +359,7 @@ TEST_F(CommandTest, InfoAlias_SameAsModuleInfo)
 
 TEST_F(CommandTest, ModuleInfo_NotFound)
 {
-    mockClient.moduleInfoResult = QJsonObject{
+    mockClient.moduleInfoResult = LogosMap{
         {"status", "error"}, {"code", "MODULE_NOT_FOUND"},
         {"message", "Module 'nonexistent' not found."}
     };
@@ -373,7 +375,7 @@ TEST_F(CommandTest, ModuleInfo_NotFound)
 
 TEST_F(CommandTest, Call_Success)
 {
-    mockClient.callMethodResult = QJsonObject{
+    mockClient.callMethodResult = LogosMap{
         {"status", "ok"}, {"module", "chat"}, {"method", "send_message"},
         {"result", "message sent (id: msg_123)"}
     };
@@ -386,12 +388,12 @@ TEST_F(CommandTest, Call_Success)
 
     EXPECT_EQ(mockClient.lastCallModule, "chat");
     EXPECT_EQ(mockClient.lastCallMethod, "send_message");
-    EXPECT_EQ(mockClient.lastCallArgs.size(), 1);
+    EXPECT_EQ(mockClient.lastCallArgs.size(), 1u);
 }
 
 TEST_F(CommandTest, Call_VerboseSyntax)
 {
-    mockClient.callMethodResult = QJsonObject{
+    mockClient.callMethodResult = LogosMap{
         {"status", "ok"}, {"module", "chat"}, {"method", "send_message"}
     };
 
@@ -407,7 +409,7 @@ TEST_F(CommandTest, Call_VerboseSyntax)
 
 TEST_F(CommandTest, Call_MethodNotFound)
 {
-    mockClient.callMethodResult = QJsonObject{
+    mockClient.callMethodResult = LogosMap{
         {"status", "error"}, {"code", "METHOD_NOT_FOUND"},
         {"message", "Method 'bad' not found on module 'chat'."}
     };
@@ -421,7 +423,7 @@ TEST_F(CommandTest, Call_MethodNotFound)
 
 TEST_F(CommandTest, Call_ModuleNotLoaded)
 {
-    mockClient.callMethodResult = QJsonObject{
+    mockClient.callMethodResult = LogosMap{
         {"status", "error"}, {"code", "MODULE_NOT_LOADED"},
         {"message", "Module 'delivery' is not loaded."}
     };
@@ -446,10 +448,10 @@ TEST_F(CommandTest, Call_MissingArgs)
 
 TEST_F(CommandTest, Stats_Success)
 {
-    mockClient.moduleStatsResult = QJsonArray{
-        QJsonObject{{"name", "waku"}, {"pid", 23456}, {"cpu_percent", 2.1}, {"memory_mb", 48.3}},
-        QJsonObject{{"name", "chat"}, {"pid", 23457}, {"cpu_percent", 0.4}, {"memory_mb", 22.1}}
-    };
+    mockClient.moduleStatsResult = nlohmann::json::array({
+        LogosMap{{"name", "waku"}, {"pid", 23456}, {"cpu_percent", 2.1}, {"memory_mb", 48.3}},
+        LogosMap{{"name", "chat"}, {"pid", 23457}, {"cpu_percent", 0.4}, {"memory_mb", 22.1}}
+    });
 
     auto cmd = createCommand("stats", mockClient, output);
     std::string out = captureOutput([&]() {
@@ -457,9 +459,9 @@ TEST_F(CommandTest, Stats_Success)
         EXPECT_EQ(exitCode, 0);
     });
 
-    QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(out));
-    ASSERT_TRUE(doc.isArray());
-    EXPECT_EQ(doc.array().size(), 2);
+    nlohmann::json doc = parseJson(out);
+    ASSERT_TRUE(doc.is_array());
+    EXPECT_EQ(doc.size(), 2u);
 }
 
 // ── watch ────────────────────────────────────────────────────────────────────
@@ -478,7 +480,7 @@ TEST_F(CommandTest, Watch_ParsesModuleAndEventName)
     auto cmd = createCommand("watch", mockClient, output);
     captureOutput([&]() {
         int exitCode = cmd->execute({"chat", "--event", "message"});
-        EXPECT_EQ(exitCode, 3);  // watchShouldSucceed=false => MODULE_NOT_LOADED
+        EXPECT_EQ(exitCode, 3);  // watchShouldSucceed=false => WATCH_FAILED
     });
 
     EXPECT_EQ(mockClient.lastWatchModule,    "chat");
@@ -504,9 +506,9 @@ TEST_F(CommandTest, Watch_ModuleNotLoaded_ReturnsExit3)
         EXPECT_EQ(exitCode, 3);
     });
 
-    QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(out));
-    EXPECT_EQ(doc.object().value("code").toString(), "MODULE_NOT_LOADED");
-    EXPECT_TRUE(doc.object().value("message").toString().contains("'missing'"));
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["code"].get<std::string>(), "WATCH_FAILED");
+    EXPECT_NE(doc["message"].get<std::string>().find("'missing'"), std::string::npos);
 }
 
 TEST_F(CommandTest, Watch_NoDaemon_ReturnsExit2)
@@ -519,15 +521,15 @@ TEST_F(CommandTest, Watch_NoDaemon_ReturnsExit2)
         EXPECT_EQ(exitCode, 2);
     });
 
-    QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(out));
-    EXPECT_EQ(doc.object().value("code").toString(), "NO_DAEMON");
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["code"].get<std::string>(), "NO_DAEMON");
 }
 
 // ── stop ─────────────────────────────────────────────────────────────────────
 
 TEST_F(CommandTest, Stop_Success)
 {
-    mockClient.shutdownResult = QJsonObject{
+    mockClient.shutdownResult = LogosMap{
         {"status", "ok"}, {"message", "Daemon shutting down."}
     };
 
@@ -539,8 +541,8 @@ TEST_F(CommandTest, Stop_Success)
 
     EXPECT_TRUE(mockClient.shutdownCalled);
 
-    QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(out));
-    EXPECT_EQ(doc.object().value("status").toString(), "ok");
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["status"].get<std::string>(), "ok");
 }
 
 TEST_F(CommandTest, Stop_NoDaemon)
@@ -553,6 +555,6 @@ TEST_F(CommandTest, Stop_NoDaemon)
         EXPECT_EQ(exitCode, 2);
     });
 
-    QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(out));
-    EXPECT_EQ(doc.object().value("code").toString(), "NO_DAEMON");
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["code"].get<std::string>(), "NO_DAEMON");
 }

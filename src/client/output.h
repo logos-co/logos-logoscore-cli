@@ -1,9 +1,7 @@
 #ifndef OUTPUT_H
 #define OUTPUT_H
 
-#include <QJsonObject>
-#include <QJsonArray>
-#include <QVariant>
+#include <logos_json.h>
 #include <string>
 
 class Output {
@@ -14,26 +12,25 @@ public:
     bool isJsonMode() const;
     void setJsonMode(bool json);
 
-    // Success output
-    void printSuccess(const QJsonObject& data);
-    void printSuccess(const QJsonArray& data);
+    // Success output — accepts any nlohmann::json value (object, array, etc.)
+    void printSuccess(const nlohmann::json& data);
     void printSuccess(const std::string& message);
 
     // Error output
     void printError(const std::string& code, const std::string& message,
-                    const QJsonObject& extra = {});
+                    const LogosMap& extra = {});
 
     // Table output (list-modules, stats)
-    void printModuleList(const QJsonArray& modules);
-    void printStats(const QJsonArray& stats);
-    void printStatus(const QJsonObject& status);
-    void printModuleInfo(const QJsonObject& info);
+    void printModuleList(const LogosList& modules);
+    void printStats(const LogosList& stats);
+    void printStatus(const LogosMap& status);
+    void printModuleInfo(const LogosMap& info);
 
     // Event output (watch)
-    void printEvent(const QJsonObject& event);
+    void printEvent(const LogosMap& event);
 
     // Reload output
-    void printReload(const QJsonObject& result);
+    void printReload(const LogosMap& result);
 
     // Generic key-value display
     void printKeyValue(const std::string& key, const std::string& value);
@@ -47,7 +44,7 @@ private:
     bool m_isTTY = false;
 
     void checkTTY();
-    std::string formatUptime(qint64 seconds) const;
+    std::string formatUptime(int64_t seconds) const;
     std::string padRight(const std::string& str, int width) const;
 };
 

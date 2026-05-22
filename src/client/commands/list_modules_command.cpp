@@ -5,8 +5,8 @@ int ListModulesCommand::execute(const std::vector<std::string>& args)
 {
     CLI::App cli{"list-modules"};
     cli.set_help_flag();
-    bool loaded = false;
-    cli.add_flag("--loaded", loaded, "Show only loaded modules");
+    bool loadedOnly = false;
+    cli.add_flag("--loaded", loadedOnly, "Show only loaded modules");
     try {
         auto argsCopy = args;
         cli.parse(argsCopy);
@@ -19,9 +19,8 @@ int ListModulesCommand::execute(const std::vector<std::string>& args)
     if (err != 0)
         return err;
 
-    std::string filter = loaded ? "loaded" : "all";
-    QJsonArray modules = client().listModules(filter);
-
+    std::string filter = loadedOnly ? "loaded" : "all";
+    LogosList modules = client().listModules(filter);
     output().printModuleList(modules);
     return 0;
 }

@@ -10,13 +10,11 @@
 
 #include <QCoreApplication>
 #include <QDateTime>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonArray>
-#include <QDebug>
 
 #include <fmt/format.h>
+#include <chrono>
 #include <cstdlib>
+#include <ctime>
 
 // ---------------------------------------------------------------------------
 // RpcClient implementation — delegates all calls to daemon's core_service
@@ -29,12 +27,10 @@ struct RpcClient::Impl {
     std::string token;
     ClientState clientState;
 
-    // Helper: invoke a core_service method and return a QVariant result.
-    // String args must be passed as QString (QVariant has no std::string ctor).
-    template<typename... Args>
-    QVariant invoke(const char* method, Args&&... args) {
-        return coreService->invokeRemoteMethod(
-            QString("core_service"), QString(method), std::forward<Args>(args)...);
+    // Helper: invoke a core_service method via the nlohmann::json overload.
+    nlohmann::json invoke(const std::string& method,
+                          const nlohmann::json& args = nlohmann::json::array()) {
+        return coreService->invokeRemoteMethod("core_service", method, args);
     }
 };
 
@@ -139,138 +135,96 @@ std::string RpcClient::lastError() const
 // Module lifecycle — delegate to core_service
 // ---------------------------------------------------------------------------
 
-QJsonObject RpcClient::loadModule(const std::string& name)
+LogosMap RpcClient::loadModule(const std::string& name)
 {
-    QVariant ret = d->invoke("loadModule", QString::fromStdString(name));
-    if (ret.canConvert<QJsonObject>())
-        return ret.toJsonObject();
-
-    QJsonObject result;
-    result["status"]  = "error";
-    result["code"]    = "RPC_FAILED";
-    result["message"] = QString::fromStdString(
-        fmt::format("loadModule('{}') RPC call failed.", name));
-    return result;
+    nlohmann::json ret = d->invoke("loadModule", nlohmann::json::array({name}));
+    if (ret.is_object()) return ret;
+    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
+                    {"message", fmt::format("loadModule('{}') RPC call failed.", name)}};
 }
 
-QJsonObject RpcClient::unloadModule(const std::string& name)
+LogosMap RpcClient::unloadModule(const std::string& name)
 {
-    QVariant ret = d->invoke("unloadModule", QString::fromStdString(name));
-    if (ret.canConvert<QJsonObject>())
-        return ret.toJsonObject();
-
-    QJsonObject result;
-    result["status"]  = "error";
-    result["code"]    = "RPC_FAILED";
-    result["message"] = QString::fromStdString(
-        fmt::format("unloadModule('{}') RPC call failed.", name));
-    return result;
+    nlohmann::json ret = d->invoke("unloadModule", nlohmann::json::array({name}));
+    if (ret.is_object()) return ret;
+    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
+                    {"message", fmt::format("unloadModule('{}') RPC call failed.", name)}};
 }
 
-QJsonObject RpcClient::reloadModule(const std::string& name)
+LogosMap RpcClient::reloadModule(const std::string& name)
 {
-    QVariant ret = d->invoke("reloadModule", QString::fromStdString(name));
-    if (ret.canConvert<QJsonObject>())
-        return ret.toJsonObject();
-
-    QJsonObject result;
-    result["status"]  = "error";
-    result["code"]    = "RPC_FAILED";
-    result["message"] = QString::fromStdString(
-        fmt::format("reloadModule('{}') RPC call failed.", name));
-    return result;
+    nlohmann::json ret = d->invoke("reloadModule", nlohmann::json::array({name}));
+    if (ret.is_object()) return ret;
+    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
+                    {"message", fmt::format("reloadModule('{}') RPC call failed.", name)}};
 }
 
 // ---------------------------------------------------------------------------
 // Queries — delegate to core_service
 // ---------------------------------------------------------------------------
 
-QJsonArray RpcClient::listModules(const std::string& filter)
+LogosList RpcClient::listModules(const std::string& filter)
 {
-    QVariant ret = d->invoke("listModules", QString::fromStdString(filter));
-    if (ret.canConvert<QJsonArray>())
-        return qvariant_cast<QJsonArray>(ret);
-    return {};
+    nlohmann::json ret = d->invoke("listModules", nlohmann::json::array({filter}));
+    if (ret.is_array()) return ret;
+    return LogosList::array();
 }
 
-QJsonObject RpcClient::getStatus()
+LogosMap RpcClient::getStatus()
 {
-    QVariant ret = d->invoke("getStatus");
-    if (ret.canConvert<QJsonObject>())
-        return ret.toJsonObject();
+    nlohmann::json ret = d->invoke("getStatus");
+    if (ret.is_object()) return ret;
 
-    QJsonObject status;
-    QJsonObject daemon;
-    daemon["status"] = "not_running";
+    std::string version = QCoreApplication::applicationVersion().toStdString();
+    LogosMap daemon{{"status","not_running"},{"version", version}};
     if (!d->instanceId.empty())
-        daemon["instance_id"] = QString::fromStdString(d->instanceId);
-    daemon["version"] = QCoreApplication::applicationVersion();
-    status["daemon"]    = daemon;
-    status["modules"]   = QJsonArray();
-    status["rpc_error"] = "core_service not reachable";
-    return status;
+        daemon["instance_id"] = d->instanceId;
+    return LogosMap{{"daemon", daemon},
+                    {"modules", LogosList::array()},
+                    {"rpc_error", "core_service not reachable"}};
 }
 
-QJsonObject RpcClient::getModuleInfo(const std::string& name)
+LogosMap RpcClient::getModuleInfo(const std::string& name)
 {
-    QVariant ret = d->invoke("getModuleInfo", QString::fromStdString(name));
-    if (ret.canConvert<QJsonObject>())
-        return ret.toJsonObject();
-
-    QJsonObject result;
-    result["status"]  = "error";
-    result["code"]    = "RPC_FAILED";
-    result["message"] = QString::fromStdString(
-        fmt::format("getModuleInfo('{}') RPC call failed.", name));
-    return result;
+    nlohmann::json ret = d->invoke("getModuleInfo", nlohmann::json::array({name}));
+    if (ret.is_object()) return ret;
+    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
+                    {"message", fmt::format("getModuleInfo('{}') RPC call failed.", name)}};
 }
 
-QJsonArray RpcClient::getModuleStats()
+LogosList RpcClient::getModuleStats()
 {
-    QVariant ret = d->invoke("getModuleStats");
-    if (ret.canConvert<QJsonArray>())
-        return qvariant_cast<QJsonArray>(ret);
-    return {};
+    nlohmann::json ret = d->invoke("getModuleStats");
+    if (ret.is_array()) return ret;
+    return LogosList::array();
 }
 
 // ---------------------------------------------------------------------------
 // Proxied call — delegate to core_service
 // ---------------------------------------------------------------------------
 
-QJsonObject RpcClient::callModuleMethod(const std::string& module,
-                                         const std::string& method,
-                                         const QVariantList& args)
+LogosMap RpcClient::callModuleMethod(const std::string& module,
+                                      const std::string& method,
+                                      const LogosList& args)
 {
-    QVariant ret = d->invoke("callModuleMethod",
-                             QString::fromStdString(module),
-                             QString::fromStdString(method),
-                             args);
-    if (ret.canConvert<QJsonObject>())
-        return ret.toJsonObject();
-
-    QJsonObject result;
-    result["status"]  = "error";
-    result["code"]    = "RPC_FAILED";
-    result["message"] = QString::fromStdString(
-        fmt::format("callModuleMethod('{}', '{}') RPC call failed.", module, method));
-    return result;
+    nlohmann::json ret = d->invoke("callModuleMethod",
+                                   nlohmann::json::array({module, method, args}));
+    if (ret.is_object()) return ret;
+    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
+                    {"message", fmt::format("callModuleMethod('{}','{}') RPC call failed.",
+                                            module, method)}};
 }
 
 // ---------------------------------------------------------------------------
 // Daemon lifecycle
 // ---------------------------------------------------------------------------
 
-QJsonObject RpcClient::shutdown()
+LogosMap RpcClient::shutdown()
 {
-    QVariant ret = d->invoke("shutdown");
-    if (ret.canConvert<QJsonObject>())
-        return ret.toJsonObject();
-
-    QJsonObject result;
-    result["status"]  = "error";
-    result["code"]    = "RPC_FAILED";
-    result["message"] = "shutdown RPC call failed.";
-    return result;
+    nlohmann::json ret = d->invoke("shutdown");
+    if (ret.is_object()) return ret;
+    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
+                    {"message","shutdown RPC call failed."}};
 }
 
 // ---------------------------------------------------------------------------
@@ -279,37 +233,43 @@ QJsonObject RpcClient::shutdown()
 
 bool RpcClient::watchModuleEvents(const std::string& module,
                                    const std::string& eventName,
-                                   std::function<void(const QJsonObject&)> callback)
+                                   std::function<void(const LogosMap&)> callback)
 {
     if (!m_connected)
         return false;
 
-    QVariant subscribed = d->invoke("watchModuleEvents",
-                                    QString::fromStdString(module),
-                                    QString::fromStdString(eventName));
-    if (!subscribed.toBool())
+    nlohmann::json subscribed = d->invoke("watchModuleEvents",
+                                          nlohmann::json::array({module, eventName}));
+    if (!subscribed.is_boolean() || !subscribed.get<bool>())
         return false;
 
     LogosObject* obj = d->coreService->requestObject("core_service");
     if (!obj)
         return false;
 
-    d->coreService->onEvent(obj, "module_event",
-        [module, callback](const QString& event, const QVariantList& data) {
-            Q_UNUSED(event);
-            if (data.size() < 2)
+    d->coreService->onEvent(obj, std::string("module_event"),
+        [module, callback](const std::string& /*event*/, const nlohmann::json& data) {
+            if (!data.is_array() || data.size() < 2)
                 return;
-            if (data.at(0).toString().toStdString() != module)
+            if (!data[0].is_string() || data[0].get<std::string>() != module)
                 return;
 
-            QJsonObject eventObj;
-            eventObj["timestamp"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-            eventObj["module"]    = data.at(0).toString();
-            eventObj["event"]     = data.at(1).toString();
+            // Build ISO timestamp without Qt date helpers to avoid Qt includes
+            auto now = std::chrono::system_clock::now();
+            std::time_t tt = std::chrono::system_clock::to_time_t(now);
+            struct tm utc{};
+            gmtime_r(&tt, &utc);
+            char tsBuf[32];
+            std::strftime(tsBuf, sizeof(tsBuf), "%Y-%m-%dT%H:%M:%SZ", &utc);
 
-            QJsonObject eventData;
-            for (int i = 2; i < data.size(); ++i)
-                eventData[QString("arg%1").arg(i - 2)] = QJsonValue::fromVariant(data.at(i));
+            LogosMap eventObj;
+            eventObj["timestamp"] = std::string(tsBuf);
+            eventObj["module"]    = data[0];
+            eventObj["event"]     = data[1];
+
+            LogosMap eventData;
+            for (size_t i = 2; i < data.size(); ++i)
+                eventData["arg" + std::to_string(i - 2)] = data[i];
             eventObj["data"] = eventData;
             callback(eventObj);
         });

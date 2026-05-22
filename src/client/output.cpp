@@ -1,6 +1,5 @@
 #include "output.h"
 #include "../string_utils.h"
-#include <QJsonDocument>
 #include <fmt/format.h>
 #include <iostream>
 #include <cstdio>
@@ -44,7 +43,7 @@ void Output::setJsonMode(bool json)
     m_forceJson = json;
 }
 
-std::string Output::formatUptime(qint64 seconds) const
+std::string Output::formatUptime(int64_t seconds) const
 {
     if (seconds < 0)
         return "-";
@@ -53,8 +52,8 @@ std::string Output::formatUptime(qint64 seconds) const
     if (seconds < 3600)
         return fmt::format("{}m", seconds / 60);
 
-    qint64 hours = seconds / 3600;
-    qint64 mins  = (seconds % 3600) / 60;
+    int64_t hours = seconds / 3600;
+    int64_t mins  = (seconds % 3600) / 60;
     return fmt::format("{}h {}m", hours, mins);
 }
 
@@ -63,72 +62,52 @@ std::string Output::padRight(const std::string& str, int width) const
     return fmt::format("{:<{}}", str, width);
 }
 
-void Output::printSuccess(const QJsonObject& data)
+void Output::printSuccess(const nlohmann::json& data)
 {
     if (isJsonMode()) {
-        std::cout << QJsonDocument(data).toJson(QJsonDocument::Compact).constData()
-                  << std::endl;
-    } else {
+        std::cout << data.dump() << std::endl;
+    } else if (data.is_object()) {
         for (auto it = data.begin(); it != data.end(); ++it) {
             std::string value;
-            if (it.value().isString())
-                value = it.value().toString().toStdString();
-            else if (it.value().isDouble())
-                value = fmt::format("{}", it.value().toDouble());
-            else if (it.value().isBool())
-                value = it.value().toBool() ? "true" : "false";
-            else
-                value = QJsonDocument(QJsonObject{{it.key(), it.value()}})
-                            .toJson(QJsonDocument::Compact)
-                            .toStdString();
-            std::cout << it.key().toStdString() << ": " << value << std::endl;
+            const auto& val = it.value();
+            if (val.is_string())       value = val.get<std::string>();
+            else if (val.is_number())  value = fmt::format("{}", val.get<double>());
+            else if (val.is_boolean()) value = val.get<bool>() ? "true" : "false";
+            else                       value = val.dump();
+            std::cout << it.key() << ": " << value << std::endl;
         }
-    }
-}
-
-void Output::printSuccess(const QJsonArray& data)
-{
-    if (isJsonMode()) {
-        std::cout << QJsonDocument(data).toJson(QJsonDocument::Compact).constData()
-                  << std::endl;
+    } else {
+        std::cout << data.dump() << std::endl;
     }
 }
 
 void Output::printSuccess(const std::string& message)
 {
     if (isJsonMode()) {
-        QJsonObject obj;
-        obj["status"]  = "ok";
-        obj["message"] = QString::fromStdString(message);
-        std::cout << QJsonDocument(obj).toJson(QJsonDocument::Compact).constData()
-                  << std::endl;
+        LogosMap obj{{"status","ok"},{"message", message}};
+        std::cout << obj.dump() << std::endl;
     } else {
         std::cout << message << std::endl;
     }
 }
 
 void Output::printError(const std::string& code, const std::string& message,
-                        const QJsonObject& extra)
+                        const LogosMap& extra)
 {
     if (isJsonMode()) {
-        QJsonObject obj;
-        obj["status"]  = "error";
-        obj["code"]    = QString::fromStdString(code);
-        obj["message"] = QString::fromStdString(message);
+        LogosMap obj{{"status","error"},{"code", code},{"message", message}};
         for (auto it = extra.begin(); it != extra.end(); ++it)
             obj[it.key()] = it.value();
-        std::cout << QJsonDocument(obj).toJson(QJsonDocument::Compact).constData()
-                  << std::endl;
+        std::cout << obj.dump() << std::endl;
     } else {
         std::cerr << "Error: " << message << std::endl;
     }
 }
 
-void Output::printModuleList(const QJsonArray& modules)
+void Output::printModuleList(const LogosList& modules)
 {
     if (isJsonMode()) {
-        std::cout << QJsonDocument(modules).toJson(QJsonDocument::Compact).constData()
-                  << std::endl;
+        std::cout << modules.dump() << std::endl;
         return;
     }
 
@@ -137,15 +116,14 @@ void Output::printModuleList(const QJsonArray& modules)
               << padRight("STATUS", 12)
               << "UPTIME" << std::endl;
 
-    for (const QJsonValue& v : modules) {
-        QJsonObject m = v.toObject();
-        std::string name    = m.value("name").toString().toStdString();
-        std::string version = "v" + m.value("version").toString().toStdString();
-        std::string status  = m.value("status").toString().toStdString();
+    for (const auto& v : modules) {
+        std::string name    = v.value("name", std::string{});
+        std::string version = "v" + v.value("version", std::string{});
+        std::string status  = v.value("status", std::string{});
         std::string uptime  = "-";
 
-        if (m.contains("uptime_seconds"))
-            uptime = formatUptime(static_cast<qint64>(m.value("uptime_seconds").toDouble()));
+        if (v.contains("uptime_seconds"))
+            uptime = formatUptime(static_cast<int64_t>(v["uptime_seconds"].get<double>()));
 
         std::cout << padRight(name, 12)
                   << padRight(version, 10)
@@ -154,11 +132,10 @@ void Output::printModuleList(const QJsonArray& modules)
     }
 }
 
-void Output::printStats(const QJsonArray& stats)
+void Output::printStats(const LogosList& stats)
 {
     if (isJsonMode()) {
-        std::cout << QJsonDocument(stats).toJson(QJsonDocument::Compact).constData()
-                  << std::endl;
+        std::cout << stats.dump() << std::endl;
         return;
     }
 
@@ -167,26 +144,24 @@ void Output::printStats(const QJsonArray& stats)
               << padRight("CPU%", 8)
               << "MEMORY" << std::endl;
 
-    for (const QJsonValue& v : stats) {
-        QJsonObject s = v.toObject();
-        std::cout << padRight(s.value("name").toString().toStdString(), 12)
-                  << padRight(fmt::format("{}", static_cast<qint64>(s.value("pid").toDouble())), 8)
-                  << padRight(fmt::format("{:.1f}%", s.value("cpu_percent").toDouble()), 8)
-                  << fmt::format("{:.1f} MB", s.value("memory_mb").toDouble())
+    for (const auto& s : stats) {
+        std::cout << padRight(s.value("name", std::string{}), 12)
+                  << padRight(fmt::format("{}", static_cast<int64_t>(s.value("pid", 0.0))), 8)
+                  << padRight(fmt::format("{:.1f}%", s.value("cpu_percent", 0.0)), 8)
+                  << fmt::format("{:.1f} MB", s.value("memory_mb", 0.0))
                   << std::endl;
     }
 }
 
-void Output::printStatus(const QJsonObject& status)
+void Output::printStatus(const LogosMap& status)
 {
     if (isJsonMode()) {
-        std::cout << QJsonDocument(status).toJson(QJsonDocument::Compact).constData()
-                  << std::endl;
+        std::cout << status.dump() << std::endl;
         return;
     }
 
-    QJsonObject daemon = status.value("daemon").toObject();
-    std::string daemonStatus = daemon.value("status").toString().toStdString();
+    LogosMap daemon = status.value("daemon", LogosMap::object());
+    std::string daemonStatus = daemon.value("status", std::string{});
 
     std::cout << "Logoscore Daemon" << std::endl;
     std::cout << "  Status:       " << daemonStatus << std::endl;
@@ -198,11 +173,11 @@ void Output::printStatus(const QJsonObject& status)
         return;
     }
 
-    qint64 pid    = static_cast<qint64>(daemon.value("pid").toDouble());
-    qint64 uptime = static_cast<qint64>(daemon.value("uptime_seconds").toDouble());
-    std::string version    = daemon.value("version").toString().toStdString();
-    std::string instanceId = daemon.value("instance_id").toString().toStdString();
-    std::string socket     = daemon.value("socket").toString().toStdString();
+    int64_t pid    = static_cast<int64_t>(daemon.value("pid", 0.0));
+    int64_t uptime = static_cast<int64_t>(daemon.value("uptime_seconds", 0.0));
+    std::string version    = daemon.value("version", std::string{});
+    std::string instanceId = daemon.value("instance_id", std::string{});
+    std::string socket     = daemon.value("socket", std::string{});
 
     std::cout << "  PID:          " << pid << std::endl;
     std::cout << "  Uptime:       " << formatUptime(uptime) << std::endl;
@@ -213,25 +188,24 @@ void Output::printStatus(const QJsonObject& status)
     if (!socket.empty())
         std::cout << "  Socket:       " << socket << std::endl;
 
-    QJsonObject summary = status.value("modules_summary").toObject();
-    int loaded    = summary.value("loaded").toInt();
-    int crashed   = summary.value("crashed").toInt();
-    int notLoaded = summary.value("not_loaded").toInt();
+    LogosMap summary = status.value("modules_summary", LogosMap::object());
+    int loaded    = summary.value("loaded", 0);
+    int crashed   = summary.value("crashed", 0);
+    int notLoaded = summary.value("not_loaded", 0);
 
     std::cout << std::endl;
     std::cout << "Modules: " << loaded << " loaded, "
               << crashed << " crashed, "
               << notLoaded << " not loaded" << std::endl;
 
-    QJsonArray modules = status.value("modules").toArray();
-    for (const QJsonValue& v : modules) {
-        QJsonObject m = v.toObject();
-        std::string name = m.value("name").toString().toStdString();
-        std::string ver  = "v" + m.value("version").toString().toStdString();
-        std::string st   = m.value("status").toString().toStdString();
+    LogosList modules = status.value("modules", LogosList::array());
+    for (const auto& m : modules) {
+        std::string name = m.value("name", std::string{});
+        std::string ver  = "v" + m.value("version", std::string{});
+        std::string st   = m.value("status", std::string{});
         std::string up   = "-";
         if (m.contains("uptime_seconds"))
-            up = formatUptime(static_cast<qint64>(m.value("uptime_seconds").toDouble()));
+            up = formatUptime(static_cast<int64_t>(m["uptime_seconds"].get<double>()));
 
         std::cout << "  " << padRight(name, 12)
                   << padRight(ver, 10)
@@ -240,32 +214,31 @@ void Output::printStatus(const QJsonObject& status)
     }
 }
 
-void Output::printModuleInfo(const QJsonObject& info)
+void Output::printModuleInfo(const LogosMap& info)
 {
     if (isJsonMode()) {
-        std::cout << QJsonDocument(info).toJson(QJsonDocument::Compact).constData()
-                  << std::endl;
+        std::cout << info.dump() << std::endl;
         return;
     }
 
-    std::string name    = info.value("name").toString().toStdString();
-    std::string version = info.value("version").toString().toStdString();
-    std::string status  = info.value("status").toString().toStdString();
+    std::string name    = info.value("name", std::string{});
+    std::string version = info.value("version", std::string{});
+    std::string status  = info.value("status", std::string{});
 
     std::cout << "Name:          " << name    << std::endl;
     std::cout << "Version:       v" << version << std::endl;
     std::cout << "Status:        " << status  << std::endl;
 
     if (status == "loaded") {
-        qint64 pid    = static_cast<qint64>(info.value("pid").toDouble());
-        qint64 uptime = static_cast<qint64>(info.value("uptime_seconds").toDouble());
+        int64_t pid    = static_cast<int64_t>(info.value("pid", 0.0));
+        int64_t uptime = static_cast<int64_t>(info.value("uptime_seconds", 0.0));
 
         std::cout << "PID:           " << pid << std::endl;
         std::cout << "Uptime:        " << formatUptime(uptime) << std::endl;
     } else if (status == "crashed") {
         if (info.contains("exit_code")) {
-            int exitCode = info.value("exit_code").toInt();
-            std::string signal  = info.value("crash_signal").toString().toStdString();
+            int exitCode = info.value("exit_code", 0);
+            std::string signal  = info.value("crash_signal", std::string{});
             std::string display = fmt::format("{}", exitCode);
             if (!signal.empty())
                 display += " (" + signal + ")";
@@ -273,41 +246,39 @@ void Output::printModuleInfo(const QJsonObject& info)
         }
         if (info.contains("crashed_at"))
             std::cout << "Crashed At:    "
-                      << info.value("crashed_at").toString().toStdString() << std::endl;
+                      << info.value("crashed_at", std::string{}) << std::endl;
         if (info.contains("restart_count"))
-            std::cout << "Restart Count: " << info.value("restart_count").toInt() << std::endl;
+            std::cout << "Restart Count: " << info.value("restart_count", 0) << std::endl;
         if (info.contains("last_log_line"))
             std::cout << "Last Log:      \""
-                      << info.value("last_log_line").toString().toStdString()
+                      << info.value("last_log_line", std::string{})
                       << "\"" << std::endl;
     }
 
     // Dependencies
-    QJsonArray deps = info.value("dependencies").toArray();
-    if (!deps.isEmpty()) {
+    LogosList deps = info.value("dependencies", LogosList::array());
+    if (!deps.empty()) {
         std::vector<std::string> depList;
-        for (const QJsonValue& v : deps)
-            depList.push_back(v.toString().toStdString());
+        for (const auto& v : deps)
+            depList.push_back(v.get<std::string>());
         std::cout << "Dependencies:  " << strutil::join(depList, ", ") << std::endl;
     }
 
     // Methods
-    QJsonArray methods = info.value("methods").toArray();
-    if (!methods.isEmpty()) {
+    LogosList methods = info.value("methods", LogosList::array());
+    if (!methods.empty()) {
         std::cout << std::endl;
         std::cout << "Methods:" << std::endl;
-        for (const QJsonValue& v : methods) {
-            QJsonObject method     = v.toObject();
-            std::string methodName = method.value("name").toString().toStdString();
-            std::string returnType = method.value("return_type").toString().toStdString();
+        for (const auto& v : methods) {
+            std::string methodName = v.value("name", std::string{});
+            std::string returnType = v.value("return_type", std::string{});
 
-            QJsonArray params = method.value("params").toArray();
+            LogosList params = v.value("params", LogosList::array());
             std::vector<std::string> paramStrs;
-            for (const QJsonValue& p : params) {
-                QJsonObject param = p.toObject();
+            for (const auto& p : params) {
                 paramStrs.push_back(
-                    param.value("name").toString().toStdString() + ": " +
-                    param.value("type").toString().toStdString());
+                    p.value("name", std::string{}) + ": " +
+                    p.value("type", std::string{}));
             }
 
             std::cout << "  " << methodName
@@ -317,19 +288,18 @@ void Output::printModuleInfo(const QJsonObject& info)
     }
 }
 
-void Output::printEvent(const QJsonObject& event)
+void Output::printEvent(const LogosMap& event)
 {
     if (isJsonMode()) {
-        std::cout << QJsonDocument(event).toJson(QJsonDocument::Compact).constData()
-                  << std::endl;
+        std::cout << event.dump() << std::endl;
         std::cout.flush();
         return;
     }
 
-    std::string timestamp = event.value("timestamp").toString().toStdString();
-    std::string module    = event.value("module").toString().toStdString();
-    std::string eventName = event.value("event").toString().toStdString();
-    QJsonObject data      = event.value("data").toObject();
+    std::string timestamp = event.value("timestamp", std::string{});
+    std::string module    = event.value("module", std::string{});
+    std::string eventName = event.value("event", std::string{});
+    LogosMap data         = event.value("data", LogosMap::object());
 
     // Extract time portion from ISO timestamp
     auto tPos = timestamp.find('T');
@@ -346,41 +316,37 @@ void Output::printEvent(const QJsonObject& event)
 
     for (auto it = data.begin(); it != data.end(); ++it) {
         std::string value;
-        if (it.value().isString())
-            value = it.value().toString().toStdString();
-        else
-            value = QJsonDocument(QJsonObject{{it.key(), it.value()}})
-                        .toJson(QJsonDocument::Compact)
-                        .toStdString();
-        std::cout << "  " << it.key().toStdString() << ": " << value << std::endl;
+        const auto& val = it.value();
+        if (val.is_string()) value = val.get<std::string>();
+        else                 value = val.dump();
+        std::cout << "  " << it.key() << ": " << value << std::endl;
     }
     std::cout << std::endl;
     std::cout.flush();
 }
 
-void Output::printReload(const QJsonObject& result)
+void Output::printReload(const LogosMap& result)
 {
     if (isJsonMode()) {
-        std::cout << QJsonDocument(result).toJson(QJsonDocument::Compact).constData()
-                  << std::endl;
+        std::cout << result.dump() << std::endl;
         return;
     }
 
-    std::string status = result.value("status").toString().toStdString();
-    std::string module = result.value("module").toString().toStdString();
+    std::string status = result.value("status", std::string{});
+    std::string module = result.value("module", std::string{});
 
     if (status == "loaded" || status == "ok") {
-        std::string version = result.value("version").toString().toStdString();
-        qint64 pid          = static_cast<qint64>(result.value("pid").toDouble());
+        std::string version = result.value("version", std::string{});
+        int64_t pid         = static_cast<int64_t>(result.value("pid", 0.0));
         std::cout << "Module \"" << module
                   << "\" reloaded successfully (v" << version
                   << ", pid " << pid << ")" << std::endl;
     } else if (status == "error") {
         std::cerr << "Error: "
-                  << result.value("error").toString().toStdString() << std::endl;
+                  << result.value("error", std::string{}) << std::endl;
         if (result.contains("last_log_line"))
             std::cerr << "  Last log: \""
-                      << result.value("last_log_line").toString().toStdString()
+                      << result.value("last_log_line", std::string{})
                       << "\"" << std::endl;
     }
 }

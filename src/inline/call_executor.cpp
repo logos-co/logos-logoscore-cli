@@ -1,17 +1,14 @@
 #include "call_executor.h"
 #include "logos_sdk_c.h"
 #include "../string_utils.h"
+#include <logos_json.h>
 #include <QEventLoop>
 #include <QTimer>
 #include <QObject>
-#include <QJsonDocument>
-#include <QJsonArray>
-#include <QJsonObject>
 #include <fmt/format.h>
 #include <fstream>
 #include <iostream>
 #include <sstream>
-#include <stdexcept>
 
 struct CallResult {
     bool completed = false;
@@ -41,11 +38,11 @@ std::string CallExecutor::resolveParam(const std::string& param) {
 }
 
 std::string CallExecutor::buildParamsJson(const std::vector<std::string>& params) {
-    QJsonArray paramsArray;
+    nlohmann::json paramsArray = nlohmann::json::array();
 
     for (size_t i = 0; i < params.size(); ++i) {
-        const std::string& rawParam      = params[i];
-        const std::string resolvedParam  = resolveParam(rawParam);
+        const std::string& rawParam     = params[i];
+        const std::string resolvedParam = resolveParam(rawParam);
 
         if (strutil::starts_with(rawParam, '@') && resolvedParam.empty()) {
             fprintf(stderr, "Warning: failed to resolve file parameter: %s\n",
@@ -53,10 +50,9 @@ std::string CallExecutor::buildParamsJson(const std::vector<std::string>& params
             return {};
         }
 
-        QJsonObject paramObj;
-        paramObj["name"] = QString::fromStdString(fmt::format("arg{}", i));
+        nlohmann::json paramObj;
+        paramObj["name"] = fmt::format("arg{}", i);
 
-        // Determine type and coerce value
         std::string type;
         std::string lower = strutil::to_lower(resolvedParam);
         if (lower == "true" || lower == "false") {
@@ -73,13 +69,12 @@ std::string CallExecutor::buildParamsJson(const std::vector<std::string>& params
             }
         }
 
-        paramObj["type"]  = QString::fromStdString(type);
-        paramObj["value"] = QString::fromStdString(resolvedParam);
-        paramsArray.append(paramObj);
+        paramObj["type"]  = type;
+        paramObj["value"] = resolvedParam;
+        paramsArray.push_back(paramObj);
     }
 
-    QJsonDocument doc(paramsArray);
-    return doc.toJson(QJsonDocument::Compact).toStdString();
+    return paramsArray.dump();
 }
 
 bool CallExecutor::executeCall(const ModuleCall& call) {

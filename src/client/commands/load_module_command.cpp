@@ -21,26 +21,26 @@ int LoadModuleCommand::execute(const std::vector<std::string>& args)
     if (err != 0)
         return err;
 
-    QJsonObject result = client().loadModule(name);
+    LogosMap result = client().loadModule(name);
 
-    std::string status = result.value("status").toString().toStdString();
+    std::string status = result.value("status", std::string{});
     if (status == "error") {
-        output().printError(result.value("code").toString().toStdString(),
-                            result.value("message").toString().toStdString(), result);
+        output().printError(result.value("code", std::string{}),
+                            result.value("message", std::string{}), result);
         return 3;
     }
 
     if (output().isJsonMode()) {
         output().printSuccess(result);
     } else {
-        std::string version = result.value("version").toString().toStdString();
-        QJsonArray deps     = result.value("dependencies_loaded").toArray();
+        std::string version = result.value("version", std::string{});
+        LogosList deps      = result.value("dependencies_loaded", LogosList::array());
 
         output().printRaw(fmt::format("Loaded module: {} (v{})", name, version));
-        if (!deps.isEmpty()) {
+        if (!deps.empty()) {
             std::vector<std::string> depNames;
-            for (const QJsonValue& v : deps)
-                depNames.push_back(v.toString().toStdString());
+            for (const auto& v : deps)
+                depNames.push_back(v.get<std::string>());
             output().printRaw(fmt::format("  Dependencies loaded: {}",
                                           strutil::join(depNames, ", ")));
         }

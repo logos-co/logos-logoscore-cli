@@ -23,12 +23,12 @@ int ReloadModuleCommand::execute(const std::vector<std::string>& args)
     if (!output().isJsonMode())
         fprintf(stderr, "Reloading %s...\n", name.c_str());
 
-    QJsonObject result = client().reloadModule(name);
+    LogosMap result = client().reloadModule(name);
 
-    std::string status = result.value("status").toString().toStdString();
+    std::string status = result.value("status", std::string{});
     if (status == "error") {
-        output().printError(result.value("code").toString().toStdString(),
-                            result.value("message").toString().toStdString(), result);
+        output().printError(result.value("code", std::string{}),
+                            result.value("message", std::string{}), result);
         return 3;
     }
 

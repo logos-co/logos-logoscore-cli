@@ -32,11 +32,7 @@
 
 #include <gtest/gtest.h>
 
-#include <QByteArray>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonValue>
+#include <logos_json.h>
 
 #include <cerrno>
 #include <chrono>
@@ -69,7 +65,7 @@ std::string slurp(const fs::path& p)
 // `call --json` prints one compact envelope line on stdout, but a stray
 // qWarning on stderr (captured via 2>&1) could precede it — scan from
 // the end for the first line that parses as a JSON object.
-QJsonObject lastJsonObject(const std::string& out)
+nlohmann::json lastJsonObject(const std::string& out)
 {
     std::vector<std::string> lines;
     std::string line;
@@ -79,13 +75,13 @@ QJsonObject lastJsonObject(const std::string& out)
     }
     if (!line.empty()) lines.push_back(line);
     for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
-        QJsonParseError pe;
-        QJsonDocument d =
-            QJsonDocument::fromJson(QByteArray::fromStdString(*it), &pe);
-        if (pe.error == QJsonParseError::NoError && d.isObject())
-            return d.object();
+        if (it->empty()) continue;
+        try {
+            nlohmann::json d = nlohmann::json::parse(*it);
+            if (d.is_object()) return d;
+        } catch (...) {}
     }
-    return {};
+    return nlohmann::json::object();
 }
 
 // A real logoscore daemon in an isolated config/HOME, plus helpers to
@@ -311,13 +307,13 @@ TEST_F(ErrorPathTest, CrashedModuleDoesNotKillDaemon) {
     // host crash). Pulls the methods list from module-info --json.
     ASSERT_EQ(d.run("module-info test_basic_module", &out), 0)
         << "module-info should succeed for a loaded module.\n" << out;
-    QJsonObject pre = lastJsonObject(out);
-    ASSERT_EQ(pre.value("status").toString().toStdString(), "loaded")
+    nlohmann::json pre = lastJsonObject(out);
+    ASSERT_EQ(pre.value("status", std::string{}), "loaded")
         << "module should be loaded before the crash.\n" << out;
-    QJsonArray methods = pre.value("methods").toArray();
+    nlohmann::json methods = pre.value("methods", nlohmann::json::array());
     bool hasCrash = false;
-    for (const QJsonValue& v : methods) {
-        if (v.toObject().value("name").toString() == "crashOnDemand") {
+    for (const auto& v : methods) {
+        if (v.value("name", std::string{}) == "crashOnDemand") {
             hasCrash = true;
             break;
         }
@@ -345,8 +341,7 @@ TEST_F(ErrorPathTest, CrashedModuleDoesNotKillDaemon) {
     bool unloaded = false;
     for (int i = 0; i < 50; ++i) {
         if (d.run("module-info test_basic_module", &out, /*timeoutSecs=*/5) == 0) {
-            lastStatus = lastJsonObject(out)
-                             .value("status").toString().toStdString();
+            lastStatus = lastJsonObject(out).value("status", std::string{});
             if (lastStatus != "loaded") { unloaded = true; break; }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -417,15 +412,15 @@ protected:
 
     // `call test_basic_module <method> [args]` → `result` of the success
     // envelope {"status":"ok","module":...,"result":<v>}.
-    QJsonValue call(const std::string& method, const std::string& args = "") {
+    nlohmann::json call(const std::string& method, const std::string& args = "") {
         std::string out;
         const std::string cmd =
             "call test_basic_module " + method + (args.empty() ? "" : " " + args);
         EXPECT_EQ(s_d->run(cmd, &out), 0) << cmd << "\n" << out;
-        QJsonObject env = lastJsonObject(out);
-        EXPECT_EQ(env.value("status").toString().toStdString(), "ok")
+        nlohmann::json env = lastJsonObject(out);
+        EXPECT_EQ(env.value("status", std::string{}), "ok")
             << cmd << "\n" << out;
-        return env.value("result");
+        return env.value("result", nlohmann::json{});
     }
 };
 
@@ -436,111 +431,110 @@ std::string LoadedModuleTest::s_skipWhy;
 // ── void / bool / int (void surfaces as `true` — call_executor.cpp) ──────────
 
 TEST_F(LoadedModuleTest, VoidAndBoolReturns) {
-    EXPECT_TRUE(call("doNothing").toBool());
-    EXPECT_TRUE(call("doNothingWithArgs", "hello 7").toBool());
-    EXPECT_TRUE(call("returnTrue").toBool());
-    EXPECT_FALSE(call("returnFalse").toBool());
-    EXPECT_TRUE(call("isPositive", "5").toBool());
-    EXPECT_FALSE(call("isPositive", "-3").toBool());
-    EXPECT_FALSE(call("isPositive", "0").toBool());
+    EXPECT_TRUE(call("doNothing").get<bool>());
+    EXPECT_TRUE(call("doNothingWithArgs", "hello 7").get<bool>());
+    EXPECT_TRUE(call("returnTrue").get<bool>());
+    EXPECT_FALSE(call("returnFalse").get<bool>());
+    EXPECT_TRUE(call("isPositive", "5").get<bool>());
+    EXPECT_FALSE(call("isPositive", "-3").get<bool>());
+    EXPECT_FALSE(call("isPositive", "0").get<bool>());
 }
 
 TEST_F(LoadedModuleTest, IntReturns) {
-    EXPECT_EQ(call("returnInt").toInt(), 42);
-    EXPECT_EQ(call("addInts", "2 3").toInt(), 5);
-    EXPECT_EQ(call("stringLength", "abcdef").toInt(), 6);
-    EXPECT_EQ(call("echoInt", "123").toInt(), 123);
-    EXPECT_EQ(call("byteArraySize", "abcde").toInt(), 5);
+    EXPECT_EQ(call("returnInt").get<int>(), 42);
+    EXPECT_EQ(call("addInts", "2 3").get<int>(), 5);
+    EXPECT_EQ(call("stringLength", "abcdef").get<int>(), 6);
+    EXPECT_EQ(call("echoInt", "123").get<int>(), 123);
+    EXPECT_EQ(call("byteArraySize", "abcde").get<int>(), 5);
 }
 
 TEST_F(LoadedModuleTest, StringReturns) {
-    EXPECT_EQ(call("returnString").toString().toStdString(), "test_basic_module");
-    EXPECT_EQ(call("echo", "roundtrip").toString().toStdString(), "roundtrip");
-    EXPECT_EQ(call("concat", "foo bar").toString().toStdString(), "foobar");
-    EXPECT_EQ(call("urlToString", "https://example.com/p")
-                  .toString().toStdString(), "https://example.com/p");
+    EXPECT_EQ(call("returnString").get<std::string>(), "test_basic_module");
+    EXPECT_EQ(call("echo", "roundtrip").get<std::string>(), "roundtrip");
+    EXPECT_EQ(call("concat", "foo bar").get<std::string>(), "foobar");
+    EXPECT_EQ(call("urlToString", "https://example.com/p").get<std::string>(),
+              "https://example.com/p");
 }
 
 TEST_F(LoadedModuleTest, LogosResultShapes) {
-    QJsonObject ok = call("successResult").toObject();
-    EXPECT_TRUE(ok.value("success").toBool());
-    EXPECT_EQ(ok.value("value").toString().toStdString(), "operation succeeded");
-    EXPECT_TRUE(ok.value("error").isNull());
+    nlohmann::json ok = call("successResult");
+    EXPECT_TRUE(ok["success"].get<bool>());
+    EXPECT_EQ(ok["value"].get<std::string>(), "operation succeeded");
+    EXPECT_TRUE(ok["error"].is_null());
 
-    QJsonObject err = call("errorResult").toObject();
-    EXPECT_FALSE(err.value("success").toBool());
-    EXPECT_TRUE(err.value("value").isNull());
-    EXPECT_EQ(err.value("error").toString().toStdString(),
-              "deliberate error for testing");
+    nlohmann::json err = call("errorResult");
+    EXPECT_FALSE(err["success"].get<bool>());
+    EXPECT_TRUE(err["value"].is_null());
+    EXPECT_EQ(err["error"].get<std::string>(), "deliberate error for testing");
 
-    QJsonObject m = call("resultWithMap").toObject().value("value").toObject();
-    EXPECT_EQ(m.value("name").toString().toStdString(), "test");
-    EXPECT_EQ(m.value("count").toInt(), 42);
-    EXPECT_TRUE(m.value("active").toBool());
+    nlohmann::json m = call("resultWithMap")["value"];
+    EXPECT_EQ(m["name"].get<std::string>(), "test");
+    EXPECT_EQ(m["count"].get<int>(), 42);
+    EXPECT_TRUE(m["active"].get<bool>());
 
-    QJsonArray lst = call("resultWithList").toObject().value("value").toArray();
-    ASSERT_EQ(lst.size(), 2);
-    EXPECT_EQ(lst[0].toObject().value("label").toString().toStdString(), "first");
-    EXPECT_EQ(lst[1].toObject().value("id").toInt(), 2);
+    nlohmann::json lst = call("resultWithList")["value"];
+    ASSERT_EQ(lst.size(), 2u);
+    EXPECT_EQ(lst[0]["label"].get<std::string>(), "first");
+    EXPECT_EQ(lst[1]["id"].get<int>(), 2);
 
-    QJsonObject vOk = call("validateInput", "hello").toObject();
-    EXPECT_TRUE(vOk.value("success").toBool());
-    EXPECT_EQ(vOk.value("value").toObject().value("length").toInt(), 5);
+    nlohmann::json vOk = call("validateInput", "hello");
+    EXPECT_TRUE(vOk["success"].get<bool>());
+    EXPECT_EQ(vOk["value"]["length"].get<int>(), 5);
 
-    QJsonObject vErr = call("validateInput", "''").toObject();
-    EXPECT_FALSE(vErr.value("success").toBool());
-    EXPECT_EQ(vErr.value("error").toString().toStdString(), "input cannot be empty");
+    nlohmann::json vErr = call("validateInput", "''");
+    EXPECT_FALSE(vErr["success"].get<bool>());
+    EXPECT_EQ(vErr["error"].get<std::string>(), "input cannot be empty");
 }
 
 TEST_F(LoadedModuleTest, VariantAndCollectionReturns) {
-    EXPECT_EQ(call("returnVariantInt").toInt(), 99);
-    EXPECT_EQ(call("returnVariantString").toString().toStdString(), "variant_string");
+    EXPECT_EQ(call("returnVariantInt").get<int>(), 99);
+    EXPECT_EQ(call("returnVariantString").get<std::string>(), "variant_string");
 
-    QJsonObject vm = call("returnVariantMap").toObject();
-    EXPECT_EQ(vm.value("key").toString().toStdString(), "value");
-    EXPECT_EQ(vm.value("number").toInt(), 7);
+    nlohmann::json vm = call("returnVariantMap");
+    EXPECT_EQ(vm["key"].get<std::string>(), "value");
+    EXPECT_EQ(vm["number"].get<int>(), 7);
 
-    QJsonArray vl = call("returnVariantList").toArray();
-    ASSERT_EQ(vl.size(), 3);
-    EXPECT_EQ(vl[0].toString().toStdString(), "alpha");
-    EXPECT_EQ(vl[2].toString().toStdString(), "gamma");
+    nlohmann::json vl = call("returnVariantList");
+    ASSERT_EQ(vl.size(), 3u);
+    EXPECT_EQ(vl[0].get<std::string>(), "alpha");
+    EXPECT_EQ(vl[2].get<std::string>(), "gamma");
 
-    QJsonArray ja = call("returnJsonArray").toArray();
-    ASSERT_EQ(ja.size(), 3);
-    EXPECT_EQ(ja[0].toInt(), 1);
-    EXPECT_EQ(ja[2].toInt(), 3);
+    nlohmann::json ja = call("returnJsonArray");
+    ASSERT_EQ(ja.size(), 3u);
+    EXPECT_EQ(ja[0].get<int>(), 1);
+    EXPECT_EQ(ja[2].get<int>(), 3);
 
-    QJsonArray mk = call("makeJsonArray", "x y").toArray();
-    ASSERT_EQ(mk.size(), 2);
-    EXPECT_EQ(mk[1].toString().toStdString(), "y");
+    nlohmann::json mk = call("makeJsonArray", "x y");
+    ASSERT_EQ(mk.size(), 2u);
+    EXPECT_EQ(mk[1].get<std::string>(), "y");
 
-    QJsonArray sl = call("returnStringList").toArray();
-    ASSERT_EQ(sl.size(), 3);
-    EXPECT_EQ(sl[1].toString().toStdString(), "two");
+    nlohmann::json sl = call("returnStringList");
+    ASSERT_EQ(sl.size(), 3u);
+    EXPECT_EQ(sl[1].get<std::string>(), "two");
 
-    QJsonArray sp = call("splitString", "a,b,c").toArray();
-    ASSERT_EQ(sp.size(), 3);
-    EXPECT_EQ(sp[0].toString().toStdString(), "a");
-    EXPECT_EQ(sp[2].toString().toStdString(), "c");
+    nlohmann::json sp = call("splitString", "a,b,c");
+    ASSERT_EQ(sp.size(), 3u);
+    EXPECT_EQ(sp[0].get<std::string>(), "a");
+    EXPECT_EQ(sp[2].get<std::string>(), "c");
 }
 
 TEST_F(LoadedModuleTest, ArgCountFanOut) {
-    EXPECT_EQ(call("noArgs").toString().toStdString(), "noArgs()");
-    EXPECT_EQ(call("oneArg", "x").toString().toStdString(), "oneArg(x)");
-    EXPECT_EQ(call("twoArgs", "x 7").toString().toStdString(), "twoArgs(x, 7)");
-    EXPECT_EQ(call("threeArgs", "x 7 true").toString().toStdString(),
+    EXPECT_EQ(call("noArgs").get<std::string>(), "noArgs()");
+    EXPECT_EQ(call("oneArg", "x").get<std::string>(), "oneArg(x)");
+    EXPECT_EQ(call("twoArgs", "x 7").get<std::string>(), "twoArgs(x, 7)");
+    EXPECT_EQ(call("threeArgs", "x 7 true").get<std::string>(),
               "threeArgs(x, 7, true)");
-    EXPECT_EQ(call("fourArgs", "x 7 false y").toString().toStdString(),
+    EXPECT_EQ(call("fourArgs", "x 7 false y").get<std::string>(),
               "fourArgs(x, 7, false, y)");
-    EXPECT_EQ(call("fiveArgs", "x 7 true y 9").toString().toStdString(),
+    EXPECT_EQ(call("fiveArgs", "x 7 true y 9").get<std::string>(),
               "fiveArgs(x, 7, true, y, 9)");
-    EXPECT_TRUE(call("echoBool", "true").toBool());
-    EXPECT_FALSE(call("echoBool", "false").toBool());
+    EXPECT_TRUE(call("echoBool", "true").get<bool>());
+    EXPECT_FALSE(call("echoBool", "false").get<bool>());
 }
 
 TEST_F(LoadedModuleTest, AsyncEchoWithDelay) {
     auto start = std::chrono::steady_clock::now();
-    EXPECT_EQ(call("echoWithDelay", "pong 200").toString().toStdString(), "pong");
+    EXPECT_EQ(call("echoWithDelay", "pong 200").get<std::string>(), "pong");
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start).count();
     EXPECT_GE(ms, 200) << "echoWithDelay returned too fast (" << ms << "ms)";
@@ -612,8 +606,10 @@ TEST_F(LoadedModuleTest, ConcurrentEchoFromManyClients) {
             const std::string tok = "tok" + std::to_string(i);
             std::string out;
             int rc = s_d->run("call test_basic_module echo " + tok, &out);
-            const std::string got =
-                lastJsonObject(out).value("result").toString().toStdString();
+            std::string got;
+            try {
+                got = lastJsonObject(out)["result"].get<std::string>();
+            } catch (...) {}
             ok[i] = (rc == 0 && got == tok) ? 1 : 0;
             if (!ok[i]) detail[i] = "rc=" + std::to_string(rc) +
                                     " got='" + got + "' want='" + tok + "'\n" + out;
@@ -636,30 +632,32 @@ TEST_F(LoadedModuleTest, ConcurrentMixedMethodsFromManyClients) {
             std::string out;
             int rc = -1;
             bool good = false;
-            switch (i % 4) {
-            case 0: {  // addInts(i, i) == 2*i
-                rc = s_d->run("call test_basic_module addInts " +
-                              std::to_string(i) + " " + std::to_string(i), &out);
-                good = lastJsonObject(out).value("result").toInt() == 2 * i;
-                break;
-            }
-            case 1: {  // echoInt(i) == i
-                rc = s_d->run("call test_basic_module echoInt " + std::to_string(i), &out);
-                good = lastJsonObject(out).value("result").toInt() == i;
-                break;
-            }
-            case 2: {  // returnString() == "test_basic_module"
-                rc = s_d->run("call test_basic_module returnString", &out);
-                good = lastJsonObject(out).value("result").toString() == "test_basic_module";
-                break;
-            }
-            default: {  // stringLength("xxxx..i..") == i
-                rc = s_d->run("call test_basic_module stringLength " +
-                              std::string(static_cast<size_t>(i), 'x'), &out);
-                good = lastJsonObject(out).value("result").toInt() == i;
-                break;
-            }
-            }
+            try {
+                switch (i % 4) {
+                case 0: {  // addInts(i, i) == 2*i
+                    rc = s_d->run("call test_basic_module addInts " +
+                                  std::to_string(i) + " " + std::to_string(i), &out);
+                    good = lastJsonObject(out)["result"].get<int>() == 2 * i;
+                    break;
+                }
+                case 1: {  // echoInt(i) == i
+                    rc = s_d->run("call test_basic_module echoInt " + std::to_string(i), &out);
+                    good = lastJsonObject(out)["result"].get<int>() == i;
+                    break;
+                }
+                case 2: {  // returnString() == "test_basic_module"
+                    rc = s_d->run("call test_basic_module returnString", &out);
+                    good = lastJsonObject(out)["result"].get<std::string>() == "test_basic_module";
+                    break;
+                }
+                default: {  // stringLength("xxxx..i..") == i
+                    rc = s_d->run("call test_basic_module stringLength " +
+                                  std::string(static_cast<size_t>(i), 'x'), &out);
+                    good = lastJsonObject(out)["result"].get<int>() == i;
+                    break;
+                }
+                }
+            } catch (...) {}
             ok[i] = (rc == 0 && good) ? 1 : 0;
             if (!ok[i]) detail[i] = "case=" + std::to_string(i % 4) +
                                     " rc=" + std::to_string(rc) + "\n" + out;

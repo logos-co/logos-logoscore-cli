@@ -14,7 +14,6 @@
 #include "../core_service/core_service_impl.h"
 
 #include <QCoreApplication>
-#include <QDebug>
 
 #include <uuid.h>
 
@@ -138,7 +137,8 @@ std::vector<TransportInfo> toAdvertised(const LogosTransportSet& set)
 int Daemon::start(int argc, char* argv[],
                   const DaemonConfig& cfg,
                   const std::string& configSource,
-                  bool persistConfig)
+                  bool persistConfig,
+                  bool verbose)
 {
     const auto& modulesDirs      = cfg.modulesDirs;
     const auto& persistencePath  = cfg.persistencePath;
@@ -168,14 +168,16 @@ int Daemon::start(int argc, char* argv[],
         std::error_code ec;
         std::string absDir = std::filesystem::absolute(dir, ec).string();
         const char* resolved = ec ? dir.c_str() : absDir.c_str();
-        qDebug() << "Added plugins directory:" << resolved;
+        if (verbose)
+            fprintf(stderr, "Added plugins directory: %s\n", resolved);
         logos_core_add_modules_dir(resolved);
     }
 
     std::string bundledDir = paths::bundledModulesDir();
     if (!bundledDir.empty()) {
         logos_core_add_modules_dir(bundledDir.c_str());
-        qDebug() << "Added bundled modules directory:" << bundledDir.c_str();
+        if (verbose)
+            fprintf(stderr, "Added bundled modules directory: %s\n", bundledDir.c_str());
     }
 
     // 4. Set persistence base path for module instance data

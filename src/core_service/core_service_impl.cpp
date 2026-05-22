@@ -2,16 +2,9 @@
 #include "logos_core.h"
 #include <logos_api.h>
 #include <logos_api_client.h>
-#include <logos_types.h>
 
 #include <QCoreApplication>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonArray>
-#include <QMetaType>
 #include <QTimer>
-#include <QString>
-#include <QVariant>
 #include <algorithm>
 #include <cstdlib>
 #include <unistd.h>
@@ -208,16 +201,13 @@ LogosMap CoreServiceImpl::getModuleInfo(const std::string& name)
         info["status"] = "loaded";
 
         if (m_api) {
-            QString qName = QString::fromStdString(name);
-            LogosAPIClient* moduleClient = m_api->getClient(qName);
+            // Use the nlohmann::json overload — no QJson types needed here
+            LogosAPIClient* moduleClient = m_api->getClient(QString::fromStdString(name));
             if (moduleClient) {
-                QVariant ret = moduleClient->invokeRemoteMethod(qName, "getPluginMethods");
-                if (ret.canConvert<QJsonArray>()) {
-                    QJsonArray methods = qvariant_cast<QJsonArray>(ret);
-                    QJsonDocument doc(methods);
-                    info["methods"] = nlohmann::json::parse(
-                        doc.toJson(QJsonDocument::Compact).toStdString());
-                }
+                nlohmann::json methods = moduleClient->invokeRemoteMethod(
+                    name, "getPluginMethods", nlohmann::json::array());
+                if (methods.is_array())
+                    info["methods"] = methods;
             }
         }
     } else {
@@ -241,7 +231,7 @@ LogosList CoreServiceImpl::getModuleStats()
 }
 
 // ---------------------------------------------------------------------------
-// Proxied call
+// Proxied call — uses the nlohmann::json SDK overload; no QJson needed
 // ---------------------------------------------------------------------------
 
 StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
@@ -257,10 +247,7 @@ StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
         return {false, result, "core_service not initialized."};
     }
 
-    QString qModule = QString::fromStdString(module);
-    QString qMethod = QString::fromStdString(method);
-
-    LogosAPIClient* moduleClient = m_api->getClient(qModule);
+    LogosAPIClient* moduleClient = m_api->getClient(QString::fromStdString(module));
     if (!moduleClient) {
         result["status"] = "error";
         result["code"] = "MODULE_NOT_LOADED";
@@ -268,33 +255,10 @@ StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
         return {false, result, "Module '" + module + "' is not loaded."};
     }
 
-    // Convert LogosList args to QVariantList for the Qt SDK call
-    QVariantList qArgs;
-    for (const auto& arg : args) {
-        if (arg.is_string())
-            qArgs.append(QString::fromStdString(arg.get<std::string>()));
-        else if (arg.is_number_integer())
-            qArgs.append(static_cast<qlonglong>(arg.get<int64_t>()));
-        else if (arg.is_number_float())
-            qArgs.append(arg.get<double>());
-        else if (arg.is_boolean())
-            qArgs.append(arg.get<bool>());
-        else if (arg.is_array()) {
-            QJsonDocument doc = QJsonDocument::fromJson(
-                QByteArray::fromStdString(arg.dump()));
-            qArgs.append(QVariant::fromValue(doc.array()));
-        } else if (arg.is_object()) {
-            QJsonDocument doc = QJsonDocument::fromJson(
-                QByteArray::fromStdString(arg.dump()));
-            qArgs.append(QVariant::fromValue(doc.object()));
-        } else {
-            qArgs.append(QVariant());
-        }
-    }
+    // The nlohmann::json overload handles QVariant<->json conversion internally.
+    nlohmann::json ret = moduleClient->invokeRemoteMethod(module, method, args);
 
-    QVariant ret = moduleClient->invokeRemoteMethod(qModule, qMethod, qArgs);
-
-    if (!ret.isValid()) {
+    if (ret.is_null()) {
         result["status"] = "error";
         result["code"] = "METHOD_FAILED";
         result["message"] = "Call to " + module + "." + method + " failed.";
@@ -304,58 +268,13 @@ StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
     result["status"] = "ok";
     result["module"] = module;
     result["method"] = method;
-
-    const int logosResultId = QMetaType::fromName("LogosResult").id();
-    if (logosResultId != QMetaType::UnknownType
-            && ret.userType() == logosResultId) {
-        const LogosResult lr = ret.value<LogosResult>();
-        LogosMap obj;
-        obj["success"] = lr.success;
-        QJsonValue valJson = QJsonValue::fromVariant(lr.value);
-        QJsonValue errJson = QJsonValue::fromVariant(lr.error);
-        QJsonDocument valDoc;
-        if (valJson.isObject()) valDoc = QJsonDocument(valJson.toObject());
-        else if (valJson.isArray()) valDoc = QJsonDocument(valJson.toArray());
-        if (!valDoc.isNull())
-            obj["value"] = nlohmann::json::parse(valDoc.toJson(QJsonDocument::Compact).toStdString());
-        else if (valJson.isString())
-            obj["value"] = valJson.toString().toStdString();
-        else if (valJson.isBool())
-            obj["value"] = valJson.toBool();
-        else if (valJson.isDouble())
-            obj["value"] = valJson.toDouble();
-        else
-            obj["value"] = nullptr;
-        if (errJson.isString())
-            obj["error"] = errJson.toString().toStdString();
-        else
-            obj["error"] = nullptr;
-        result["result"] = obj;
-    } else if (ret.canConvert<QJsonObject>()) {
-        QJsonDocument doc(ret.toJsonObject());
-        result["result"] = nlohmann::json::parse(
-            doc.toJson(QJsonDocument::Compact).toStdString());
-    } else if (ret.canConvert<QJsonArray>()) {
-        QJsonDocument doc(ret.toJsonArray());
-        result["result"] = nlohmann::json::parse(
-            doc.toJson(QJsonDocument::Compact).toStdString());
-    } else {
-        QJsonValue jv = QJsonValue::fromVariant(ret);
-        if (jv.isString())
-            result["result"] = jv.toString().toStdString();
-        else if (jv.isBool())
-            result["result"] = jv.toBool();
-        else if (jv.isDouble())
-            result["result"] = jv.toDouble();
-        else
-            result["result"] = nullptr;
-    }
+    result["result"] = ret;
 
     return {true, result};
 }
 
 // ---------------------------------------------------------------------------
-// Event forwarding
+// Event forwarding — uses the nlohmann::json onEvent overload
 // ---------------------------------------------------------------------------
 
 bool CoreServiceImpl::watchModuleEvents(const std::string& module,
@@ -364,39 +283,22 @@ bool CoreServiceImpl::watchModuleEvents(const std::string& module,
     if (!m_api)
         return false;
 
-    QString qModule = QString::fromStdString(module);
-    QString qEventName = QString::fromStdString(eventName);
-
-    LogosAPIClient* moduleClient = m_api->getClient(qModule);
+    LogosAPIClient* moduleClient = m_api->getClient(QString::fromStdString(module));
     if (!moduleClient)
         return false;
 
-    LogosObject* obj = moduleClient->requestObject(qModule);
+    LogosObject* obj = moduleClient->requestObject(QString::fromStdString(module));
     if (!obj)
         return false;
 
-    moduleClient->onEvent(obj, qEventName,
-        [this, module](const QString& event, const QVariantList& data) {
+    moduleClient->onEvent(obj, eventName,
+        [this, module](const std::string& event, const nlohmann::json& data) {
             nlohmann::json forwardData = nlohmann::json::array();
             forwardData.push_back(module);
-            forwardData.push_back(event.toStdString());
-            for (const QVariant& d : data) {
-                QJsonValue jv = QJsonValue::fromVariant(d);
-                if (jv.isString())
-                    forwardData.push_back(jv.toString().toStdString());
-                else if (jv.isBool())
-                    forwardData.push_back(jv.toBool());
-                else if (jv.isDouble())
-                    forwardData.push_back(jv.toDouble());
-                else if (jv.isObject() || jv.isArray()) {
-                    QJsonDocument doc;
-                    if (jv.isObject()) doc = QJsonDocument(jv.toObject());
-                    else doc = QJsonDocument(jv.toArray());
-                    forwardData.push_back(nlohmann::json::parse(
-                        doc.toJson(QJsonDocument::Compact).toStdString()));
-                } else {
-                    forwardData.push_back(nullptr);
-                }
+            forwardData.push_back(event);
+            if (data.is_array()) {
+                for (const auto& item : data)
+                    forwardData.push_back(item);
             }
             if (emitEvent)
                 emitEvent("module_event", forwardData.dump());

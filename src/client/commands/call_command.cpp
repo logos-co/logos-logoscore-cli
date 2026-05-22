@@ -1,10 +1,8 @@
 #include "call_command.h"
 #include "../../string_utils.h"
-#include <QJsonDocument>
 #include <fmt/format.h>
 #include <fstream>
 #include <sstream>
-#include <stdexcept>
 
 std::string CallCommand::resolveFileParam(const std::string& param)
 {
@@ -33,7 +31,6 @@ int CallCommand::execute(const std::vector<std::string>& args)
         return 1;
     }
 
-    // Check for verbose "module <name> method <method>" syntax
     if (args.size() >= 3 && args[1] == "method") {
         moduleName = args[0];
         methodName = args[2];
@@ -61,8 +58,8 @@ int CallCommand::execute(const std::vector<std::string>& args)
     if (err != 0)
         return err;
 
-    // Resolve @file parameters and coerce types
-    QVariantList resolvedArgs;
+    // Resolve @file parameters and coerce types to native JSON values
+    LogosList resolvedArgs = LogosList::array();
     for (const std::string& arg : methodArgs) {
         std::string resolved = resolveFileParam(arg);
         if (strutil::starts_with(arg, '@') && resolved.empty()) {
@@ -71,11 +68,10 @@ int CallCommand::execute(const std::vector<std::string>& args)
             return 1;
         }
 
-        // Coerce to native types so the RPC target can match signatures
         if (resolved == "true") {
-            resolvedArgs.append(true);
+            resolvedArgs.push_back(true);
         } else if (resolved == "false") {
-            resolvedArgs.append(false);
+            resolvedArgs.push_back(false);
         } else {
             bool isInt = false;
             int intVal = 0;
@@ -83,7 +79,7 @@ int CallCommand::execute(const std::vector<std::string>& args)
             catch (...) {}
 
             if (isInt) {
-                resolvedArgs.append(intVal);
+                resolvedArgs.push_back(intVal);
             } else {
                 bool isDouble = false;
                 double dblVal = 0.0;
@@ -91,48 +87,46 @@ int CallCommand::execute(const std::vector<std::string>& args)
                 catch (...) {}
 
                 if (isDouble) {
-                    resolvedArgs.append(dblVal);
+                    resolvedArgs.push_back(dblVal);
                 } else {
-                    resolvedArgs.append(QString::fromStdString(resolved));
+                    resolvedArgs.push_back(resolved);
                 }
             }
         }
     }
 
-    QJsonObject result = client().callModuleMethod(moduleName, methodName, resolvedArgs);
+    LogosMap result = client().callModuleMethod(moduleName, methodName, resolvedArgs);
 
-    std::string status = result.value("status").toString().toStdString();
+    std::string status = result.value("status", std::string{});
     if (status == "error") {
-        std::string code = result.value("code").toString().toStdString();
+        std::string code = result.value("code", std::string{});
         int exitCode = 4;
         if (code == "MODULE_NOT_LOADED" || code == "MODULE_NOT_FOUND")
             exitCode = 3;
-        output().printError(code, result.value("message").toString().toStdString(), result);
+        output().printError(code, result.value("message", std::string{}), result);
         return exitCode;
     }
 
     if (output().isJsonMode()) {
         output().printSuccess(result);
     } else {
-        QJsonValue resultValue = result.value("result");
-        if (resultValue.isString()) {
-            output().printRaw(resultValue.toString().toStdString());
-        } else if (resultValue.isDouble()) {
-            double d = resultValue.toDouble();
-            if (d == static_cast<int>(d))
-                output().printRaw(fmt::format("{}", static_cast<int>(d)));
+        const auto& resultValue = result["result"];
+        if (resultValue.is_string()) {
+            output().printRaw(resultValue.get<std::string>());
+        } else if (resultValue.is_number_float()) {
+            double d = resultValue.get<double>();
+            if (d == static_cast<double>(static_cast<int64_t>(d)))
+                output().printRaw(fmt::format("{}", static_cast<int64_t>(d)));
             else
                 output().printRaw(fmt::format("{}", d));
-        } else if (resultValue.isBool()) {
-            output().printRaw(resultValue.toBool() ? "true" : "false");
-        } else if (resultValue.isNull() || resultValue.isUndefined()) {
+        } else if (resultValue.is_number_integer()) {
+            output().printRaw(fmt::format("{}", resultValue.get<int64_t>()));
+        } else if (resultValue.is_boolean()) {
+            output().printRaw(resultValue.get<bool>() ? "true" : "false");
+        } else if (resultValue.is_null()) {
             // Nothing useful to print
-        } else if (resultValue.isArray()) {
-            QJsonDocument doc(resultValue.toArray());
-            output().printRaw(doc.toJson(QJsonDocument::Indented).toStdString());
-        } else if (resultValue.isObject()) {
-            QJsonDocument doc(resultValue.toObject());
-            output().printRaw(doc.toJson(QJsonDocument::Indented).toStdString());
+        } else {
+            output().printRaw(resultValue.dump(2));
         }
     }
 

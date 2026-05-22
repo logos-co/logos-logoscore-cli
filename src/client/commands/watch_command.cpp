@@ -1,30 +1,23 @@
 #include "watch_command.h"
 #include <CLI/CLI.hpp>
-#include <QCoreApplication>
 #include <fmt/format.h>
-#include <csignal>
-
-static volatile sig_atomic_t g_watchInterrupted = 0;
-
-static void watchSignalHandler(int)
-{
-    g_watchInterrupted = 1;
-}
+#include <QCoreApplication>
+#include <iostream>
 
 int WatchCommand::execute(const std::vector<std::string>& args)
 {
     CLI::App cli{"watch"};
     cli.set_help_flag();
     std::string module;
-    std::string event;
+    std::string eventName;
     cli.add_option("module", module, "Module name")->required();
-    cli.add_option("--event", event, "Event name to filter");
+    cli.add_option("--event", eventName, "Event name filter (optional)")->default_val("");
     try {
         std::vector<std::string> argsCopy(args.rbegin(), args.rend());
         cli.parse(argsCopy);
     } catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS",
-                            "Usage: logoscore watch <module> [--event <name>]");
+                            "Usage: logoscore watch <module> [--event <event>]");
         return 1;
     }
 
@@ -32,29 +25,20 @@ int WatchCommand::execute(const std::vector<std::string>& args)
     if (err != 0)
         return err;
 
-    g_watchInterrupted = 0;
-    struct sigaction sa;
-    sa.sa_handler = watchSignalHandler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    sigaction(SIGINT,  &sa, nullptr);
-    sigaction(SIGTERM, &sa, nullptr);
-
-    bool watching = client().watchModuleEvents(module, event,
-        [this](const QJsonObject& ev) {
-            output().printEvent(ev);
+    bool ok = client().watchModuleEvents(module, eventName,
+        [this](const LogosMap& event) {
+            output().printEvent(event);
         });
 
-    if (!watching) {
-        output().printError("MODULE_NOT_LOADED",
-                            fmt::format("Module '{}' is not loaded. "
-                                        "Load it with: logoscore load-module {}",
-                                        module, module));
+    if (!ok) {
+        output().printError("WATCH_FAILED",
+                            fmt::format("Failed to watch events for module '{}'.", module));
         return 3;
     }
 
-    while (!g_watchInterrupted)
-        QCoreApplication::processEvents(QEventLoop::WaitForMoreEvents, 100);
+    if (!output().isJsonMode())
+        std::cerr << fmt::format("Watching events from '{}'... (Ctrl+C to stop)\n", module);
 
+    QCoreApplication::exec();
     return 0;
 }

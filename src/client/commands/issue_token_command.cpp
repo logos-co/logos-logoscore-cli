@@ -6,8 +6,6 @@
 #include <CLI/CLI.hpp>
 #include <fmt/format.h>
 
-#include <QJsonObject>
-
 #include <chrono>
 #include <cstdio>
 #include <ctime>
@@ -134,14 +132,14 @@ int IssueTokenCommand::execute(const std::vector<std::string>& args)
 
     std::string rawPath = store.rawTokenFilePath(name);
 
-    QJsonObject result;
+    LogosMap result;
     result["status"]     = "ok";
-    result["name"]       = QString::fromStdString(name);
-    result["token"]      = QString::fromStdString(outcome.token);
-    result["file"]       = QString::fromStdString(rawPath);
+    result["name"]       = name;
+    result["token"]      = outcome.token;
+    result["file"]       = rawPath;
     result["local_only"] = localOnly;
     if (!resolvedExpiry->empty())
-        result["expires_at"] = QString::fromStdString(*resolvedExpiry);
+        result["expires_at"] = *resolvedExpiry;
 
     if (output().isJsonMode()) {
         output().printSuccess(result);
