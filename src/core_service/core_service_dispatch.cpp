@@ -1,85 +1,21 @@
-// Qt <-> Universal bridge for CoreServiceImpl.
-// Implements the LogosProviderObject interface and delegates to the
-// universal-typed business methods on CoreServiceImpl.
+// Universal dispatch for CoreServiceImpl.
+// Implements the LogosProviderObject interface using the Qt-free std overrides
+// and delegates to the universal-typed business methods.
 
 #include "core_service_impl.h"
 #include <logos_api.h>
-#include <QJsonObject>
-#include <QJsonArray>
-#include <QJsonDocument>
 
 // ---------------------------------------------------------------------------
-// Helpers: convert nlohmann::json values to QVariant / QJsonValue
+// Helpers: extract the value payload from StdLogosResult
 // ---------------------------------------------------------------------------
 
-static QJsonValue jsonToQJsonValue(const nlohmann::json& j)
+static nlohmann::json stdLogosResultToJson(const StdLogosResult& r)
 {
-    if (j.is_null())
-        return QJsonValue(QJsonValue::Null);
-    if (j.is_boolean())
-        return QJsonValue(j.get<bool>());
-    if (j.is_number_integer())
-        return QJsonValue(static_cast<qint64>(j.get<int64_t>()));
-    if (j.is_number_float())
-        return QJsonValue(j.get<double>());
-    if (j.is_string())
-        return QJsonValue(QString::fromStdString(j.get<std::string>()));
-    if (j.is_object() || j.is_array()) {
-        QJsonDocument doc = QJsonDocument::fromJson(
-            QByteArray::fromStdString(j.dump()));
-        if (j.is_object())
-            return QJsonValue(doc.object());
-        return QJsonValue(doc.array());
-    }
-    return QJsonValue();
-}
-
-static QJsonObject logosMapToQJsonObject(const LogosMap& m)
-{
-    QJsonDocument doc = QJsonDocument::fromJson(
-        QByteArray::fromStdString(m.dump()));
-    return doc.object();
-}
-
-static QJsonArray logosListToQJsonArray(const LogosList& l)
-{
-    QJsonDocument doc = QJsonDocument::fromJson(
-        QByteArray::fromStdString(l.dump()));
-    return doc.array();
-}
-
-static QVariant stdLogosResultToQVariant(const StdLogosResult& r)
-{
-    return QVariant::fromValue(logosMapToQJsonObject(r.value));
-}
-
-// Convert incoming QVariantList args to a LogosList (nlohmann::json array)
-static LogosList qArgsToLogosList(const QVariantList& args)
-{
-    LogosList result = LogosList::array();
-    for (const QVariant& arg : args) {
-        QJsonValue jv = QJsonValue::fromVariant(arg);
-        if (jv.isString())
-            result.push_back(jv.toString().toStdString());
-        else if (jv.isBool())
-            result.push_back(jv.toBool());
-        else if (jv.isDouble())
-            result.push_back(jv.toDouble());
-        else if (jv.isObject() || jv.isArray()) {
-            QJsonDocument doc;
-            if (jv.isObject()) doc = QJsonDocument(jv.toObject());
-            else doc = QJsonDocument(jv.toArray());
-            result.push_back(nlohmann::json::parse(
-                doc.toJson(QJsonDocument::Compact).toStdString()));
-        } else {
-            result.push_back(nullptr);
-        }
-    }
-    return result;
+    return r.value;
 }
 
 // ---------------------------------------------------------------------------
-// LogosProviderObject overrides
+// LogosProviderObject overrides — trivial Qt delegates to std bridge
 // ---------------------------------------------------------------------------
 
 QString CoreServiceImpl::providerName() const
@@ -92,28 +28,20 @@ QString CoreServiceImpl::providerVersion() const
     return QString::fromStdString(version());
 }
 
+QVariant CoreServiceImpl::callMethod(const QString& methodName, const QVariantList& args)
+{
+    return callMethodStdBridge(methodName, args);
+}
+
+QJsonArray CoreServiceImpl::getMethods()
+{
+    return getMethodsStdBridge();
+}
+
 void CoreServiceImpl::setEventListener(EventCallback callback)
 {
     m_eventCallback = callback;
-
-    // Wire the universal emitEvent to the Qt EventCallback.
-    // The data string is a JSON array; unpack it into a QVariantList
-    // so the client receives individual elements (the transport/client
-    // expects [sourceModule, eventName, ...eventData]).
-    emitEvent = [this](const std::string& eventName, const std::string& data) {
-        if (m_eventCallback) {
-            QVariantList qData;
-            QJsonDocument doc = QJsonDocument::fromJson(
-                QByteArray::fromStdString(data));
-            if (doc.isArray()) {
-                for (const QJsonValue& v : doc.array())
-                    qData.append(v.toVariant());
-            } else {
-                qData.append(QString::fromStdString(data));
-            }
-            m_eventCallback(QString::fromStdString(eventName), qData);
-        }
-    };
+    setEventListenerStdBridge(callback);
 }
 
 bool CoreServiceImpl::informModuleToken(const QString& /*moduleName*/, const QString& /*token*/)
@@ -127,110 +55,120 @@ void CoreServiceImpl::init(void* apiInstance)
 }
 
 // ---------------------------------------------------------------------------
-// Method dispatch — converts Qt args -> universal, calls impl, converts back
+// Universal interface — Qt-free dispatch
 // ---------------------------------------------------------------------------
 
-QVariant CoreServiceImpl::callMethod(const QString& methodName, const QVariantList& args)
+nlohmann::json CoreServiceImpl::callMethodStd(const std::string& methodName,
+                                               const nlohmann::json& args)
 {
     if (methodName == "loadModule" && args.size() >= 1)
-        return stdLogosResultToQVariant(loadModule(args.at(0).toString().toStdString()));
+        return stdLogosResultToJson(loadModule(args[0].get<std::string>()));
 
     if (methodName == "unloadModule" && args.size() >= 1)
-        return stdLogosResultToQVariant(unloadModule(args.at(0).toString().toStdString()));
+        return stdLogosResultToJson(unloadModule(args[0].get<std::string>()));
 
     if (methodName == "reloadModule" && args.size() >= 1)
-        return stdLogosResultToQVariant(reloadModule(args.at(0).toString().toStdString()));
+        return stdLogosResultToJson(reloadModule(args[0].get<std::string>()));
 
     if (methodName == "listModules") {
-        std::string filter = args.size() >= 1 ? args.at(0).toString().toStdString() : "all";
-        return QVariant::fromValue(logosListToQJsonArray(listModules(filter)));
+        std::string filter = args.size() >= 1 ? args[0].get<std::string>() : "all";
+        return listModules(filter);
     }
 
     if (methodName == "getStatus")
-        return QVariant::fromValue(logosMapToQJsonObject(getStatus()));
+        return getStatus();
 
     if (methodName == "getModuleInfo" && args.size() >= 1)
-        return QVariant::fromValue(logosMapToQJsonObject(getModuleInfo(args.at(0).toString().toStdString())));
+        return getModuleInfo(args[0].get<std::string>());
 
     if (methodName == "getModuleStats")
-        return QVariant::fromValue(logosListToQJsonArray(getModuleStats()));
+        return getModuleStats();
 
     if (methodName == "callModuleMethod" && args.size() >= 3)
-        return stdLogosResultToQVariant(
-            callModuleMethod(args.at(0).toString().toStdString(),
-                             args.at(1).toString().toStdString(),
-                             qArgsToLogosList(args.at(2).toList())));
+        return stdLogosResultToJson(
+            callModuleMethod(args[0].get<std::string>(),
+                             args[1].get<std::string>(),
+                             args[2]));
 
     if (methodName == "watchModuleEvents" && args.size() >= 2)
-        return QVariant::fromValue(watchModuleEvents(args.at(0).toString().toStdString(),
-                                                     args.at(1).toString().toStdString()));
+        return watchModuleEvents(args[0].get<std::string>(),
+                                 args[1].get<std::string>());
 
     if (methodName == "shutdown")
-        return QVariant::fromValue(logosMapToQJsonObject(shutdown()));
+        return shutdown();
 
-    return QVariant();
+    return nullptr;
 }
 
-QJsonArray CoreServiceImpl::getMethods()
+void CoreServiceImpl::setEventListenerStd(UniversalEventCallback callback)
 {
-    QJsonArray methods;
+    emitEvent = [callback](const std::string& eventName, const std::string& data) {
+        if (callback)
+            callback(eventName, data);
+    };
+}
 
-    auto mkParam = [](const QString& name, const QString& type) {
-        QJsonObject p;
+std::vector<LogosMethodMetadata> CoreServiceImpl::getMethodsStd()
+{
+    std::vector<LogosMethodMetadata> methods;
+
+    auto mkParam = [](const std::string& name, const std::string& type) {
+        nlohmann::json p;
         p["name"] = name;
         p["type"] = type;
         return p;
     };
 
-    auto mkMethod = [&](const QString& name, const QJsonArray& params, const QString& ret) {
-        QJsonObject m;
-        m["name"] = name;
-        m["params"] = params;
-        m["return_type"] = ret;
-        methods.append(m);
+    auto mkMethod = [&](const std::string& name, const nlohmann::json& params,
+                        const std::string& ret) {
+        LogosMethodMetadata m;
+        m.name = name;
+        m.returnType = ret;
+        m.parameters = params;
+        methods.push_back(std::move(m));
     };
 
     mkMethod("loadModule",
-             QJsonArray{mkParam("name", "string")},
+             nlohmann::json::array({mkParam("name", "string")}),
              "StdLogosResult");
 
     mkMethod("unloadModule",
-             QJsonArray{mkParam("name", "string")},
+             nlohmann::json::array({mkParam("name", "string")}),
              "StdLogosResult");
 
     mkMethod("reloadModule",
-             QJsonArray{mkParam("name", "string")},
+             nlohmann::json::array({mkParam("name", "string")}),
              "StdLogosResult");
 
     mkMethod("listModules",
-             QJsonArray{mkParam("filter", "string")},
+             nlohmann::json::array({mkParam("filter", "string")}),
              "LogosList");
 
     mkMethod("getStatus",
-             QJsonArray{},
+             nlohmann::json::array(),
              "LogosMap");
 
     mkMethod("getModuleInfo",
-             QJsonArray{mkParam("name", "string")},
+             nlohmann::json::array({mkParam("name", "string")}),
              "LogosMap");
 
     mkMethod("getModuleStats",
-             QJsonArray{},
+             nlohmann::json::array(),
              "LogosList");
 
     mkMethod("callModuleMethod",
-             QJsonArray{mkParam("module", "string"),
-                        mkParam("method", "string"),
-                        mkParam("args", "LogosList")},
+             nlohmann::json::array({mkParam("module", "string"),
+                                    mkParam("method", "string"),
+                                    mkParam("args", "LogosList")}),
              "StdLogosResult");
 
     mkMethod("watchModuleEvents",
-             QJsonArray{mkParam("module", "string"),
-                        mkParam("eventName", "string")},
+             nlohmann::json::array({mkParam("module", "string"),
+                                    mkParam("eventName", "string")}),
              "bool");
 
     mkMethod("shutdown",
-             QJsonArray{},
+             nlohmann::json::array(),
              "LogosMap");
 
     return methods;

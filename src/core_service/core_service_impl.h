@@ -41,7 +41,7 @@ public:
 
     void onInit(LogosAPI* api);
 
-    // LogosProviderObject interface (implemented in core_service_dispatch.cpp)
+    // LogosProviderObject Qt interface (delegates to std bridge)
     QVariant callMethod(const QString& methodName, const QVariantList& args) override;
     QJsonArray getMethods() override;
     QString providerName() const override;
@@ -49,6 +49,11 @@ public:
     void setEventListener(EventCallback callback) override;
     bool informModuleToken(const QString& moduleName, const QString& token) override;
     void init(void* apiInstance) override;
+
+    // LogosProviderObject universal interface (Qt-free dispatch)
+    nlohmann::json callMethodStd(const std::string& methodName, const nlohmann::json& args) override;
+    std::vector<LogosMethodMetadata> getMethodsStd() override;
+    void setEventListenerStd(UniversalEventCallback callback) override;
 
 private:
     EventCallback m_eventCallback;

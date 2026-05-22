@@ -68,15 +68,10 @@ set_target_properties(logos_module_client PROPERTIES
 )
 
 # ── logos-cpp-sdk (imported target) ───────────────────────────────────────────
-# Optional: only required when LOGOS_CPP_SDK_ROOT is set. Daemon code uses
-# logos:: helpers (e.g. transportSetToJsonString) that liblogos doesn't
-# itself reference; without this we'd get an undefined-symbol linker
-# error because the SDK's static archive is otherwise dead-stripped
-# inside liblogos_core.
-if(DEFINED LOGOS_CPP_SDK_ROOT AND EXISTS "${LOGOS_CPP_SDK_ROOT}/lib/cmake/logos-cpp-sdk")
-    find_package(logos-cpp-sdk REQUIRED
-        PATHS "${LOGOS_CPP_SDK_ROOT}" NO_DEFAULT_PATH)
-endif()
+# Required: core_service links LogosProviderObject bridge helpers and
+# logos:: transport utilities from the SDK static library.
+find_package(logos-cpp-sdk REQUIRED
+    PATHS "${LOGOS_CPP_SDK_ROOT}" NO_DEFAULT_PATH)
 
 # ── nlohmann_json (header-only) ───────────────────────────────────────────────
 find_package(nlohmann_json REQUIRED)
@@ -152,9 +147,6 @@ set(CLI_SOURCES
     src/core_service/core_service_impl.cpp
     src/core_service/core_service_dispatch.cpp
 
-    # SDK provider implementation (needed for in-process core_service)
-    ${LOGOS_LIBLOGOS_ROOT}/include/cpp/logos_provider_object.cpp
-
     # Inline path (legacy)
     src/inline/command_line_parser.cpp
     src/inline/call_executor.cpp
@@ -174,12 +166,9 @@ target_link_libraries(logoscore PRIVATE
     Qt${QT_VERSION_MAJOR}::RemoteObjects
 )
 
-# Link the SDK directly when LOGOS_CPP_SDK_ROOT is provided (daemon path
-# pulls in logos::transportSetToJsonString and friends — see the
-# find_package note above).
-if(TARGET logos-cpp-sdk::logos_sdk)
-    target_link_libraries(logoscore PRIVATE logos-cpp-sdk::logos_sdk)
-endif()
+# Link the SDK static library (provides LogosProviderObject, bridge helpers,
+# logos::transportSetToJsonString, and other symbols needed by core_service).
+target_link_libraries(logoscore PRIVATE logos-cpp-sdk::logos_sdk)
 
 target_include_directories(logoscore PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
