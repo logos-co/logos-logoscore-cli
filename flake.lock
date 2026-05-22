@@ -2200,16 +2200,15 @@
         ]
       },
       "locked": {
-        "lastModified": 1779453936,
+        "lastModified": 1779480504,
         "narHash": "sha256-QrKEjuUzvtY5Li2AqR92if0pbzjzTDFqAnHEtyZJ+Po=",
         "owner": "logos-co",
         "repo": "logos-cpp-sdk",
-        "rev": "eddfff2081752bf08d1b586b1b0f41bbc832ce8c",
+        "rev": "c87f3437e38616436df6e475570f9d25abf9b36f",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
-        "ref": "remove_more_qt",
         "repo": "logos-cpp-sdk",
         "type": "github"
       }
