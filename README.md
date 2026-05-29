@@ -10,18 +10,52 @@
 
 ### Using Nix (Recommended)
 
+`logoscore` comes in two flavors: a **dev** build for local iteration and a **portable** build for distribution. The dev build links against dev `logos-liblogos` and works with **dev** modules; the portable build is self-contained and works with **portable** modules. `nix build` (no target) produces the dev binary at `result/bin/logoscore`.
+
+#### Dev Build
+
+A standard Nix derivation whose dependencies live in `/nix/store`. It is the fastest way to iterate during development but is **not portable** — it only runs on the machine that built it. It works with **dev** modules: those produced by a local module `nix build`, or installed by the [package manager](https://github.com/logos-co/logos-package-manager)'s dev build.
+
 ```bash
-# Build logoscore binary (works with dev modules)
-nix build
-
-# Build and run tests
-nix build '.#tests'
-
-# Build portable directory bundle (works with portable modules)
-nix build '.#cli-bundle-dir'
+nix build                        # logoscore binary (dev) — same as '.#cli'
+nix build '.#cli'
+./result/bin/logoscore --help
 ```
 
-The result binary is at `result/bin/logoscore`.
+#### Portable Builds
+
+Portable builds are **fully self-contained** — no `/nix/store` references at runtime. They work with **portable** modules: releases from [logos-modules](https://github.com/logos-co/logos-modules), or modules installed by the package manager's portable build.
+
+| Output | Platform | Format |
+|---|---|---|
+| `cli-bundle-dir` | Linux, macOS | Self-contained flat directory with `bin/`, `lib/`, and `modules/` |
+| `cli-appimage` | Linux | Single-file `.AppImage` executable |
+
+##### Self-contained directory bundle (all platforms)
+```bash
+nix build '.#cli-bundle-dir'
+./result/bin/logoscore --help
+```
+
+##### Linux AppImage (Linux only)
+```bash
+nix build '.#cli-appimage'
+./result/logoscore.AppImage --help
+```
+
+#### Development Shell
+
+```bash
+nix develop
+```
+
+**Note:** In zsh, quote targets containing `#` to prevent glob expansion (e.g., `'.#cli'`).
+
+If you don't have flakes enabled globally:
+
+```bash
+nix build --extra-experimental-features 'nix-command flakes'
+```
 
 ### Running Tests
 
@@ -35,11 +69,6 @@ nix build '.#tests'
 
 # Or via nix checks
 nix flake check
-```
-
-**Note:** In zsh, quote targets with `#` to prevent glob expansion:
-```bash
-nix build '.#logos-logoscore-cli'
 ```
 
 ## Usage
