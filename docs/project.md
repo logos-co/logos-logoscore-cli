@@ -515,6 +515,70 @@ The client/config.json carries `instance_id` rather than a hardcoded registry UR
 
 The token is generated on daemon startup, hashed into `tokens.json["tokens"]`, and emitted raw to `client/auto.json` for the local-default client to pick up. Client commands read it automatically via `client/config.json`'s `token_file` pointer. For remote/CI usage, the token can also be passed via `LOGOSCORE_TOKEN` env var.
 
+### ClientStateFile
+
+**Files:** `src/client/client_state.cpp/h`
+
+**Purpose:** Read/write `<configDir>/client/config.json` — the client's
+dial spec. This is the only daemon-tree file a client command ever opens
+during normal RPC (it never touches `daemon/state.json`,
+`daemon/config.json`, or `daemon/tokens.json`). The daemon auto-emits one
+for the local-default client at boot; remote clients hand-write it (or
+generate it via the `--client-*` flags + `--persist-config`).
+
+**`client/config.json` format** (`version` must equal `kClientStateSchemaVersion`, currently `2`):
+
+```jsonc
+{
+  "version": 2,
+  "token_file": "dario.json",     // filename inside <configDir>/client/ holding
+                                  // the raw token ({"token":"<raw>",...}); read by
+                                  // readTokenFile(), which extracts the "token" field
+  "instance_id": "a3f1c8d20b4e",  // optional; required ONLY for the LocalSocket dial
+                                  // path (registry name local:logos_<module>_<id>).
+                                  // Omitted for remote tcp / tcp_ssl clients.
+  "daemon": {                     // per-module dial spec; map key = module name
+    "core_service": {             // mandatory — RpcClient::connect fails without it
+      "transport": "tcp",         // "local" | "tcp" | "tcp_ssl" (strict allowlist)
+      "host": "192.168.1.20",     // tcp / tcp_ssl
+      "port": 8645,               // tcp / tcp_ssl (0..65535)
+      "codec": "json"             // "json" (default) | "cbor"
+    },
+    "capability_module": {        // required for any remote client: the client's own
+      "transport": "tcp",         // LogosAPIClient does a requestModule handshake
+      "host": "192.168.1.20",     // against capability_module before reaching
+      "port": 8646                // core_service (client.cpp wires this via
+    }                             // LogosAPI::setCapabilityModuleTransport)
+  }
+}
+```
+
+For `tcp_ssl`, each module entry also accepts `"ca": "<path>"` and
+`"verify_peer": true|false`.
+
+**Parsing contract** (`ClientStateFile::read`):
+- The per-module field is **`transport`**, not `protocol`. An unknown value
+  (typo) makes `transportFromJson` return `nullopt`, which fails the *whole*
+  parse (`ClientState{}`, `fileOk=false`) rather than silently dropping the
+  entry — otherwise a missing `core_service`/`capability_module` would
+  surface as an obscure connect error later.
+- A `version` other than `2` is rejected with a "relaunch the daemon to
+  regenerate, or hand-edit" message and `fileOk=false`.
+- `fileOk` (the "usable for dialing" bit `RpcClient::connect` checks) is true
+  iff at least one `daemon` entry parsed **and** `token_file` is non-empty.
+- `core_service` and `capability_module` may target different ports — they're
+  independent daemon listeners. The `--client-*` CLI flags apply one transport
+  shape to *both* modules, so divergent ports require hand-editing this file.
+
+**API:**
+
+| Method | Description |
+|--------|-------------|
+| `ClientStateFile::read() -> ClientState` | Parse `client/config.json` (or return the in-process override set by `setOverride`). `fileOk=false` on missing file, bad version, or invalid transport entry. |
+| `ClientStateFile::write(state) -> bool` | Serialize a `ClientState` back to `client/config.json` (used by the `--persist-config` path). Writes `transport`/`host`/`port`/`codec` (+ `ca`/`verify_peer` for tcp_ssl), and `instance_id` only when non-empty. |
+| `ClientStateFile::setOverride(opt)` | Inject a CLI-flag-merged `ClientState` that `read()` returns verbatim — lets `--client-*` flags affect a run without writing to disk. |
+| `ClientStateFile::readTokenFile(filename) -> string` | Read `<configDir>/client/<filename>` and return its `"token"` field. Empty string if missing/malformed. |
+
 ### Client
 
 **Files:** `src/client/client.cpp/h`
