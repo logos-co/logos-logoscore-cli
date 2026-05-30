@@ -4,12 +4,6 @@ project(LogoscoreCLI LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Find Qt packages
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core RemoteObjects)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core RemoteObjects)
-
-set(CMAKE_AUTOMOC ON)
-
 # Set output directories
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
@@ -165,8 +159,6 @@ target_link_libraries(logoscore PRIVATE
     CLI11::CLI11
     OpenSSL::Crypto
     fmt::fmt
-    Qt${QT_VERSION_MAJOR}::Core
-    Qt${QT_VERSION_MAJOR}::RemoteObjects
 )
 
 # Link the SDK static library (provides LogosProviderObject, bridge helpers,
@@ -181,16 +173,10 @@ target_include_directories(logoscore PRIVATE
     ${LOGOS_MODULE_CLIENT_ROOT}/include
 )
 
-# RPATH so the binary finds liblogos_core at runtime
+# RPATH so the binary finds shared libraries at runtime
 if(APPLE)
-    set(_rpath "@loader_path/../lib")
-    if(DEFINED Qt${QT_VERSION_MAJOR}_DIR)
-        get_filename_component(_qt_lib_dir "${Qt${QT_VERSION_MAJOR}_DIR}/../.." REALPATH)
-        list(APPEND _rpath "${_qt_lib_dir}")
-    endif()
-    list(REMOVE_DUPLICATES _rpath)
     set_target_properties(logoscore PROPERTIES
-        INSTALL_RPATH "${_rpath}"
+        INSTALL_RPATH "@loader_path/../lib"
         BUILD_WITH_INSTALL_RPATH TRUE)
 else()
     set_target_properties(logoscore PROPERTIES
