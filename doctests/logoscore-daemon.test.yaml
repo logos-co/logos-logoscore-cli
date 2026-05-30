@@ -4,18 +4,24 @@ release: ""
 
 intro: |
   This doc-test walks through the **daemon mode** of `logoscore`: start a long-running
-  process, inspect its status, load a module, call methods, and shut it down cleanly.
+  process, inspect its status, load a module, introspect and call it, watch its
+  resource usage, unload and reload it, and finally shut the daemon down — verifying
+  at each stage that the command had the effect we expect.
 
   `logoscore` is the headless CLI frontend for the Logos platform. In daemon mode
   (`-D`), it runs in the background and exposes client subcommands (`status`,
-  `load-module`, `call`, `stop`, …) that connect over a local RPC channel.
+  `list-modules`, `load-module`, `module-info`, `stats`, `call`, `unload-module`,
+  `reload-module`, `stop`, …) that connect over a local RPC channel.
 
 what_you_learn:
   - How to build and run the logoscore CLI
   - How to prepare a modules directory for the daemon to scan
   - How to start the daemon in the background and capture its logs
-  - How to use client subcommands to inspect, load, and call modules
-  - How to stop the daemon when finished
+  - How to inspect the daemon and the modules it has discovered
+  - How to load a module, introspect it with `module-info`, and call its methods
+  - How to read per-module resource usage with `stats`
+  - How `status` reflects the module lifecycle as you load, unload, and reload
+  - How to stop the daemon and confirm it has actually exited
 
 prerequisites:
   - |
@@ -112,6 +118,39 @@ sections:
         text: "Load `test_basic_module` into the running daemon:"
         run: "./logos/bin/logoscore load-module test_basic_module"
         code_block: "logoscore load-module test_basic_module"
+        expect_contains:
+          - "test_basic_module"
+
+      - title: "Confirm the module is now loaded"
+        text: |
+          Re-run `status`. The module that was `not_loaded` before now reports
+          `loaded` (the client emits JSON when its output is piped, as it is here):
+        run: "./logos/bin/logoscore status"
+        code_block: "logoscore status"
+        expect_contains:
+          - "test_basic_module"
+          - '"status":"loaded"'
+
+      - title: "Inspect the module with module-info"
+        text: |
+          `module-info` shows a single module's status and the `Q_INVOKABLE`
+          methods it exposes — the same methods you can `call`:
+        run: "./logos/bin/logoscore module-info test_basic_module"
+        code_block: "logoscore module-info test_basic_module"
+        expect_contains:
+          - "test_basic_module"
+          - '"status":"loaded"'
+          - "returnTrue"
+          - "addInts"
+
+      - title: "Check resource usage with stats"
+        text: |
+          `stats` reports per-module resource usage (process id, CPU, memory) for
+          the modules the daemon is running:
+        run: "./logos/bin/logoscore stats"
+        code_block: "logoscore stats"
+        expect_contains:
+          - "test_basic_module"
 
       - title: "Call methods"
         text: "Invoke methods on the loaded module:"
@@ -121,16 +160,54 @@ sections:
           - '"result":true'
 
       - run: "./logos/bin/logoscore call test_basic_module addInts 2 3"
+        code_block: "logoscore call test_basic_module addInts 2 3"
         expect_contains:
           - '"result":5'
 
       - run: "./logos/bin/logoscore call test_basic_module echo hello"
+        code_block: "logoscore call test_basic_module echo hello"
         expect_contains:
           - "hello"
 
       - run: "./logos/bin/logoscore call test_basic_module returnString"
+        code_block: "logoscore call test_basic_module returnString"
         expect_contains:
           - "test_basic_module"
+
+      - title: "Unload the module"
+        text: "Remove `test_basic_module` from the daemon:"
+        run: "./logos/bin/logoscore unload-module test_basic_module"
+        code_block: "logoscore unload-module test_basic_module"
+        expect_contains:
+          - "test_basic_module"
+          - '"status":"ok"'
+
+      - title: "Confirm the unload took effect"
+        text: |
+          A `call` against the now-unloaded module is rejected — the daemon reports
+          that it is not loaded:
+        run: "./logos/bin/logoscore call test_basic_module returnTrue || true"
+        code_block: "logoscore call test_basic_module returnTrue"
+        post_text: |
+          > The trailing `|| true` lets the doc-test continue past the expected
+          > non-zero exit code so we can assert on the error message.
+        expect_contains:
+          - "error"
+
+      - title: "Reload the module"
+        text: |
+          `reload-module` unloads and re-loads a module in one step (handy after
+          rebuilding it). The module is loaded and callable again afterwards:
+        run: "./logos/bin/logoscore reload-module test_basic_module"
+        code_block: "logoscore reload-module test_basic_module"
+        expect_contains:
+          - "test_basic_module"
+          - '"status":"loaded"'
+
+      - run: "./logos/bin/logoscore call test_basic_module addInts 40 2"
+        code_block: "logoscore call test_basic_module addInts 40 2"
+        expect_contains:
+          - '"result":42'
 
       - title: "Stop the daemon"
         text: "Shut down the daemon cleanly:"
@@ -140,3 +217,15 @@ sections:
           The daemon removes its state file and exits. You can also stop it with
           `Ctrl+C` if running in the foreground, or by sending `SIGTERM` to the
           daemon PID shown in `logoscore status`.
+
+      - run: "sleep 2"
+
+      - title: "Confirm the daemon has stopped"
+        text: |
+          A final `status` confirms the shutdown. With no daemon running, the
+          client reports `not_running` instead of connecting (and exits non-zero,
+          so we add `|| true` to let the doc-test assert on the output):
+        run: "./logos/bin/logoscore status || true"
+        code_block: "logoscore status"
+        expect_contains:
+          - '"status":"not_running"'

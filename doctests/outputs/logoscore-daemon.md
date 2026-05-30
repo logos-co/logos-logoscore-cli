@@ -1,19 +1,25 @@
 # Running Modules with the logoscore Daemon
 
 This doc-test walks through the **daemon mode** of `logoscore`: start a long-running
-process, inspect its status, load a module, call methods, and shut it down cleanly.
+process, inspect its status, load a module, introspect and call it, watch its
+resource usage, unload and reload it, and finally shut the daemon down — verifying
+at each stage that the command had the effect we expect.
 
 `logoscore` is the headless CLI frontend for the Logos platform. In daemon mode
 (`-D`), it runs in the background and exposes client subcommands (`status`,
-`load-module`, `call`, `stop`, …) that connect over a local RPC channel.
+`list-modules`, `load-module`, `module-info`, `stats`, `call`, `unload-module`,
+`reload-module`, `stop`, …) that connect over a local RPC channel.
 
 **What you'll learn:**
 
 - How to build and run the logoscore CLI
 - How to prepare a modules directory for the daemon to scan
 - How to start the daemon in the background and capture its logs
-- How to use client subcommands to inspect, load, and call modules
-- How to stop the daemon when finished
+- How to inspect the daemon and the modules it has discovered
+- How to load a module, introspect it with `module-info`, and call its methods
+- How to read per-module resource usage with `stats`
+- How `status` reflects the module lifecycle as you load, unload, and reload
+- How to stop the daemon and confirm it has actually exited
 
 ## Prerequisites
 
@@ -36,7 +42,7 @@ Build the logoscore CLI from the published flake. The result is symlinked to
 ### 1.1 Build the CLI
 
 ```bash
-nix build 'github:logos-co/logos-logoscore-cli/6febbc7c5d2ffcaea80cff6b28a54fc116a463e1' --out-link ./logos
+nix build 'github:logos-co/logos-logoscore-cli/5c634134d05d1f9faaf1624d3ccb67a6d72aebe6' --out-link ./logos
 ```
 
 The build produces `logos/bin/logoscore` plus bundled runtime libraries and
@@ -132,7 +138,34 @@ Load `test_basic_module` into the running daemon:
 logoscore load-module test_basic_module
 ```
 
-### 3.6 Call methods
+### 3.6 Confirm the module is now loaded
+
+Re-run `status`. The module that was `not_loaded` before now reports
+`loaded` (the client emits JSON when its output is piped, as it is here):
+
+```bash
+logoscore status
+```
+
+### 3.7 Inspect the module with module-info
+
+`module-info` shows a single module's status and the `Q_INVOKABLE`
+methods it exposes — the same methods you can `call`:
+
+```bash
+logoscore module-info test_basic_module
+```
+
+### 3.8 Check resource usage with stats
+
+`stats` reports per-module resource usage (process id, CPU, memory) for
+the modules the daemon is running:
+
+```bash
+logoscore stats
+```
+
+### 3.9 Call methods
 
 Invoke methods on the loaded module:
 
@@ -141,18 +174,51 @@ logoscore call test_basic_module returnTrue
 ```
 
 ```bash
-./logos/bin/logoscore call test_basic_module addInts 2 3
+logoscore call test_basic_module addInts 2 3
 ```
 
 ```bash
-./logos/bin/logoscore call test_basic_module echo hello
+logoscore call test_basic_module echo hello
 ```
 
 ```bash
-./logos/bin/logoscore call test_basic_module returnString
+logoscore call test_basic_module returnString
 ```
 
-### 3.7 Stop the daemon
+### 3.10 Unload the module
+
+Remove `test_basic_module` from the daemon:
+
+```bash
+logoscore unload-module test_basic_module
+```
+
+### 3.11 Confirm the unload took effect
+
+A `call` against the now-unloaded module is rejected — the daemon reports
+that it is not loaded:
+
+```bash
+logoscore call test_basic_module returnTrue
+```
+
+> The trailing `|| true` lets the doc-test continue past the expected
+> non-zero exit code so we can assert on the error message.
+
+### 3.12 Reload the module
+
+`reload-module` unloads and re-loads a module in one step (handy after
+rebuilding it). The module is loaded and callable again afterwards:
+
+```bash
+logoscore reload-module test_basic_module
+```
+
+```bash
+logoscore call test_basic_module addInts 40 2
+```
+
+### 3.13 Stop the daemon
 
 Shut down the daemon cleanly:
 
@@ -163,3 +229,17 @@ logoscore stop
 The daemon removes its state file and exits. You can also stop it with
 `Ctrl+C` if running in the foreground, or by sending `SIGTERM` to the
 daemon PID shown in `logoscore status`.
+
+```bash
+sleep 2
+```
+
+### 3.14 Confirm the daemon has stopped
+
+A final `status` confirms the shutdown. With no daemon running, the
+client reports `not_running` instead of connecting (and exits non-zero,
+so we add `|| true` to let the doc-test assert on the output):
+
+```bash
+logoscore status
+```
