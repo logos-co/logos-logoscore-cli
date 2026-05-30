@@ -1,6 +1,6 @@
 // Universal dispatch for CoreServiceImpl.
-// Implements the LogosProviderObject interface using the Qt-free std overrides
-// and delegates to the universal-typed business methods.
+// Implements the LogosProviderObject interface and delegates to the
+// universal-typed business methods in core_service_impl.cpp.
 
 #include "core_service_impl.h"
 #include <logos_api.h>
@@ -15,7 +15,7 @@ static nlohmann::json stdLogosResultToJson(const StdLogosResult& r)
 }
 
 // ---------------------------------------------------------------------------
-// LogosProviderObject overrides — trivial Qt delegates to std bridge
+// LogosProviderObject overrides — delegates to std bridge
 // ---------------------------------------------------------------------------
 
 QString CoreServiceImpl::providerName() const
@@ -55,7 +55,7 @@ void CoreServiceImpl::init(void* apiInstance)
 }
 
 // ---------------------------------------------------------------------------
-// Universal interface — Qt-free dispatch
+// Universal interface — std dispatch
 // ---------------------------------------------------------------------------
 
 nlohmann::json CoreServiceImpl::callMethodStd(const std::string& methodName,

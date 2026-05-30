@@ -1,7 +1,7 @@
 #include "watch_command.h"
+#include "../../platform/event_loop.h"
 #include <CLI/CLI.hpp>
 #include <fmt/format.h>
-#include <QCoreApplication>
 #include <iostream>
 
 int WatchCommand::execute(const std::vector<std::string>& args)
@@ -39,6 +39,6 @@ int WatchCommand::execute(const std::vector<std::string>& args)
     if (!output().isJsonMode())
         std::cerr << fmt::format("Watching events from '{}'... (Ctrl+C to stop)\n", module);
 
-    QCoreApplication::exec();
+    EventLoop::exec();
     return 0;
 }

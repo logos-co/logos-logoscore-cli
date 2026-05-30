@@ -82,8 +82,7 @@ logoscore-cli/
 | **liblogos** | C library (external) | Core runtime: plugin discovery, loading, dependency resolution, event loop, process stats |
 | **logos-cpp-sdk** | C++ library (external) | RPC client/provider classes: LogosAPI, LogosAPIClient, LogosProviderBase, TokenManager |
 | **logos-cpp-generator** | Build tool (external) | Code generator for LOGOS_METHOD dispatch tables |
-| **Qt6 Core** | Framework | Event loop, JSON handling, process management |
-| **Qt6 RemoteObjects** | Framework | IPC between daemon and module host processes |
+| **logos-cpp-sdk** (event loop) | C++ library (external) | Event loop — abstracted behind `EventLoop` in `src/platform/` |
 | **CMake 3.14+** | Build system | — |
 | **Google Test** | Test framework | — |
 | **Nix** | Package manager | Reproducible builds |
@@ -119,7 +118,7 @@ logoscore -m -l -c            →  Inline path    (single-process, no daemon nee
 
 ### Detection logic (main.cpp)
 
-Before mode detection, `main()` scans argv for `-v`/`--verbose` and installs a custom Qt message handler that suppresses debug/info/warning logs unless verbose is set.
+Before mode detection, `main()` scans argv for `-v`/`--verbose` and installs a log filter via `EventLoop::installLogFilter()` that suppresses debug/info/warning logs unless verbose is set.
 
 ```
 if argv contains "-D" or "daemon"      → daemon path
@@ -148,7 +147,7 @@ main.cpp
        Write <configDir>/client/config.json      // local-default dial spec (first-boot only)
        If --persist-config: write <configDir>/daemon/config.json (operator intent)
     8. Print startup message to stdout
-    9. logos_core_exec()                          // Qt event loop (blocks)
+    9. EventLoop::exec()                           // event loop (blocks)
    10. On SIGINT/SIGTERM or shutdown RPC:
        logos_core_cleanup()
        Remove daemon/state.json (tokens.json + config.json survive)
@@ -259,41 +258,44 @@ The `core_service` module is the RPC gateway between CLI clients and the daemon.
 
 ### Definition
 
-**Files:** `src/core_service/core_service_impl.h`
+**Files:** `src/core_service/core_service_impl.h`, `src/core_service/core_service_impl.cpp` (business logic), `src/core_service/core_service_dispatch.cpp` (SDK adapter)
 
 ```cpp
-#include <logos_provider_object.h>
-
-class CoreServiceImpl : public LogosProviderBase
+class CoreServiceImpl : public LogosProviderObject
 {
-    LOGOS_PROVIDER(CoreServiceImpl, "core_service", "1.0.0")
-
 public:
-    // Module lifecycle
-    LOGOS_METHOD QVariant loadModule(const QString& name);
-    LOGOS_METHOD QVariant unloadModule(const QString& name);
-    LOGOS_METHOD QVariant reloadModule(const QString& name);
+    // Module lifecycle (all use std::string / nlohmann::json)
+    StdLogosResult loadModule(const std::string& name);
+    StdLogosResult unloadModule(const std::string& name);
+    StdLogosResult reloadModule(const std::string& name);
 
     // Queries
-    LOGOS_METHOD QJsonArray listModules(const QString& filter);
-    LOGOS_METHOD QJsonObject getStatus();
-    LOGOS_METHOD QJsonObject getModuleInfo(const QString& name);
-    LOGOS_METHOD QJsonArray  getModuleStats();
+    LogosList listModules(const std::string& filter);
+    LogosMap getStatus();
+    LogosMap getModuleInfo(const std::string& name);
+    LogosList getModuleStats();
 
     // Proxied call — delegates to target module
-    LOGOS_METHOD QVariant callModuleMethod(const QString& module,
-                                          const QString& method,
-                                          const QVariantList& args);
+    StdLogosResult callModuleMethod(const std::string& module,
+                                    const std::string& method,
+                                    const LogosList& args);
 
     // Event forwarding
-    LOGOS_METHOD bool watchModuleEvents(const QString& module,
-                                       const QString& eventName);
+    bool watchModuleEvents(const std::string& module,
+                           const std::string& eventName);
 
     // Daemon lifecycle
-    LOGOS_METHOD QJsonObject shutdown();
+    LogosMap shutdown();
 
-protected:
-    void onInit(LogosAPI* api) override;
+    void onInit(LogosAPI* api);
+
+    // LogosProviderObject SDK interface (in core_service_dispatch.cpp)
+    // — thin bridge delegates to the std methods above
+
+    // LogosProviderObject universal interface
+    nlohmann::json callMethodStd(const std::string& methodName,
+                                 const nlohmann::json& args) override;
+    std::vector<LogosMethodMetadata> getMethodsStd() override;
 
 private:
     LogosAPI* m_api = nullptr;
@@ -313,26 +315,18 @@ private:
 | `getModuleStats()` | Calls `logos_core_get_module_stats()`. Returns CPU/memory per module |
 | `callModuleMethod(module, method, args)` | Uses `m_api->getClient(module)->invokeRemoteMethod()` to proxy the call to the target module. Returns the result. `LogosResult` return values are unpacked into `{success, value, error}` here so that the JSON shape is identical regardless of whether the daemon-module hop went over the local socket (QRO) or the plain-C++ transport (tcp / tcp_ssl). |
 | `watchModuleEvents(module, event)` | Registers an event listener on the target module via `m_api->getClient(module)->onEvent()`. Forwards received events by calling `emitEvent()` on core_service, which the CLI client receives over its own event subscription |
-| `shutdown()` | Schedules `QCoreApplication::quit()` after a 200ms delay (to allow the RPC response to be sent), then the daemon performs its normal cleanup (unload modules, remove `daemon/state.json`, exit) |
+| `shutdown()` | Schedules `EventLoop::quit()` after a 200ms delay (to allow the RPC response to be sent), then the daemon performs its normal cleanup (unload modules, remove `daemon/state.json`, exit) |
 
-### Loader
+### Registration
 
-**Files:** `src/core_service/core_service_loader.h`
+Unlike dynamically loaded modules, `core_service` is registered in-process in `daemon.cpp`:
 
 ```cpp
-class CoreServiceLoader : public QObject, public PluginInterface, public LogosProviderPlugin
-{
-    Q_OBJECT
-    Q_PLUGIN_METADATA(IID LogosProviderPlugin_iid FILE "metadata.json")
-    Q_INTERFACES(PluginInterface LogosProviderPlugin)
-
-public:
-    QString name() const override { return "core_service"; }
-    QString version() const override { return "1.0.0"; }
-    LogosProviderObject* createProviderObject() override {
-        return new CoreServiceImpl();
-    }
-};
+auto* coreServiceApi = new LogosAPI("core_service", coreTransports);
+auto* coreServiceImpl = new CoreServiceImpl();
+coreServiceImpl->init(coreServiceApi);
+auto* provider = coreServiceApi->getProvider();
+provider->registerObject("core_service", static_cast<LogosProviderObject*>(coreServiceImpl));
 ```
 
 ### Metadata
@@ -367,13 +361,18 @@ This registers the module directly into the runtime using the C++ SDK classes (`
 
 ### Build integration
 
-The `core_service_dispatch.cpp` file provides a manual `callMethod()` dispatch table and `getMethods()` metadata for `CoreServiceImpl`. Unlike dynamically loaded modules that use `logos-cpp-generator`, core_service uses a hand-written dispatch because it is statically linked into the daemon binary.
+The `core_service_dispatch.cpp` file provides two dispatch layers for `CoreServiceImpl`. Unlike dynamically loaded modules that use `logos-cpp-generator`, core_service uses a hand-written dispatch because it is statically linked into the daemon binary.
+
+The primary dispatch is the universal interface (`callMethodStd`), which maps method names to the `std::string`-based business methods. The SDK-typed `callMethod` override is a thin bridge that delegates to `callMethodStdBridge`.
 
 ```cpp
-// core_service_dispatch.cpp — maps method names to CoreServiceImpl methods
-QVariant CoreServiceImpl::callMethod(const QString& method, const QVariantList& args) {
-    if (method == "loadModule") return loadModule(args.value(0).toString());
-    if (method == "shutdown") return QVariant::fromValue(shutdown());
+// core_service_dispatch.cpp — universal dispatch
+nlohmann::json CoreServiceImpl::callMethodStd(const std::string& methodName,
+                                               const nlohmann::json& args) {
+    if (methodName == "loadModule" && args.size() >= 1)
+        return loadModule(args[0].get<std::string>());
+    if (methodName == "shutdown")
+        return shutdown();
     // ... etc
 }
 ```
@@ -593,22 +592,25 @@ The client is a thin wrapper around `LogosAPIClient`. Each method maps 1:1 to a 
 |--------|---------------------------|
 | `Client::connect() -> bool` | Read `<configDir>/client/config.json`, set `LOGOS_INSTANCE_ID` from `instance_id`, build `LogosTransportConfig` from the dial spec, load token from `token_file` (or `LOGOSCORE_TOKEN` env), create `LogosAPIClient` targeting `"core_service"`, authenticate |
 | `Client::isConnected() -> bool` | — |
-| `Client::loadModule(name) -> QVariant` | `core_service.loadModule(name)` |
-| `Client::unloadModule(name) -> QVariant` | `core_service.unloadModule(name)` |
-| `Client::reloadModule(name) -> QVariant` | `core_service.reloadModule(name)` |
-| `Client::listModules(filter) -> QJsonArray` | `core_service.listModules(filter)` |
-| `Client::getStatus() -> QJsonObject` | `core_service.getStatus()` |
-| `Client::getModuleInfo(name) -> QJsonObject` | `core_service.getModuleInfo(name)` |
-| `Client::getModuleStats() -> QJsonArray` | `core_service.getModuleStats()` |
-| `Client::callModuleMethod(module, method, args) -> QVariant` | `core_service.callModuleMethod(module, method, args)` |
-| `Client::shutdown() -> QJsonObject` | `core_service.shutdown()` |
+| `Client::loadModule(name) -> LogosMap` | `core_service.loadModule(name)` |
+| `Client::unloadModule(name) -> LogosMap` | `core_service.unloadModule(name)` |
+| `Client::reloadModule(name) -> LogosMap` | `core_service.reloadModule(name)` |
+| `Client::listModules(filter) -> LogosList` | `core_service.listModules(filter)` |
+| `Client::getStatus() -> LogosMap` | `core_service.getStatus()` |
+| `Client::getModuleInfo(name) -> LogosMap` | `core_service.getModuleInfo(name)` |
+| `Client::getModuleStats() -> LogosList` | `core_service.getModuleStats()` |
+| `Client::callModuleMethod(module, method, args) -> LogosMap` | `core_service.callModuleMethod(module, method, args)` |
+| `Client::shutdown() -> LogosMap` | `core_service.shutdown()` |
 | `Client::watchModuleEvents(module, event, callback)` | `core_service.watchModuleEvents(module, event)` + event subscription |
 
 **Implementation pattern:**
 
 ```cpp
-QVariant Client::loadModule(const QString& name) {
-    return m_apiClient->invokeRemoteMethod("core_service", "loadModule", name);
+LogosMap RpcClient::loadModule(const std::string& name) {
+    nlohmann::json ret = d->invoke("loadModule", nlohmann::json::array({name}));
+    if (ret.is_object()) return ret;
+    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
+                    {"message", "loadModule('" + name + "') RPC call failed."}};
 }
 ```
 
@@ -639,9 +641,9 @@ QVariant Client::loadModule(const QString& name) {
 
 | Method | Description |
 |--------|-------------|
-| `Config::getToken() -> QString` | Token resolution: only `LOGOSCORE_TOKEN` env var. Filesystem fallback (`client/<token_file>`) lives in `ClientStateFile::readTokenFile` since it requires parsing the client config. |
-| `Config::configDir() -> QString` | Resolve config dir: explicit setter (`--config-dir`) → `LOGOSCORE_CONFIG_DIR` env → `~/.logoscore` |
-| `Config::setConfigDir(QString)` | Process-wide override set from `main` when `--config-dir` is passed |
+| `Config::getToken() -> std::string` | Token resolution: only `LOGOSCORE_TOKEN` env var. Filesystem fallback (`client/<token_file>`) lives in `ClientStateFile::readTokenFile` since it requires parsing the client config. |
+| `Config::configDir() -> std::string` | Resolve config dir: explicit setter (`--config-dir`) → `LOGOSCORE_CONFIG_DIR` env → `~/.logoscore` |
+| `Config::setConfigDir(std::string)` | Process-wide override set from `main` when `--config-dir` is passed |
 | `Config::daemonConfigPath() / daemonStatePath() / daemonTokensPath() / daemonTokensDir()` | Daemon-side path helpers under `<configDir>/daemon/` |
 | `Config::clientConfigPath() / clientDir() / clientTokenPath(filename)` | Client-side path helpers under `<configDir>/client/` |
 
@@ -699,7 +701,7 @@ logoscore daemon [--modules-dir <path>]...
 1. `logos_core_init(argc, argv)`, add module directories, `logos_core_start()`
 2. Register `core_service` in-process via `logos_core_register_module()`
 3. Write `~/.logoscore/daemon/state.json` (listeners + hashed-token table) and emit `~/.logoscore/client/config.json` + `~/.logoscore/client/auto.json` for the local client
-4. `logos_core_exec()` (Qt event loop — blocks)
+4. `EventLoop::exec()` (event loop — blocks)
 5. On SIGINT/SIGTERM: `logos_core_cleanup()`, remove `daemon/state.json`, exit
 
 **Exit codes:** 0 on clean shutdown, 1 on error.
@@ -864,7 +866,7 @@ logoscore stop
 **Behavior:**
 1. Connects to daemon via `Client`
 2. Calls `core_service.shutdown()`
-3. core_service schedules `QCoreApplication::quit()` after 200ms delay
+3. core_service schedules `EventLoop::quit()` after 200ms delay
 4. If the RPC response arrives: prints success and exits
 5. If the daemon exits before the response (RPC_FAILED): treats it as success — the daemon is already gone
 
@@ -895,7 +897,7 @@ logoscore load-module waku
   → Client::loadModule("waku")
     → LogosAPIClient::invokeRemoteMethod(
         "core_service", "loadModule", "waku")
-      ───── IPC (Qt Remote Objects) ─────→
+      ───── IPC (SDK transport layer) ────→
                                           CoreServiceImpl::loadModule("waku")
                                             → logos_core_load_module("waku", true)
                                             → build result JSON
@@ -930,7 +932,7 @@ Client commands call core_service LOGOS_METHODs, which delegate to liblogos inte
 | `call` | `callModuleMethod(module, method, args)` | `LogosAPIClient::invokeRemoteMethod` (proxied to target module) |
 | `watch` | `watchModuleEvents(module, event)` | `LogosAPIClient::onEvent` (forwarded) |
 | `stats` | `getModuleStats()` | `logos_core_get_module_stats` |
-| `stop` | `shutdown()` | `QTimer::singleShot(200, ..., &QCoreApplication::quit)` |
+| `stop` | `shutdown()` | `std::thread` + 200ms delay + `EventLoop::quit()` |
 | `info` | alias for `module-info` | — |
 
 ### Inline path — direct liblogos

@@ -8,7 +8,7 @@
 #include <logos_transport_config.h>
 #include <token_manager.h>
 
-#include <QCoreApplication>
+#include "../platform/event_loop.h"
 
 #include <fmt/format.h>
 #include <chrono>
@@ -174,7 +174,7 @@ LogosMap RpcClient::getStatus()
     nlohmann::json ret = d->invoke("getStatus");
     if (ret.is_object()) return ret;
 
-    std::string version = QCoreApplication::applicationVersion().toStdString();
+    std::string version = EventLoop::applicationVersion();
     LogosMap daemon{{"status","not_running"},{"version", version}};
     if (!d->instanceId.empty())
         daemon["instance_id"] = d->instanceId;
@@ -253,7 +253,6 @@ bool RpcClient::watchModuleEvents(const std::string& module,
             if (!data[0].is_string() || data[0].get<std::string>() != module)
                 return;
 
-            // Build ISO timestamp without Qt date helpers to avoid Qt includes
             auto now = std::chrono::system_clock::now();
             std::time_t tt = std::chrono::system_clock::to_time_t(now);
             struct tm utc{};

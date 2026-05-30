@@ -8,7 +8,7 @@
     # public symbols (e.g. logos::transportSetToJsonString) without
     # relying on the symbol surviving liblogos_core's link-time
     # dead-strip. liblogos's own SDK pin still drives transitive deps.
-    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk";
+    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk/remove_more_qt_4";
     logos-liblogos.url = "github:logos-co/logos-liblogos";
     logos-module-client.url = "github:logos-co/logos-module-client";
     logos-capability-module.url = "github:logos-co/logos-capability-module";

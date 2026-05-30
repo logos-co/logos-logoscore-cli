@@ -26,7 +26,7 @@ The CLI follows a daemon + client architecture. A long-running daemon process ho
                     │  │ (in-process module)│  │
                     │  └─────────▲──────────┘  │
                     │            │             │
-                    │     Qt Remote Objects    │
+                    │      SDK IPC layer       │
                     │            │             │
                     └────────────┼─────────────┘
                                │
@@ -41,7 +41,7 @@ The CLI follows a daemon + client architecture. A long-running daemon process ho
 ```
 
 **Daemon** (`logoscore -D`):
-- Starts the Logos Core runtime and Qt event loop.
+- Starts the Logos Core runtime and event loop.
 - Discovers modules in configured directories.
 - Writes `~/.logoscore/daemon/state.json` (live runtime state — instance_id, pid, started_at, resolved transports) on startup, removed on clean shutdown.
 - Maintains `~/.logoscore/daemon/tokens.json` (hashed-at-rest accepted-token list — survives restarts).
@@ -769,10 +769,10 @@ Uptime:        2h 14m
 Dependencies:  waku, store
 
 Methods:
-  send_message(text: QString) -> QString
-  get_history() -> QJsonArray
-  set_nickname(name: QString) -> bool
-  get_status() -> QString
+  send_message(text: string) -> string
+  get_history() -> json array
+  set_nickname(name: string) -> bool
+  get_status() -> string
 ```
 
 **Crashed module:**
@@ -798,10 +798,10 @@ $ logoscore module-info chat --json
   "uptime_seconds": 8040,
   "dependencies": ["waku", "store"],
   "methods": [
-    {"name": "send_message", "params": [{"name": "text", "type": "QString"}], "return_type": "QString"},
-    {"name": "get_history", "params": [], "return_type": "QJsonArray"},
-    {"name": "set_nickname", "params": [{"name": "name", "type": "QString"}], "return_type": "bool"},
-    {"name": "get_status", "params": [], "return_type": "QString"}
+    {"name": "send_message", "params": [{"name": "text", "type": "string"}], "return_type": "string"},
+    {"name": "get_history", "params": [], "return_type": "json"},
+    {"name": "set_nickname", "params": [{"name": "name", "type": "string"}], "return_type": "bool"},
+    {"name": "get_status", "params": [], "return_type": "string"}
   ]
 }
 ```
@@ -1123,9 +1123,9 @@ logoscore module-info chat --json
 #   "uptime_seconds": 5,
 #   "dependencies": ["waku", "store"],
 #   "methods": [
-#     {"name": "send_message", "params": [{"name": "text", "type": "QString"}], "return_type": "QString"},
-#     {"name": "get_history", "params": [], "return_type": "QJsonArray"},
-#     {"name": "get_status", "params": [], "return_type": "QString"}
+#     {"name": "send_message", "params": [{"name": "text", "type": "string"}], "return_type": "string"},
+#     {"name": "get_history", "params": [], "return_type": "json"},
+#     {"name": "get_status", "params": [], "return_type": "string"}
 #   ]
 # }
 # Agent now knows send_message takes a text param and get_history returns an array.
@@ -1259,7 +1259,7 @@ kill $WATCH_PID
    → Exits
 
    Alternatively: Ctrl+C / kill <pid> / SIGTERM
-   → Signal handler triggers QCoreApplication::quit()
+   → Signal handler triggers EventLoop::quit()
    → Same cleanup as above
 ```
 

@@ -3,7 +3,7 @@
 #include <logos_api.h>
 #include <logos_api_client.h>
 
-#include <QCoreApplication>
+#include "../platform/event_loop.h"
 #include <algorithm>
 #include <chrono>
 #include <thread>
@@ -203,7 +203,7 @@ LogosMap CoreServiceImpl::getModuleInfo(const std::string& name)
 
         if (m_api) {
             // Use the nlohmann::json overload — no QJson types needed here
-            LogosAPIClient* moduleClient = m_api->getClient(QString::fromStdString(name));
+            LogosAPIClient* moduleClient = m_api->getClient(name);
             if (moduleClient) {
                 nlohmann::json methods = moduleClient->invokeRemoteMethod(
                     name, "getPluginMethods", nlohmann::json::array());
@@ -248,7 +248,7 @@ StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
         return {false, result, "core_service not initialized."};
     }
 
-    LogosAPIClient* moduleClient = m_api->getClient(QString::fromStdString(module));
+    LogosAPIClient* moduleClient = m_api->getClient(module);
     if (!moduleClient) {
         result["status"] = "error";
         result["code"] = "MODULE_NOT_LOADED";
@@ -256,7 +256,7 @@ StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
         return {false, result, "Module '" + module + "' is not loaded."};
     }
 
-    // The nlohmann::json overload handles QVariant<->json conversion internally.
+    // The nlohmann::json overload handles type conversion internally.
     nlohmann::json ret = moduleClient->invokeRemoteMethod(module, method, args);
 
     if (ret.is_null()) {
@@ -284,11 +284,11 @@ bool CoreServiceImpl::watchModuleEvents(const std::string& module,
     if (!m_api)
         return false;
 
-    LogosAPIClient* moduleClient = m_api->getClient(QString::fromStdString(module));
+    LogosAPIClient* moduleClient = m_api->getClient(module);
     if (!moduleClient)
         return false;
 
-    LogosObject* obj = moduleClient->requestObject(QString::fromStdString(module));
+    LogosObject* obj = moduleClient->requestObject(module);
     if (!obj)
         return false;
 
@@ -320,7 +320,7 @@ LogosMap CoreServiceImpl::shutdown()
 
     std::thread([]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        QCoreApplication::quit();
+        EventLoop::quit();
     }).detach();
 
     return result;
