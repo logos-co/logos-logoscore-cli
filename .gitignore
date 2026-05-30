@@ -1,2 +1,3 @@
 result
-outputs/
+doctests/outputs/*
+!doctests/outputs/*.md

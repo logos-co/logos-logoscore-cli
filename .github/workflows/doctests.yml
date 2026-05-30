@@ -56,9 +56,36 @@ jobs:
           name: logos-co
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
 
+      # Resolve the commit under test. For pull requests this is the PR's head
+      # commit (not the synthetic merge commit); for pushes it's the pushed
+      # commit. Passed to --release-for below so the doc-test builds THIS commit
+      # of logos-logoscore-cli instead of the latest published flake.
+      #
+      # Fork PRs are the exception: their head commit lives in the fork, not in
+      # logos-co/logos-logoscore-cli, so nix could not fetch
+      # `github:logos-co/logos-logoscore-cli/<sha>`. We blank the SHA for forks
+      # (--release-for repo= → pins that repo to latest), so the doc-test still
+      # runs for fork PRs, just against master as before.
+      - name: Resolve commit under test
+        id: commit
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ] && \
+             [ "${{ github.event.pull_request.head.repo.fork }}" = "true" ]; then
+            echo "sha=" >> "$GITHUB_OUTPUT"
+            echo "Fork PR detected — doc-test will run against latest master."
+          else
+            echo "sha=${{ github.event.pull_request.head.sha || github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
       # The runner is the shared `doctest` CLI, invoked directly via its flake
       # (github:logos-co/logos-doctest). The flake bundles Python + PyYAML
       # (+ rich), so no pip install step is needed.
+      #
+      # --release-for pins the {release} placeholder for this one repo to the
+      # commit under test, so `github:logos-co/logos-logoscore-cli{release}` in
+      # the spec becomes `.../<sha>` — the doc-test exercises this PR/push rather
+      # than master. Every other repo URL still resolves to latest.
       - name: Run logoscore daemon doc-test
         run: |
           # --continue-on-fail so the run walks every step and the published
@@ -68,6 +95,7 @@ jobs:
             doctests/logoscore-daemon.test.yaml \
             --verbose \
             --continue-on-fail \
+            --release-for logos-logoscore-cli=${{ steps.commit.outputs.sha }} \
             --report "${{ runner.temp }}/logoscore-doctest-report.html"
 
       - name: Stage report for upload
@@ -94,6 +122,7 @@ jobs:
         run: |
           nix run github:logos-co/logos-doctest -- generate \
             doctests/logoscore-daemon.test.yaml \
+            --release-for logos-logoscore-cli=${{ steps.commit.outputs.sha }} \
             -o /tmp/logoscore-daemon.md
           test -s /tmp/logoscore-daemon.md
           echo "Generated markdown successfully"

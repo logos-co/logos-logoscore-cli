@@ -22,18 +22,46 @@ read -r -a DOCTEST <<< "${DOCTEST:-nix run github:logos-co/logos-doctest --}"
 OUTPUT_DIR="./outputs"
 SPEC="logoscore-daemon.test.yaml"
 
+# Build the doc-test against THIS repo's current commit rather than the latest
+# published flake. The spec's `github:logos-co/logos-logoscore-cli{release}` URL
+# is pinned to $COMMIT via --release-for, so the run exercises exactly what's
+# checked out here. Override by exporting COMMIT (e.g. a tag), or set COMMIT=""
+# to fall back to latest.
+#
+# Note: nix fetches the commit from the GitHub remote, so $COMMIT must be pushed
+# to logos-co/logos-logoscore-cli. A local-only / uncommitted HEAD won't resolve;
+# export COMMIT="" (or push first) in that case.
+COMMIT="${COMMIT-$(git rev-parse HEAD)}"
+RELEASE_FOR=()
+if [ -n "${COMMIT}" ]; then
+  RELEASE_FOR=(--release-for "logos-logoscore-cli=${COMMIT}")
+  echo "==> Pinning logos-logoscore-cli to ${COMMIT}"
+else
+  echo "==> COMMIT empty; building logos-logoscore-cli from latest"
+fi
+
 echo "==> Clearing previous ${OUTPUT_DIR}/"
+# A prior run copies module artifacts out of the read-only nix store, so the
+# directories land read-only (r-x) too. `rm -rf` can't delete files inside a
+# directory it can't write to, so restore write permission first.
+if [ -e "${OUTPUT_DIR}" ]; then
+  chmod -R u+w "${OUTPUT_DIR}" 2>/dev/null || true
+fi
 rm -rf "${OUTPUT_DIR}"
 
 echo "==> Running ${SPEC} into ${OUTPUT_DIR}/"
+# ${RELEASE_FOR[@]+...} guards the expansion so an empty array doesn't trip
+# `set -u` on older bash (e.g. macOS's stock 3.2).
 "${DOCTEST[@]}" run "${SPEC}" \
   --verbose \
   --continue-on-fail \
+  ${RELEASE_FOR[@]+"${RELEASE_FOR[@]}"} \
   --output-dir "${OUTPUT_DIR}/"
 
 echo "==> Generating ${OUTPUT_DIR}/logoscore-daemon.md"
 mkdir -p "${OUTPUT_DIR}"
 "${DOCTEST[@]}" generate "${SPEC}" \
+  ${RELEASE_FOR[@]+"${RELEASE_FOR[@]}"} \
   -o "${OUTPUT_DIR}/logoscore-daemon.md"
 
 if [ ! -d "${OUTPUT_DIR}" ]; then
