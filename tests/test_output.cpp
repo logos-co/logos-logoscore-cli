@@ -167,8 +167,8 @@ TEST_F(OutputTest, PrintModuleInfo_Json)
         {"methods", nlohmann::json::array({
             LogosMap{
                 {"name", "send_message"},
-                {"params", nlohmann::json::array({LogosMap{{"name", "text"}, {"type", "QString"}}})},
-                {"return_type", "QString"}
+                {"parameters", nlohmann::json::array({LogosMap{{"name", "text"}, {"type", "QString"}}})},
+                {"returnType", "QString"}
             }
         })}
     };

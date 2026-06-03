@@ -271,9 +271,10 @@ void Output::printModuleInfo(const LogosMap& info)
         std::cout << "Methods:" << std::endl;
         for (const auto& v : methods) {
             std::string methodName = v.value("name", std::string{});
-            std::string returnType = v.value("return_type", std::string{});
+            std::string returnType = v.value("returnType", std::string{});
+            std::string description = v.value("description", std::string{});
 
-            LogosList params = v.value("params", LogosList::array());
+            LogosList params = v.value("parameters", LogosList::array());
             std::vector<std::string> paramStrs;
             for (const auto& p : params) {
                 paramStrs.push_back(
@@ -284,6 +285,9 @@ void Output::printModuleInfo(const LogosMap& info)
             std::cout << "  " << methodName
                       << "(" << strutil::join(paramStrs, ", ") << ")"
                       << " -> " << returnType << std::endl;
+            if (!description.empty()) {
+                std::cout << "      " << description << std::endl;
+            }
         }
     }
 }

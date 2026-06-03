@@ -153,7 +153,7 @@ logoscore reload-module chat
 logoscore list-modules
 logoscore list-modules --loaded    # only loaded modules
 
-# Get detailed module info (methods, dependencies, crash details)
+# Get detailed module info (methods + descriptions, dependencies, crash details)
 logoscore module-info chat
 logoscore info chat                # alias
 
@@ -514,8 +514,8 @@ logoscore status --json | jq -e '.daemon.status == "running"' > /dev/null
 # Load modules
 logoscore load-module chat --json
 
-# Discover available methods
-logoscore module-info chat --json | jq '.methods[].name'
+# Discover available methods (with their documentation)
+logoscore module-info chat --json | jq '.methods[] | {name, description}'
 
 # Call a method
 logoscore call chat send_message "hello from script" --json

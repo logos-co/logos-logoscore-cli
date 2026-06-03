@@ -792,7 +792,7 @@ logoscore module-info <name>
 **Behavior:**
 1. Connects to daemon via `Client`
 2. Calls `core_service.getModuleInfo(name)`
-3. For loaded modules: displays name, version, status, PID, uptime, dependencies, available methods
+3. For loaded modules: displays name, version, status, PID, uptime, dependencies, and available methods — each method shows its signature and, when documented, a `description` sourced from the method's header doc comment (carried in the module's `getPluginMethods` introspection)
 4. For crashed modules: displays name, version, status, exit code, crash signal, crashed_at, restart count, last log line, PID before crash
 5. For not-loaded modules: displays name, version, status, dependencies
 
