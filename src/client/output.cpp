@@ -285,8 +285,16 @@ void Output::printModuleInfo(const LogosMap& info)
             std::cout << "  " << methodName
                       << "(" << strutil::join(paramStrs, ", ") << ")"
                       << " -> " << returnType << std::endl;
-            if (!description.empty()) {
-                std::cout << "      " << description << std::endl;
+            // Print each line of the (possibly multi-line) description indented,
+            // preserving the doc comment's original line breaks.
+            for (size_t start = 0; !description.empty() && start <= description.size();) {
+                size_t nl = description.find('\n', start);
+                std::string dline = (nl == std::string::npos)
+                    ? description.substr(start)
+                    : description.substr(start, nl - start);
+                std::cout << "      " << dline << std::endl;
+                if (nl == std::string::npos) break;
+                start = nl + 1;
             }
         }
     }

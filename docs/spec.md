@@ -778,10 +778,11 @@ Methods:
 ```
 
 Each method line shows `name(param: type, …) -> returnType`. When a method
-carries documentation, its `description` is printed on the following line,
-indented. The description originates from the doc comment written directly
-above the method's declaration in the module's header (see the module-builder
-docs); methods without a doc comment simply omit the line.
+carries documentation, its `description` is printed on the following line(s),
+indented — a multi-line doc comment keeps its line breaks, one indented line
+each. The description originates from the doc comment written directly above the
+method's declaration in the module's header (see the module-builder docs);
+methods without a doc comment simply omit it.
 
 **Crashed module:**
 ```
