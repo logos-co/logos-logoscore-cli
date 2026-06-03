@@ -180,6 +180,35 @@ TEST_F(OutputTest, PrintModuleInfo_Json)
     EXPECT_EQ(doc["name"].get<std::string>(), "chat");
 }
 
+// Human-mode: the methods loop must read the real getPluginMethods keys
+// (returnType / parameters) and render a multi-line description with each
+// line preserved.
+TEST_F(OutputTest, PrintModuleInfo_Human_MethodsAndDescriptions)
+{
+    CaptureStdout cap;
+    LogosMap info{
+        {"name", "chat"},
+        {"version", "0.2.0"},
+        {"status", "loaded"},
+        {"methods", nlohmann::json::array({
+            LogosMap{
+                {"name", "send_message"},
+                {"returnType", "QString"},
+                {"parameters", nlohmann::json::array({LogosMap{{"name", "text"}, {"type", "QString"}}})},
+                {"description", "Sends a message.\nUses the active channel."}
+            }
+        })}
+    };
+    humanOutput.printModuleInfo(info);
+
+    std::string out = cap.str();
+    // Signature is built from returnType + parameters (the keys this fixes).
+    EXPECT_NE(out.find("send_message(text: QString) -> QString"), std::string::npos);
+    // Multi-line description: both lines rendered, line breaks preserved.
+    EXPECT_NE(out.find("Sends a message."), std::string::npos);
+    EXPECT_NE(out.find("Uses the active channel."), std::string::npos);
+}
+
 TEST_F(OutputTest, PrintEvent_Ndjson)
 {
     CaptureStdout cap;
