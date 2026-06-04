@@ -770,10 +770,19 @@ Dependencies:  waku, store
 
 Methods:
   send_message(text: QString) -> QString
+      Sends a chat message to the active channel.
   get_history() -> QJsonArray
+      Returns the message history for the active channel.
   set_nickname(name: QString) -> bool
   get_status() -> QString
 ```
+
+Each method line shows `name(param: type, …) -> returnType`. When a method
+carries documentation, its `description` is printed on the following line(s),
+indented — a multi-line doc comment keeps its line breaks, one indented line
+each. The description originates from the doc comment written directly above the
+method's declaration in the module's header (see the module-builder docs);
+methods without a doc comment simply omit it.
 
 **Crashed module:**
 ```
@@ -798,13 +807,18 @@ $ logoscore module-info chat --json
   "uptime_seconds": 8040,
   "dependencies": ["waku", "store"],
   "methods": [
-    {"name": "send_message", "params": [{"name": "text", "type": "QString"}], "return_type": "QString"},
-    {"name": "get_history", "params": [], "return_type": "QJsonArray"},
-    {"name": "set_nickname", "params": [{"name": "name", "type": "QString"}], "return_type": "bool"},
-    {"name": "get_status", "params": [], "return_type": "QString"}
+    {"name": "send_message", "signature": "send_message(QString)", "returnType": "QString", "isInvokable": true, "description": "Sends a chat message to the active channel.", "parameters": [{"name": "text", "type": "QString"}]},
+    {"name": "get_history", "signature": "get_history()", "returnType": "QJsonArray", "isInvokable": true, "description": "Returns the message history for the active channel.", "parameters": []},
+    {"name": "set_nickname", "signature": "set_nickname(QString)", "returnType": "bool", "isInvokable": true, "parameters": [{"name": "name", "type": "QString"}]},
+    {"name": "get_status", "signature": "get_status()", "returnType": "QString", "isInvokable": true, "parameters": []}
   ]
 }
 ```
+
+The `methods` array is the module's `getPluginMethods` introspection, emitted
+verbatim. Each entry carries `name`, `signature`, `returnType`, `isInvokable`,
+`parameters` (each `{name, type}`), and — when the method is documented —
+`description` (sourced from the method's header doc comment).
 
 **Crashed module (JSON):**
 ```json
@@ -1123,12 +1137,13 @@ logoscore module-info chat --json
 #   "uptime_seconds": 5,
 #   "dependencies": ["waku", "store"],
 #   "methods": [
-#     {"name": "send_message", "params": [{"name": "text", "type": "QString"}], "return_type": "QString"},
-#     {"name": "get_history", "params": [], "return_type": "QJsonArray"},
-#     {"name": "get_status", "params": [], "return_type": "QString"}
+#     {"name": "send_message", "signature": "send_message(QString)", "returnType": "QString", "isInvokable": true, "description": "Sends a chat message to the active channel.", "parameters": [{"name": "text", "type": "QString"}]},
+#     {"name": "get_history", "signature": "get_history()", "returnType": "QJsonArray", "isInvokable": true, "description": "Returns the message history for the active channel.", "parameters": []},
+#     {"name": "get_status", "signature": "get_status()", "returnType": "QString", "isInvokable": true, "parameters": []}
 #   ]
 # }
-# Agent now knows send_message takes a text param and get_history returns an array.
+# Agent now knows send_message takes a text param and returns a string, and —
+# from each method's "description" — what it does, without any external docs.
 
 # Step 5: Call a method
 logoscore call chat send_message "hello from agent"
@@ -1202,7 +1217,7 @@ kill $WATCH_PID
 | Exit codes per error category | Agent can branch: `if exit_code == 2, start daemon; if exit_code == 3, load module` |
 | Error messages with recovery commands | Agent can extract and execute the suggested fix directly |
 | `status` as single dashboard | One command gives daemon health + all module states — no need to chain multiple commands |
-| `module-info` with method signatures | Agent discovers available operations without documentation — it can read the schema and construct calls |
+| `module-info` with method signatures + descriptions | Agent discovers available operations and their intent — it reads each method's schema and `description` to construct calls without external docs |
 | `module-info` with crash metadata | Agent can programmatically distinguish OOM (137/SIGKILL) from segfault (139/SIGSEGV) from clean error (non-zero) |
 | `reload-module` on unloaded module | Falls back to load instead of erroring — reduces edge cases for agents that just want a module running |
 | NDJSON streaming | Agent processes events line-by-line without buffering the full stream |
