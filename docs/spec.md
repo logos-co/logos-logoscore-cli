@@ -229,7 +229,7 @@ Show detailed information about a specific module.
 logoscore module-info <name>
 ```
 
-Displays extended metadata: version, status, dependencies, available methods, process info (PID, uptime), and crash details if applicable. This is the deep-inspection counterpart to `list-modules`.
+Displays extended metadata: version, status, dependencies, available methods, emitted events, process info (PID, uptime), and crash details if applicable. Methods and events each carry their `description` (from the module's header doc comments) when documented. This is the deep-inspection counterpart to `list-modules`.
 
 ### `call <module> <method> [args...]`
 
@@ -775,6 +775,11 @@ Methods:
       Returns the message history for the active channel.
   set_nickname(name: QString) -> bool
   get_status() -> QString
+
+Events:
+  message_received(from: QString, body: QString)
+      Emitted when a new message arrives on the active channel.
+  connection_changed(online: bool)
 ```
 
 Each method line shows `name(param: type, …) -> returnType`. When a method
@@ -783,6 +788,12 @@ indented — a multi-line doc comment keeps its line breaks, one indented line
 each. The description originates from the doc comment written directly above the
 method's declaration in the module's header (see the module-builder docs);
 methods without a doc comment simply omit it.
+
+The **Events** section lists the events the module emits, in the same
+`name(param: type, …)` form — but with no return type, since events are
+fire-and-forget. An event's `description` (from the doc comment above its
+`logos_events:` declaration) is printed indented beneath it, exactly as for
+methods. The section is omitted when the module declares no events.
 
 **Crashed module:**
 ```
@@ -811,6 +822,10 @@ $ logoscore module-info chat --json
     {"name": "get_history", "signature": "get_history()", "returnType": "QJsonArray", "isInvokable": true, "description": "Returns the message history for the active channel.", "parameters": []},
     {"name": "set_nickname", "signature": "set_nickname(QString)", "returnType": "bool", "isInvokable": true, "parameters": [{"name": "name", "type": "QString"}]},
     {"name": "get_status", "signature": "get_status()", "returnType": "QString", "isInvokable": true, "parameters": []}
+  ],
+  "events": [
+    {"name": "message_received", "signature": "message_received(QString,QString)", "description": "Emitted when a new message arrives on the active channel.", "parameters": [{"name": "from", "type": "QString"}, {"name": "body", "type": "QString"}]},
+    {"name": "connection_changed", "signature": "connection_changed(bool)", "parameters": [{"name": "online", "type": "bool"}]}
   ]
 }
 ```
@@ -819,6 +834,12 @@ The `methods` array is the module's `getPluginMethods` introspection, emitted
 verbatim. Each entry carries `name`, `signature`, `returnType`, `isInvokable`,
 `parameters` (each `{name, type}`), and — when the method is documented —
 `description` (sourced from the method's header doc comment).
+
+The `events` array is the module's `getPluginEvents` introspection. Each entry
+carries `name`, `signature`, `parameters` (each `{name, type}`), and — when the
+event is documented — `description`. There is no `returnType`/`isInvokable`:
+events are void. Modules with no declared events report an empty array (legacy
+`provider` modules always do).
 
 **Crashed module (JSON):**
 ```json
@@ -1140,10 +1161,14 @@ logoscore module-info chat --json
 #     {"name": "send_message", "signature": "send_message(QString)", "returnType": "QString", "isInvokable": true, "description": "Sends a chat message to the active channel.", "parameters": [{"name": "text", "type": "QString"}]},
 #     {"name": "get_history", "signature": "get_history()", "returnType": "QJsonArray", "isInvokable": true, "description": "Returns the message history for the active channel.", "parameters": []},
 #     {"name": "get_status", "signature": "get_status()", "returnType": "QString", "isInvokable": true, "parameters": []}
+#   ],
+#   "events": [
+#     {"name": "message_received", "signature": "message_received(QString,QString)", "description": "Emitted when a new message arrives on the active channel.", "parameters": [{"name": "from", "type": "QString"}, {"name": "body", "type": "QString"}]}
 #   ]
 # }
 # Agent now knows send_message takes a text param and returns a string, and —
 # from each method's "description" — what it does, without any external docs.
+# The "events" array tells it which events it can watch (and what they mean).
 
 # Step 5: Call a method
 logoscore call chat send_message "hello from agent"
