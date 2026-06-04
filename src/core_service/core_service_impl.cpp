@@ -209,6 +209,11 @@ LogosMap CoreServiceImpl::getModuleInfo(const std::string& name)
                     name, "getPluginMethods", nlohmann::json::array());
                 if (methods.is_array())
                     info["methods"] = methods;
+
+                nlohmann::json events = moduleClient->invokeRemoteMethod(
+                    name, "getPluginEvents", nlohmann::json::array());
+                if (events.is_array())
+                    info["events"] = events;
             }
         }
     } else {

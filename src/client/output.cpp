@@ -287,7 +287,39 @@ void Output::printModuleInfo(const LogosMap& info)
                       << " -> " << returnType << std::endl;
             // Print each line of the (possibly multi-line) description indented,
             // preserving the doc comment's original line breaks.
-            for (size_t start = 0; !description.empty() && start <= description.size();) {
+            for (size_t start = 0; !description.empty() && start < description.size();) {
+                size_t nl = description.find('\n', start);
+                std::string dline = (nl == std::string::npos)
+                    ? description.substr(start)
+                    : description.substr(start, nl - start);
+                std::cout << "      " << dline << std::endl;
+                if (nl == std::string::npos) break;
+                start = nl + 1;
+            }
+        }
+    }
+
+    // Events
+    LogosList events = info.value("events", LogosList::array());
+    if (!events.empty()) {
+        std::cout << std::endl;
+        std::cout << "Events:" << std::endl;
+        for (const auto& v : events) {
+            std::string eventName  = v.value("name", std::string{});
+            std::string description = v.value("description", std::string{});
+
+            LogosList params = v.value("parameters", LogosList::array());
+            std::vector<std::string> paramStrs;
+            for (const auto& p : params) {
+                paramStrs.push_back(
+                    p.value("name", std::string{}) + ": " +
+                    p.value("type", std::string{}));
+            }
+
+            // Events are fire-and-forget — no return type.
+            std::cout << "  " << eventName
+                      << "(" << strutil::join(paramStrs, ", ") << ")" << std::endl;
+            for (size_t start = 0; !description.empty() && start < description.size();) {
                 size_t nl = description.find('\n', start);
                 std::string dline = (nl == std::string::npos)
                     ? description.substr(start)
