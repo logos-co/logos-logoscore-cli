@@ -209,6 +209,35 @@ TEST_F(OutputTest, PrintModuleInfo_Human_MethodsAndDescriptions)
     EXPECT_NE(out.find("Uses the active channel."), std::string::npos);
 }
 
+// Human-mode: events render in their own section as `name(params)` with NO
+// return type (events are fire-and-forget), plus their multi-line description.
+TEST_F(OutputTest, PrintModuleInfo_Human_Events)
+{
+    CaptureStdout cap;
+    LogosMap info{
+        {"name", "chat"},
+        {"version", "0.2.0"},
+        {"status", "loaded"},
+        {"events", nlohmann::json::array({
+            LogosMap{
+                {"name", "versionReady"},
+                {"parameters", nlohmann::json::array({LogosMap{{"name", "version"}, {"type", "QString"}}})},
+                {"description", "Fired when ready.\nCarries the version."}
+            }
+        })}
+    };
+    humanOutput.printModuleInfo(info);
+
+    std::string out = cap.str();
+    EXPECT_NE(out.find("Events:"), std::string::npos);
+    // Signature has params but no `-> returnType` (events are void).
+    EXPECT_NE(out.find("versionReady(version: QString)"), std::string::npos);
+    EXPECT_EQ(out.find("versionReady(version: QString) ->"), std::string::npos);
+    // Multi-line description: both lines rendered, line breaks preserved.
+    EXPECT_NE(out.find("Fired when ready."), std::string::npos);
+    EXPECT_NE(out.find("Carries the version."), std::string::npos);
+}
+
 TEST_F(OutputTest, PrintEvent_Ndjson)
 {
     CaptureStdout cap;

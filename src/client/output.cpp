@@ -287,7 +287,7 @@ void Output::printModuleInfo(const LogosMap& info)
                       << " -> " << returnType << std::endl;
             // Print each line of the (possibly multi-line) description indented,
             // preserving the doc comment's original line breaks.
-            for (size_t start = 0; !description.empty() && start <= description.size();) {
+            for (size_t start = 0; !description.empty() && start < description.size();) {
                 size_t nl = description.find('\n', start);
                 std::string dline = (nl == std::string::npos)
                     ? description.substr(start)
@@ -319,7 +319,7 @@ void Output::printModuleInfo(const LogosMap& info)
             // Events are fire-and-forget — no return type.
             std::cout << "  " << eventName
                       << "(" << strutil::join(paramStrs, ", ") << ")" << std::endl;
-            for (size_t start = 0; !description.empty() && start <= description.size();) {
+            for (size_t start = 0; !description.empty() && start < description.size();) {
                 size_t nl = description.find('\n', start);
                 std::string dline = (nl == std::string::npos)
                     ? description.substr(start)
