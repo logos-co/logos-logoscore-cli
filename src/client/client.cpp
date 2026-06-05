@@ -78,7 +78,10 @@ bool RpcClient::connect()
         setenv("LOGOS_INSTANCE_ID", d->instanceId.c_str(), 1);
     }
 
+    // Keep the legacy self-identity entry (the CLI's LogosAPI is named
+    // "cli_client", so some code paths look it up by that name).
     TokenManager::instance().saveToken("cli_client", d->token);
+    TokenManager::instance().saveToken("core_service", d->token);
 
     // Translate ClientModuleTransport (client-side) into LogosTransportConfig
     auto toCfg = [](const ClientModuleTransport& t) {
