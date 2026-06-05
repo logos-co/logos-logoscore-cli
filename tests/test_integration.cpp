@@ -369,6 +369,66 @@ TEST_F(ErrorPathTest, CrashedModuleDoesNotKillDaemon) {
         << "module must remain discoverable after its host crashed.\n" << out;
 }
 
+// Auth-token regression: the client must present a token core_service
+// accepts on every RPC.
+//
+// The daemon issues one `auto` bearer token at boot and registers its raw
+// value in its TokenManager (under "cli_client"). core_service validates an
+// incoming token *by value* (ModuleProxy::isAuthorized scans every stored
+// token), so the client only authenticates if it actually *transmits* that
+// token. But the SDK picks which token to send by the TARGET name —
+// getToken(objectName) with objectName == "core_service" — so the client
+// must have the bearer token filed under the "core_service" key
+// (RpcClient::connect, src/client/client.cpp). With that registration
+// missing, getToken("core_service") misses, the SDK falls into the
+// capability_module requestModule fallback (which can't mint a token for
+// the in-process core_service), an unrecognized token reaches the daemon,
+// and EVERY business RPC is rejected — list-modules, load-module, call,
+// status, stop all fail. (Pre-enforcement SDKs ignored the token, hiding
+// this; once ModuleProxy started enforcing, the gap became fatal.)
+//
+// This test pins that path: a load + a real method call must succeed, AND
+// the daemon log must carry no "rejecting unauthorized" line — so a
+// regression that breaks the client's token registration fails here loudly,
+// not as some unrelated RPC error.
+TEST_F(ErrorPathTest, ClientAuthenticatesToCoreService) {
+    std::string out;
+
+    // list-modules is the cheapest authenticated core_service RPC (no
+    // module load involved). If the client isn't presenting a token
+    // core_service accepts, this already fails.
+    ASSERT_EQ(d.run("list-modules", &out), 0)
+        << "list-modules (an authenticated core_service RPC) must succeed — "
+           "the client must present a token core_service accepts.\n" << out
+        << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+
+    // A real business dispatch end-to-end: load the module, then call a
+    // method on it. Both legs are authenticated core_service RPCs; the
+    // second also drives core_service -> module. A broken client token
+    // registration makes load-module fail outright.
+    ASSERT_EQ(d.run("load-module test_basic_module", &out), 0)
+        << "load-module must succeed for an authenticated client "
+           "(LOGOS_HOST_PATH wired?).\n" << out
+        << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+
+    ASSERT_EQ(d.run("call test_basic_module returnTrue", &out), 0)
+        << "an authenticated call must round-trip and succeed.\n" << out
+        << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+    EXPECT_NE(out.find("true"), std::string::npos) << out;
+
+    // Root-cause pin: prove the calls above weren't authorized by some
+    // unrelated accident. core_service logs exactly this string when it
+    // rejects an unrecognized token (ModuleProxy::callRemoteMethod). Its
+    // presence means the client sent a token core_service didn't accept —
+    // i.e. the very regression this test guards against.
+    const std::string log = slurp(d.daemonLog);
+    EXPECT_EQ(log.find("rejecting unauthorized"), std::string::npos)
+        << "core_service rejected a client token as unauthorized — the "
+           "client is not presenting a token it accepts (check the "
+           "core_service token registration in RpcClient::connect).\n"
+           "--- daemon log ---\n" << log;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Full API + concurrency — ONE shared daemon, module loaded once
 // ═══════════════════════════════════════════════════════════════════════════
