@@ -59,14 +59,17 @@ std::string CallExecutor::buildParamsJson(const std::vector<std::string>& params
         } else {
             // std::stoi/std::stod parse a leading prefix and ignore the rest,
             // so "1.25" would be classified as int. Require the whole string to
-            // be consumed before accepting it as that type.
+            // be consumed before accepting it as that type. Trim first so numeric
+            // @file params ending in a newline (e.g. "123\n") still classify as a
+            // number, while partial parses like "1.25" are still rejected as int.
+            const std::string num = strutil::trim(resolvedParam);
             bool isInt = false;
-            try { size_t pos = 0; std::stoi(resolvedParam, &pos); isInt = (pos == resolvedParam.size()); } catch (...) {}
+            try { size_t pos = 0; std::stoi(num, &pos); isInt = (pos == num.size()); } catch (...) {}
             if (isInt) {
                 type = "int";
             } else {
                 bool isDouble = false;
-                try { size_t pos = 0; std::stod(resolvedParam, &pos); isDouble = (pos == resolvedParam.size()); } catch (...) {}
+                try { size_t pos = 0; std::stod(num, &pos); isDouble = (pos == num.size()); } catch (...) {}
                 type = isDouble ? "double" : "string";
             }
         }

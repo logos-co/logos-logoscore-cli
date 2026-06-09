@@ -47,6 +47,17 @@ inline std::string to_lower(std::string s)
     return s;
 }
 
+// Strip leading/trailing ASCII whitespace. Returns "" for all-whitespace input.
+inline std::string trim(const std::string& s)
+{
+    const char* ws = " \t\n\r\f\v";
+    const size_t b = s.find_first_not_of(ws);
+    if (b == std::string::npos)
+        return "";
+    const size_t e = s.find_last_not_of(ws);
+    return s.substr(b, e - b + 1);
+}
+
 } // namespace strutil
 
 #endif // STRING_UTILS_H

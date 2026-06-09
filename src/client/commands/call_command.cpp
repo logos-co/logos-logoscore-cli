@@ -76,13 +76,16 @@ int CallCommand::execute(const std::vector<std::string>& args)
             // std::stoi/std::stod parse a leading prefix and ignore the rest,
             // so "1.25" would parse as int 1. Require the whole string to be
             // consumed (matching the old QString::toInt(&ok) semantics) before
-            // accepting it as that type.
+            // accepting it as that type. Trim first so numeric @file params that
+            // end in a newline (e.g. "123\n") still coerce to a number, while
+            // partial parses like "1.25" are still rejected as int.
+            const std::string num = strutil::trim(resolved);
             bool isInt = false;
             int intVal = 0;
             try {
                 size_t pos = 0;
-                intVal = std::stoi(resolved, &pos);
-                isInt = (pos == resolved.size());
+                intVal = std::stoi(num, &pos);
+                isInt = (pos == num.size());
             } catch (...) {}
 
             if (isInt) {
@@ -92,8 +95,8 @@ int CallCommand::execute(const std::vector<std::string>& args)
                 double dblVal = 0.0;
                 try {
                     size_t pos = 0;
-                    dblVal = std::stod(resolved, &pos);
-                    isDouble = (pos == resolved.size());
+                    dblVal = std::stod(num, &pos);
+                    isDouble = (pos == num.size());
                 } catch (...) {}
 
                 if (isDouble) {
