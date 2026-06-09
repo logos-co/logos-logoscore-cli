@@ -289,3 +289,27 @@ TEST_F(CLITest, HelpCommand_ShowsPersistencePath) {
 // NOTE: module manifest discovery (with/without "type") was previously
 // exercised through inline mode; that behaviour lives in liblogos and is
 // covered there. The daemon path is verified by the integration tests.
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Inline mode removed — daemon-only flags must be rejected, not silently ignored
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST_F(CLITest, DaemonFlags_NoDaemonNoSubcommand_Rejected) {
+    // `logoscore -m <dir>` with no -D and no subcommand used to start inline
+    // mode; it must now fail with guidance toward the daemon/client workflow.
+    std::string output;
+    int exitCode = runLogoscore("--modules-dir /tmp/logoscore_test_x", &output);
+    EXPECT_EQ(exitCode, 1) << "Output:\n" << output;
+    EXPECT_NE(output.find("daemon"), std::string::npos)
+        << "Should point at the daemon (-D) workflow. Output:\n" << output;
+}
+
+TEST_F(CLITest, DaemonFlags_WithClientSubcommand_Rejected) {
+    // Daemon-only flags alongside a client subcommand are a no-op trap; reject
+    // them before attempting the command, regardless of whether a daemon runs.
+    std::string output;
+    int exitCode = runLogoscore("--modules-dir /tmp/logoscore_test_x status", &output);
+    EXPECT_EQ(exitCode, 1) << "Output:\n" << output;
+    EXPECT_NE(output.find("daemon"), std::string::npos)
+        << "Should reject -m with a client subcommand. Output:\n" << output;
+}

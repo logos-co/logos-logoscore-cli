@@ -645,6 +645,24 @@ int main(int argc, char *argv[])
         }
     }
 
+    // -m/-l/--persistence-path configure the daemon (-D) only. Inline (-c) mode
+    // has been removed, so these flags are meaningless for a client subcommand
+    // or a bare invocation — reject them with daemon/client guidance rather than
+    // silently ignoring them.
+    auto rejectDaemonOnlyFlags = [&]() -> bool {
+        if (modulesDirOpt->count() == 0 && loadModulesOpt->count() == 0
+            && persistencePathOpt->count() == 0)
+            return false;
+        std::cerr <<
+            "Error: -m/--modules-dir, -l/--load-modules and --persistence-path "
+            "apply only to the daemon (-D); inline (-c) mode has been removed. "
+            "Use daemon + client commands:\n"
+            "  logoscore -D -m <dir> [-l <modules>]      # start a daemon\n"
+            "  logoscore load-module <module>            # load a module\n"
+            "  logoscore call <module> <method> [args]   # call a method\n";
+        return true;
+    };
+
     // ── Client mode ──────────────────────────────────────────────────────────
     struct SubInfo { CLI::App* sub; std::string name; };
     std::vector<SubInfo> clientSubs = {
@@ -668,6 +686,9 @@ int main(int argc, char *argv[])
     for (auto& [sub, name] : clientSubs) {
         if (!sub->parsed())
             continue;
+
+        if (rejectDaemonOnlyFlags())
+            return 1;
 
         QCoreApplication qapp(argc, argv);
         qapp.setApplicationName("logoscore");
@@ -700,21 +721,9 @@ int main(int argc, char *argv[])
         return cmd->execute(cmdArgs);
     }
 
-    // ── Stray module flags without -D ────────────────────────────────────────
-    // Inline (-c) mode has been removed. -m/-l/--persistence-path only apply to
-    // the daemon, so flags here (no -D, no subcommand) are a leftover inline
-    // invocation — point the user at the daemon/client workflow.
-    if (modulesDirOpt->count() > 0 || loadModulesOpt->count() > 0
-        || persistencePathOpt->count() > 0) {
-        std::cerr <<
-            "Error: inline mode has been removed. -m/--modules-dir, "
-            "-l/--load-modules and\n--persistence-path apply to the daemon (-D). "
-            "Use daemon + client commands:\n"
-            "  logoscore -D -m <dir> [-l <modules>]      # start a daemon\n"
-            "  logoscore load-module <module>            # load a module\n"
-            "  logoscore call <module> <method> [args]   # call a method\n";
+    // ── Stray daemon-only flags without -D and without a subcommand ──────────
+    if (rejectDaemonOnlyFlags())
         return 1;
-    }
 
     // ── No mode detected — show help ─────────────────────────────────────────
     std::cout << app.help() << std::endl;
