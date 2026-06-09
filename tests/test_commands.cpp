@@ -444,6 +444,73 @@ TEST_F(CommandTest, Call_MissingArgs)
     });
 }
 
+// ── call: argument type coercion ─────────────────────────────────────────────
+// Args reach the daemon as native JSON types. Regression guard: a decimal
+// like "1.25" must NOT be truncated to int 1 (std::stoi accepts a numeric
+// prefix), so the whole string has to be consumed for a numeric type.
+
+TEST_F(CommandTest, Call_CoercesDecimalArgsToDouble)
+{
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}, {"result", 4.0}};
+    auto cmd = createCommand("call", mockClient, output);
+    captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"calc", "addDoubles", "1.25", "2.75"}), 0);
+    });
+    ASSERT_EQ(mockClient.lastCallArgs.size(), 2u);
+    EXPECT_TRUE(mockClient.lastCallArgs[0].is_number_float());
+    EXPECT_DOUBLE_EQ(mockClient.lastCallArgs[0].get<double>(), 1.25);
+    EXPECT_TRUE(mockClient.lastCallArgs[1].is_number_float());
+    EXPECT_DOUBLE_EQ(mockClient.lastCallArgs[1].get<double>(), 2.75);
+}
+
+TEST_F(CommandTest, Call_CoercesIntegerArgsToInt)
+{
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}};
+    auto cmd = createCommand("call", mockClient, output);
+    captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"calc", "addInts", "3", "-4"}), 0);
+    });
+    ASSERT_EQ(mockClient.lastCallArgs.size(), 2u);
+    EXPECT_TRUE(mockClient.lastCallArgs[0].is_number_integer());
+    EXPECT_EQ(mockClient.lastCallArgs[0].get<int>(), 3);
+    EXPECT_TRUE(mockClient.lastCallArgs[1].is_number_integer());
+    EXPECT_EQ(mockClient.lastCallArgs[1].get<int>(), -4);
+}
+
+TEST_F(CommandTest, Call_CoercesMixedArgTypes)
+{
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}};
+    auto cmd = createCommand("call", mockClient, output);
+    captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"m", "f", "hi", "3.0", "true", "5"}), 0);
+    });
+    ASSERT_EQ(mockClient.lastCallArgs.size(), 4u);
+    EXPECT_TRUE(mockClient.lastCallArgs[0].is_string());
+    EXPECT_EQ(mockClient.lastCallArgs[0].get<std::string>(), "hi");
+    EXPECT_TRUE(mockClient.lastCallArgs[1].is_number_float());
+    EXPECT_DOUBLE_EQ(mockClient.lastCallArgs[1].get<double>(), 3.0);
+    EXPECT_TRUE(mockClient.lastCallArgs[2].is_boolean());
+    EXPECT_TRUE(mockClient.lastCallArgs[2].get<bool>());
+    EXPECT_TRUE(mockClient.lastCallArgs[3].is_number_integer());
+    EXPECT_EQ(mockClient.lastCallArgs[3].get<int>(), 5);
+}
+
+TEST_F(CommandTest, Call_TrimsWhitespaceForNumericCoercion)
+{
+    // @file params commonly arrive with a trailing newline; "123\n" must still
+    // coerce to a number rather than fall through to a string.
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}};
+    auto cmd = createCommand("call", mockClient, output);
+    captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"m", "f", "123\n", " 1.5 "}), 0);
+    });
+    ASSERT_EQ(mockClient.lastCallArgs.size(), 2u);
+    EXPECT_TRUE(mockClient.lastCallArgs[0].is_number_integer());
+    EXPECT_EQ(mockClient.lastCallArgs[0].get<int>(), 123);
+    EXPECT_TRUE(mockClient.lastCallArgs[1].is_number_float());
+    EXPECT_DOUBLE_EQ(mockClient.lastCallArgs[1].get<double>(), 1.5);
+}
+
 // ── stats ────────────────────────────────────────────────────────────────────
 
 TEST_F(CommandTest, Stats_Success)
