@@ -57,13 +57,16 @@ std::string CallExecutor::buildParamsJson(const std::vector<std::string>& params
         if (lower == "true" || lower == "false") {
             type = "bool";
         } else {
+            // std::stoi/std::stod parse a leading prefix and ignore the rest,
+            // so "1.25" would be classified as int. Require the whole string to
+            // be consumed before accepting it as that type.
             bool isInt = false;
-            try { std::stoi(resolvedParam); isInt = true; } catch (...) {}
+            try { size_t pos = 0; std::stoi(resolvedParam, &pos); isInt = (pos == resolvedParam.size()); } catch (...) {}
             if (isInt) {
                 type = "int";
             } else {
                 bool isDouble = false;
-                try { std::stod(resolvedParam); isDouble = true; } catch (...) {}
+                try { size_t pos = 0; std::stod(resolvedParam, &pos); isDouble = (pos == resolvedParam.size()); } catch (...) {}
                 type = isDouble ? "double" : "string";
             }
         }

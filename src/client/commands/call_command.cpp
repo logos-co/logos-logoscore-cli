@@ -73,18 +73,28 @@ int CallCommand::execute(const std::vector<std::string>& args)
         } else if (resolved == "false") {
             resolvedArgs.push_back(false);
         } else {
+            // std::stoi/std::stod parse a leading prefix and ignore the rest,
+            // so "1.25" would parse as int 1. Require the whole string to be
+            // consumed (matching the old QString::toInt(&ok) semantics) before
+            // accepting it as that type.
             bool isInt = false;
             int intVal = 0;
-            try { intVal = std::stoi(resolved); isInt = true; }
-            catch (...) {}
+            try {
+                size_t pos = 0;
+                intVal = std::stoi(resolved, &pos);
+                isInt = (pos == resolved.size());
+            } catch (...) {}
 
             if (isInt) {
                 resolvedArgs.push_back(intVal);
             } else {
                 bool isDouble = false;
                 double dblVal = 0.0;
-                try { dblVal = std::stod(resolved); isDouble = true; }
-                catch (...) {}
+                try {
+                    size_t pos = 0;
+                    dblVal = std::stod(resolved, &pos);
+                    isDouble = (pos == resolved.size());
+                } catch (...) {}
 
                 if (isDouble) {
                     resolvedArgs.push_back(dblVal);
