@@ -192,90 +192,6 @@ TEST_F(CLITest, Stats_NoDaemon) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Inline mode (legacy flags) — backward compatibility
-// ═════════════════════════════════════════════════════════════════════════════
-
-TEST_F(CLITest, InlineMode_ModulesDirOption) {
-    std::string output;
-    int exitCode = runLogoscoreWithTimeout("--verbose --modules-dir /tmp/test_modules --quit-on-finish", &output);
-
-    EXPECT_NE(output.find("Added plugins directory:"), std::string::npos)
-        << "Should see debug message that custom directory was added";
-    EXPECT_NE(output.find("/tmp/test_modules"), std::string::npos)
-        << "Should see the custom directory path in output";
-}
-
-TEST_F(CLITest, InlineMode_LoadModulesOption) {
-    std::string output;
-    int exitCode = runLogoscoreWithTimeout("--verbose --load-modules fake_module_xyz", &output);
-
-    // liblogos renamed the "known plugins" warning to "known modules" in
-    // commit b82145c. Accept either so the test tolerates both the pinned
-    // and the current liblogos pointing at this same source.
-    EXPECT_TRUE(
-        output.find("Module not found in known modules:") != std::string::npos
-        || output.find("Module not found in known plugins:") != std::string::npos
-    ) << "Should see warning that module was not found";
-    EXPECT_NE(output.find("fake_module_xyz"), std::string::npos)
-        << "Should see the module name in output";
-}
-
-TEST_F(CLITest, InlineMode_ShortAliases) {
-    std::string output;
-    int exitCode = runLogoscoreWithTimeout("--verbose -m /tmp/test_modules_alias --quit-on-finish", &output);
-
-    EXPECT_NE(output.find("Added plugins directory:"), std::string::npos)
-        << "Short alias -m should work";
-    EXPECT_NE(output.find("/tmp/test_modules_alias"), std::string::npos);
-}
-
-TEST_F(CLITest, InlineMode_CallSyntax) {
-    std::string output;
-    int exitCode = runLogoscoreWithTimeout("--verbose --call \"fake_module.someMethod()\"", &output);
-
-    // Should try to execute the call and fail (module not loaded)
-    EXPECT_NE(output.find("Plugin not loaded") + output.find("fake_module"), std::string::npos);
-}
-
-TEST_F(CLITest, InlineMode_CallShortAlias) {
-    std::string output;
-    int exitCode = runLogoscoreWithTimeout("--verbose -c \"fake_module.testMethod()\"", &output);
-
-    EXPECT_NE(output.find("Plugin not loaded") + output.find("fake_module"), std::string::npos);
-}
-
-TEST_F(CLITest, InlineMode_InvalidCallSyntax) {
-    std::string output;
-    int exitCode = runLogoscoreWithTimeout("--verbose --call \"modulemethodname()\"", &output);
-
-    EXPECT_NE(output.find("Invalid call syntax") + output.find("Skipping invalid call"), std::string::npos);
-}
-
-TEST_F(CLITest, InlineMode_MultipleCalls) {
-    std::string output;
-    int exitCode = runLogoscoreWithTimeout(
-        "--verbose --call \"module1.method1()\" --call \"module2.method2()\"", &output);
-
-    EXPECT_NE(output.find("Executing call") + output.find("module1"), std::string::npos);
-}
-
-TEST_F(CLITest, InlineMode_FileParameterSyntax) {
-    std::string output;
-    int exitCode = runLogoscoreWithTimeout(
-        "--verbose --call \"fake_module.init(@/nonexistent/file.txt)\"", &output);
-
-    EXPECT_NE(output.find("Failed to open file") + output.find("Plugin not loaded"), std::string::npos);
-}
-
-TEST_F(CLITest, InlineMode_ParameterParsing) {
-    std::string output;
-    int exitCode = runLogoscoreWithTimeout(
-        "--verbose --call \"fake_module.method('string param', 42, true)\"", &output);
-
-    EXPECT_NE(output.find("3 params") + output.find("params"), std::string::npos);
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
 // Timing tests — client commands must return quickly (catches RPC hangs)
 // If the RPC layer has a misconfigured token key or missing timeout,
 // commands hang for 20+ seconds waiting for capability_module negotiation.
@@ -316,53 +232,6 @@ TEST_F(CLITest, Stop_NoDaemon_ReturnsFast) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Module manifest discovery — manifest.json must have "type": "core"
-// PackageManagerLib::getInstalledModules() filters by type and silently
-// skips modules without it.
-// ═════════════════════════════════════════════════════════════════════════════
-
-TEST_F(CLITest, InlineMode_ManifestWithType_Discovered) {
-    fs::path tmpDir = fs::temp_directory_path() / "logoscore_test_discovery";
-    fs::path modDir = tmpDir / "test_discovery_module";
-    fs::create_directories(modDir);
-
-#if defined(__APPLE__)
-    #if defined(__aarch64__)
-        std::string variant = "darwin-arm64-dev";
-    #else
-        std::string variant = "darwin-x86_64-dev";
-    #endif
-#elif defined(__aarch64__)
-    std::string variant = "linux-arm64-dev";
-#elif defined(__x86_64__)
-    std::string variant = "linux-x86_64-dev";
-#else
-    std::string variant = "linux-x86-dev";
-#endif
-
-    // Manifest WITH "type": "core" — should be discoverable
-    {
-        std::ofstream f(modDir / "manifest.json");
-        f << R"({"name":"test_discovery_module","version":"1.0.0","type":"core","main":{")"
-          << variant << R"(":"test_discovery_module_plugin.so"}})";
-    }
-    // Dummy plugin file so mainFilePath resolves
-    { std::ofstream f(modDir / "test_discovery_module_plugin.so"); f << "dummy"; }
-
-    std::string output;
-    int exitCode = runLogoscoreWithTimeout(
-        "--verbose --modules-dir " + tmpDir.string() + " --quit-on-finish", &output, 5);
-
-    // Module should appear in discovery output (processPlugin may fail on the
-    // dummy binary, but the important thing is PackageManagerLib found it)
-    bool foundInOutput = output.find("test_discovery_module") != std::string::npos;
-    EXPECT_TRUE(foundInOutput)
-        << "Module with 'type: core' in manifest should be discovered. Output:\n" << output;
-
-    fs::remove_all(tmpDir);
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
 // Relative path resolution — logos_core cannot load plugin metadata from
 // relative paths (dlopen fails to resolve RPATH).  logoscore must resolve
 // --modules-dir to an absolute path before calling logos_core_add_modules_dir.
@@ -371,41 +240,6 @@ TEST_F(CLITest, InlineMode_ManifestWithType_Discovered) {
 // debug message contains an absolute path, even when the CLI receives a
 // relative one.
 // ═════════════════════════════════════════════════════════════════════════════
-
-TEST_F(CLITest, InlineMode_RelativePath_ResolvedToAbsolute) {
-    fs::path parentDir = fs::temp_directory_path() / "logoscore_test_relpath";
-    fs::path modulesDir = parentDir / "my_modules";
-    fs::create_directories(modulesDir);
-
-    // cd into parentDir, pass relative "./my_modules"
-    std::string cmd = "cd " + parentDir.string() + " && timeout 5 "
-        + logoscoreBinary.string()
-        + " --verbose --modules-dir ./my_modules --quit-on-finish 2>&1";
-
-    FILE* pipe = popen(cmd.c_str(), "r");
-    ASSERT_NE(pipe, nullptr);
-    std::string output;
-    char buffer[256];
-    while (fgets(buffer, sizeof(buffer), pipe))
-        output += buffer;
-    pclose(pipe);
-
-    // The "Added plugins directory:" message should contain an absolute path
-    // (starts with '/'), NOT the relative "./my_modules"
-    std::string marker = "Added plugins directory:";
-    auto pos = output.find(marker);
-    ASSERT_NE(pos, std::string::npos) << "Should see plugins directory message. Output:\n" << output;
-
-    std::string afterMarker = output.substr(pos + marker.size());
-    // The path in the message must be absolute (contain '/' followed by the dir name)
-    bool isAbsolute = afterMarker.find("/my_modules") != std::string::npos;
-    bool isRelative = afterMarker.find("\"./my_modules\"") != std::string::npos;
-    EXPECT_TRUE(isAbsolute && !isRelative)
-        << "Relative --modules-dir should be resolved to absolute before passing to logos_core. "
-        << "Output:\n" << output;
-
-    fs::remove_all(parentDir);
-}
 
 TEST_F(CLITest, DaemonMode_RelativePath_ResolvedToAbsolute) {
     fs::path parentDir = fs::temp_directory_path() / "logoscore_test_relpath_daemon";
@@ -452,65 +286,6 @@ TEST_F(CLITest, HelpCommand_ShowsPersistencePath) {
         << "Help should document --persistence-path option. Output:\n" << output;
 }
 
-TEST_F(CLITest, InlineMode_PersistencePathOption) {
-    fs::path tmpDir = fs::temp_directory_path() / "logoscore_test_persistence";
-    fs::path modulesDir = tmpDir / "modules";
-    fs::create_directories(modulesDir);
-
-    std::string output;
-    int exitCode = runLogoscoreWithTimeout(
-        "--verbose --modules-dir " + modulesDir.string()
-        + " --persistence-path " + tmpDir.string()
-        + " --quit-on-finish", &output, 5);
-
-    // The persistence path should be accepted without error.
-    // CLI11 would print "Unknown option" if it didn't recognize the flag.
-    EXPECT_EQ(output.find("Unknown option"), std::string::npos)
-        << "--persistence-path should be a recognized option. Output:\n" << output;
-
-    // Should exit cleanly (0) or via timeout (124) — not a CLI parse error
-    EXPECT_NE(exitCode, 1)
-        << "Exit code 1 suggests a CLI parse error. Output:\n" << output;
-
-    fs::remove_all(tmpDir);
-}
-
-TEST_F(CLITest, InlineMode_ManifestWithoutType_NotDiscovered) {
-    fs::path tmpDir = fs::temp_directory_path() / "logoscore_test_no_type";
-    fs::path modDir = tmpDir / "test_notype_module";
-    fs::create_directories(modDir);
-
-#if defined(__APPLE__)
-    #if defined(__aarch64__)
-        std::string variant = "darwin-arm64-dev";
-    #else
-        std::string variant = "darwin-x86_64-dev";
-    #endif
-#elif defined(__aarch64__)
-    std::string variant = "linux-arm64-dev";
-#elif defined(__x86_64__)
-    std::string variant = "linux-x86_64-dev";
-#else
-    std::string variant = "linux-x86-dev";
-#endif
-
-    // Manifest WITHOUT "type" field — should be silently skipped
-    {
-        std::ofstream f(modDir / "manifest.json");
-        f << R"({"name":"test_notype_module","version":"1.0.0","main":{")"
-          << variant << R"(":"test_notype_module_plugin.so"}})";
-    }
-    { std::ofstream f(modDir / "test_notype_module_plugin.so"); f << "dummy"; }
-
-    std::string output;
-    int exitCode = runLogoscoreWithTimeout(
-        "--verbose --modules-dir " + tmpDir.string() + " --quit-on-finish", &output, 5);
-
-    // Module should NOT be found because it lacks "type": "core"
-    bool discoveredMsg = output.find("Discovered module:") != std::string::npos &&
-                         output.find("test_notype_module") != std::string::npos;
-    EXPECT_FALSE(discoveredMsg)
-        << "Module without 'type: core' should NOT be discovered. Output:\n" << output;
-
-    fs::remove_all(tmpDir);
-}
+// NOTE: module manifest discovery (with/without "type") was previously
+// exercised through inline mode; that behaviour lives in liblogos and is
+// covered there. The daemon path is verified by the integration tests.

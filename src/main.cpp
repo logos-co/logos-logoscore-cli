@@ -15,8 +15,6 @@
 #include "client/client.h"
 #include "client/output.h"
 #include "client/commands/command.h"
-#include "inline/command_line_parser.h"
-#include "inline/call_executor.h"
 #include "logos_core.h"
 
 static bool g_verbose = false;
@@ -48,98 +46,6 @@ static void messageHandler(QtMsgType type, const QMessageLogContext &context, co
         abort();
     }
     fflush(stderr);
-}
-
-static int runInlineMode(int argc, char* argv[],
-                         const std::vector<std::string>& modulesDirs,
-                         const std::string& loadModulesStr,
-                         const std::vector<std::string>& callStrs,
-                         bool quitOnFinish,
-                         const std::string& persistencePath)
-{
-    // Build CoreArgs from pre-parsed CLI11 values
-    CoreArgs args;
-    args.valid = true;
-    args.quitOnFinish = quitOnFinish;
-    args.modulesDirs = modulesDirs;
-
-    // Parse comma-separated module names
-    if (!loadModulesStr.empty()) {
-        std::string current;
-        for (char c : loadModulesStr) {
-            if (c == ',') {
-                if (!current.empty()) {
-                    args.loadModules.push_back(current);
-                    current.clear();
-                }
-            } else {
-                current += c;
-            }
-        }
-        if (!current.empty()) {
-            args.loadModules.push_back(current);
-        }
-    }
-
-    // Parse call strings
-    for (const auto& callStr : callStrs) {
-        ModuleCall call = parseCallString(callStr);
-        if (!call.moduleName.empty() && !call.methodName.empty()) {
-            args.calls.push_back(call);
-        } else {
-            fprintf(stderr, "Skipping invalid call: %s\n", callStr.c_str());
-        }
-    }
-
-    QCoreApplication app(argc, argv);
-    app.setApplicationName("logoscore");
-    app.setApplicationVersion("1.0");
-
-    logos_core_init(argc, argv);
-
-    for (const std::string& dir : args.modulesDirs) {
-        std::error_code ec;
-        std::string absDir = std::filesystem::absolute(dir, ec).string();
-        const char* resolved = ec ? dir.c_str() : absDir.c_str();
-        if (g_verbose)
-            fprintf(stderr, "Added plugins directory: %s\n", resolved);
-        logos_core_add_modules_dir(resolved);
-    }
-
-    std::string bundledDir = paths::bundledModulesDir();
-    if (!bundledDir.empty()) {
-        logos_core_add_modules_dir(bundledDir.c_str());
-        if (g_verbose)
-            fprintf(stderr, "Added bundled modules directory: %s\n", bundledDir.c_str());
-    }
-
-    // Set persistence base path (user-specified or default)
-    std::string resolvedPersistence = persistencePath;
-    if (resolvedPersistence.empty()) {
-        resolvedPersistence = Config::configDir() + "/data";
-    }
-    logos_core_set_persistence_base_path(resolvedPersistence.c_str());
-
-    logos_core_start();
-
-    if (!args.loadModules.empty()) {
-        for (const std::string& moduleName : args.loadModules) {
-            if (moduleName.empty())
-                continue;
-            if (!logos_core_load_module(moduleName.c_str(), true)) {
-                fprintf(stderr, "Warning: Failed to load module: %s\n", moduleName.c_str());
-            }
-        }
-    }
-
-    if (!args.calls.empty()) {
-        int callResult = CallExecutor::executeCalls(args.calls);
-        if (args.quitOnFinish || callResult != 0) {
-            return callResult;
-        }
-    }
-
-    return QCoreApplication::exec();
 }
 
 // Pre-scan argv for `--config-dir` so we can apply the override (and
@@ -203,21 +109,15 @@ int main(int argc, char *argv[])
     bool daemonFlag = false;
     app.add_flag("-D", daemonFlag, "Start the daemon process");
 
-    // Shared option: modules directory (used by daemon + inline)
+    // Shared option: modules directory (used by the daemon)
     std::vector<std::string> modulesDirs;
     auto* modulesDirOpt = app.add_option("-m,--modules-dir", modulesDirs,
         "Module search directory (repeatable)");
 
-    // Inline mode options
+    // Modules to pre-load when starting the daemon (-D)
     std::string loadModulesStr;
     auto* loadModulesOpt = app.add_option("-l,--load-modules", loadModulesStr,
-        "Comma-separated modules to load");
-
-    std::vector<std::string> callStrs;
-    app.add_option("-c,--call", callStrs, "Call module.method(args) (repeatable)");
-
-    bool quitOnFinish = false;
-    app.add_flag("--quit-on-finish", quitOnFinish, "Exit after calls complete");
+        "Comma-separated modules to pre-load (with -D)");
 
     std::string persistencePath;
     auto* persistencePathOpt = app.add_option("--persistence-path", persistencePath,
@@ -800,9 +700,20 @@ int main(int argc, char *argv[])
         return cmd->execute(cmdArgs);
     }
 
-    // ── Inline mode (legacy) ─────────────────────────────────────────────────
-    if (!modulesDirs.empty() || !loadModulesStr.empty() || !callStrs.empty() || quitOnFinish) {
-        return runInlineMode(argc, argv, modulesDirs, loadModulesStr, callStrs, quitOnFinish, persistencePath);
+    // ── Stray module flags without -D ────────────────────────────────────────
+    // Inline (-c) mode has been removed. -m/-l/--persistence-path only apply to
+    // the daemon, so flags here (no -D, no subcommand) are a leftover inline
+    // invocation — point the user at the daemon/client workflow.
+    if (modulesDirOpt->count() > 0 || loadModulesOpt->count() > 0
+        || persistencePathOpt->count() > 0) {
+        std::cerr <<
+            "Error: inline mode has been removed. -m/--modules-dir, "
+            "-l/--load-modules and\n--persistence-path apply to the daemon (-D). "
+            "Use daemon + client commands:\n"
+            "  logoscore -D -m <dir> [-l <modules>]      # start a daemon\n"
+            "  logoscore load-module <module>            # load a module\n"
+            "  logoscore call <module> <method> [args]   # call a method\n";
+        return 1;
     }
 
     // ── No mode detected — show help ─────────────────────────────────────────
