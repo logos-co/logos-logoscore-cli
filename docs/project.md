@@ -117,7 +117,7 @@ Before mode detection, `main()` scans argv for `-v`/`--verbose` and installs a c
 ```
 if argv contains "-D" or "daemon"      → daemon path
 else if argv[1] is a known subcommand  → client path
-else if argv contains -m/-l/-p (no -D) → error (inline mode removed)
+else if argv contains -m/-p (no -D)    → error (inline mode removed)
 else                                   → print help
 ```
 
@@ -229,8 +229,9 @@ through to the same RPC path.
 The legacy inline path (`logoscore -m -l -c "module.method(args)" --quit-on-finish`)
 started the core in the same short-lived process, loaded modules, executed the
 `-c` calls directly via the C API, and exited. It has been removed — use a
-daemon (`-D`) plus the `call` client subcommand instead. `-m`/`-l`/`--persistence-path`
-now configure daemon startup only.
+daemon (`-D`) plus `load-module` / `call` client subcommands instead. The
+daemon starts clean; `-m`/`--persistence-path` configure daemon startup only
+(the `-l/--load-modules` autoload flag was also removed).
 
 ---
 
@@ -424,7 +425,6 @@ QVariant CoreServiceImpl::callMethod(const QString& method, const QVariantList& 
   "config_source": "cli",
   "resolved": {
     "modules_dirs": ["/path/to/modules"],
-    "load_modules": "",
     "persistence_path": "/var/lib/logoscore",
     "modules": {
       "core_service": {

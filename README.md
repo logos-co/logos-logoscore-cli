@@ -561,13 +561,17 @@ logoscore stop
 
 ### Quick start: load modules and call methods
 
-Start a daemon (it scans the module directories and pre-loads any modules
-passed with `-l`, resolving transitive dependencies), then drive it with
-client commands:
+The daemon starts **clean** (it scans the module directories but loads nothing
+on its own). Load modules with `load-module` — transitive dependencies are
+resolved automatically — then call methods:
 
 ```bash
-# Start a daemon scanning ./modules, pre-loading waku + chat
-logoscore -D -m ./modules -l waku,chat
+# Start a clean daemon scanning ./modules
+logoscore -D -m ./modules
+
+# Load modules (deps resolved automatically)
+logoscore load-module waku
+logoscore load-module chat
 
 # Call methods (positional args; @file reads a parameter from a file)
 logoscore call chat send_message hello
@@ -575,8 +579,7 @@ logoscore call storage init config 42 true
 logoscore call storage loadConfig @config.json
 
 # Multiple module directories + a custom persistence path
-logoscore -D -m ./core-modules -m ./extra-modules -l my_module \
-  --persistence-path /tmp/test-data
+logoscore -D -m ./core-modules -m ./extra-modules --persistence-path /tmp/test-data
 
 # Stop the daemon when done
 logoscore stop
@@ -587,7 +590,6 @@ Daemon startup options:
 ```
   -D                             Start the daemon
   -m, --modules-dir <path>       Directory to scan for modules (repeatable)
-  -l, --load-modules <modules>   Comma-separated modules to pre-load on startup
       --persistence-path <path>  Base directory for module instance persistence
                                  (default: ~/.logoscore/data)
 ```

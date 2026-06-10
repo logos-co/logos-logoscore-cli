@@ -66,7 +66,6 @@ DaemonConfig sampleConfig()
 {
     DaemonConfig cfg;
     cfg.modulesDirs     = {"/path/a", "/path/b"};
-    cfg.loadModules     = "mod1,mod2";
     cfg.persistencePath = "/var/lib/logoscore";
     cfg.modules["core_service"]      = {{"local"}, {"tcp", "127.0.0.1", 6001, "", true, "json"}};
     cfg.modules["capability_module"] = {{"local"}};
@@ -91,7 +90,6 @@ TEST_F(DaemonStateTest, RuntimeState_RoundTripsResolvedFields)
 {
     DaemonRuntimeState s = minimalState("inst123", {"/path/a", "/path/b"});
     s.configSource = "cli";
-    s.resolved.loadModules     = "mod1,mod2";
     s.resolved.persistencePath = "/var/lib/logoscore";
     ASSERT_TRUE(DaemonRuntimeStateFile::write(s));
 
@@ -103,7 +101,6 @@ TEST_F(DaemonStateTest, RuntimeState_RoundTripsResolvedFields)
     EXPECT_EQ(got.configSource, "cli");
     EXPECT_EQ(got.resolved.modulesDirs.size(), 2u);
     EXPECT_EQ(got.resolved.modulesDirs[0], "/path/a");
-    EXPECT_EQ(got.resolved.loadModules, "mod1,mod2");
     EXPECT_EQ(got.resolved.persistencePath, "/var/lib/logoscore");
     EXPECT_FALSE(got.startedAt.empty());
 }
@@ -181,7 +178,6 @@ TEST_F(DaemonStateTest, Config_RoundTripsEveryField)
     auto got = DaemonConfigFile::read();
     ASSERT_TRUE(got.has_value());
     EXPECT_EQ(got->modulesDirs.size(), 2u);
-    EXPECT_EQ(got->loadModules, "mod1,mod2");
     EXPECT_EQ(got->persistencePath, "/var/lib/logoscore");
     EXPECT_EQ(got->modules.size(), 2u);
     EXPECT_EQ(got->modules.at("core_service").back().port, 6001);

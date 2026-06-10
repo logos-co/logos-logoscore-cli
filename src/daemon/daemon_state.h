@@ -43,7 +43,6 @@ struct TransportInfo {
 // port lives in DaemonRuntimeState.resolved).
 struct DaemonConfig {
     std::vector<std::string> modulesDirs;
-    std::string              loadModules;
     std::string              persistencePath;
     // Per-module advertised transport set. Built from
     // `--module-transport` CLI flags (and the previous-launch config

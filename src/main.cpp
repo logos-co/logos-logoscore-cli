@@ -114,11 +114,6 @@ int main(int argc, char *argv[])
     auto* modulesDirOpt = app.add_option("-m,--modules-dir", modulesDirs,
         "Module search directory (repeatable)");
 
-    // Modules to pre-load when starting the daemon (-D)
-    std::string loadModulesStr;
-    auto* loadModulesOpt = app.add_option("-l,--load-modules", loadModulesStr,
-        "Comma-separated modules to pre-load (with -D)");
-
     std::string persistencePath;
     auto* persistencePathOpt = app.add_option("--persistence-path", persistencePath,
         "Base directory for module instance persistence (default: ~/.logoscore/data)");
@@ -451,7 +446,7 @@ int main(int argc, char *argv[])
         // overrides on top — but only for flags the operator
         // explicitly passed. CLI11's Option::count() is the only
         // accurate signal: a default-valued local var is
-        // indistinguishable from an explicit `--load-modules ""`
+        // indistinguishable from an explicit `--persistence-path ""`
         // without it. Anything not touched by either CLI or disk
         // falls through to defaults.
         DaemonConfig mergedCfg;
@@ -463,14 +458,12 @@ int main(int argc, char *argv[])
         }
 
         const bool anyCliFlag = (modulesDirOpt->count()      > 0)
-                             || (loadModulesOpt->count()     > 0)
                              || (persistencePathOpt->count() > 0)
                              || (moduleTransportOpt->count() > 0)
                              || (insecureTcpOpt->count()     > 0);
         if (anyCliFlag) configSource = "cli";
 
         if (modulesDirOpt->count() > 0)      mergedCfg.modulesDirs     = modulesDirs;
-        if (loadModulesOpt->count() > 0)     mergedCfg.loadModules     = loadModulesStr;
         if (persistencePathOpt->count() > 0) mergedCfg.persistencePath = persistencePath;
         if (insecureTcpOpt->count() > 0)     mergedCfg.insecureTcp     = insecureTcp;
         // --module-transport replaces the disk's modules wholesale
@@ -650,14 +643,13 @@ int main(int argc, char *argv[])
     // or a bare invocation — reject them with daemon/client guidance rather than
     // silently ignoring them.
     auto rejectDaemonOnlyFlags = [&]() -> bool {
-        if (modulesDirOpt->count() == 0 && loadModulesOpt->count() == 0
-            && persistencePathOpt->count() == 0)
+        if (modulesDirOpt->count() == 0 && persistencePathOpt->count() == 0)
             return false;
         std::cerr <<
-            "Error: -m/--modules-dir, -l/--load-modules and --persistence-path "
-            "apply only to the daemon (-D); inline (-c) mode has been removed. "
+            "Error: -m/--modules-dir and --persistence-path apply only to the "
+            "daemon (-D); inline (-c) mode has been removed. "
             "Use daemon + client commands:\n"
-            "  logoscore -D -m <dir> [-l <modules>]      # start a daemon\n"
+            "  logoscore -D -m <dir>                     # start a daemon (clean)\n"
             "  logoscore load-module <module>            # load a module\n"
             "  logoscore call <module> <method> [args]   # call a method\n";
         return true;
