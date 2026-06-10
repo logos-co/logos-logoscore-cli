@@ -592,7 +592,47 @@ Daemon startup options:
   -m, --modules-dir <path>       Directory to scan for modules (repeatable)
       --persistence-path <path>  Base directory for module instance persistence
                                  (default: ~/.logoscore/data)
+      --access-policy <arg>      Inter-module access policy: a path to a JSON
+                                 file, or inline JSON (mode + per-target caller
+                                 allowlists). See "Access policy" below.
 ```
+
+#### Access policy
+
+`--access-policy` installs an inter-module access policy that declares,
+per target module, which caller modules are allowed to invoke it. The
+argument is resolved as **a path to a JSON file** when it doesn't begin
+with `{`, or as **inline JSON** when it does. The resolved document is
+validated as parseable JSON before the daemon boots; a bad path or
+malformed JSON aborts startup.
+
+```json
+{
+  "version": 1,
+  "mode": "enforce",
+  "restrictions": {
+    "package_manager":    { "allowedCallers": ["package_manager_ui"] },
+    "package_downloader": { "allowedCallers": ["package_manager_ui"] }
+  }
+}
+```
+
+```bash
+# From a file
+logoscore -D -m ./modules --access-policy ./policy.json
+
+# Inline
+logoscore -D -m ./modules \
+  --access-policy '{"version":1,"mode":"enforce","restrictions":{"package_manager":{"allowedCallers":["package_manager_ui"]}}}'
+```
+
+The policy is handed to the runtime (via `logos_core_set_access_policy`)
+before any module is loaded, and is persisted with `--persist-config`
+like the other daemon flags.
+
+> **Note:** enforcement is not yet implemented on the runtime side — the
+> policy is currently accepted and validated but **not enforced** (the
+> underlying `logos_core_set_access_policy` is a no-op for now).
 
 > **Note:** the legacy inline mode (`-c "module.method(args)"` / `--quit-on-finish`,
 > which ran calls in a single short-lived process) has been removed. Use a daemon
