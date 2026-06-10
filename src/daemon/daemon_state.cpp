@@ -101,6 +101,7 @@ json daemonConfigToJson(const DaemonConfig& cfg)
     obj["ssl"] = std::move(sslObj);
 
     obj["insecure_tcp"] = cfg.insecureTcp;
+    if (!cfg.accessPolicy.empty()) obj["access_policy"] = cfg.accessPolicy;
     return obj;
 }
 
@@ -152,6 +153,7 @@ std::optional<DaemonConfig> daemonConfigFromJson(const json& obj)
     }
 
     cfg.insecureTcp = obj.value("insecure_tcp", false);
+    cfg.accessPolicy = obj.value("access_policy", std::string{});
     return cfg;
 }
 

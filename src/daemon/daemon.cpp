@@ -186,6 +186,11 @@ int Daemon::start(int argc, char* argv[],
         : persistencePath;
     logos_core_set_persistence_base_path(persistenceBase.c_str());
 
+    // 4b. Install the access policy before any module loads. Empty =>
+    //     NULL (clear). Runtime side is currently a no-op.
+    logos_core_set_access_policy(
+        cfg.accessPolicy.empty() ? nullptr : cfg.accessPolicy.c_str());
+
     // 5. Materialize per-module transport sets BEFORE logos_core_start()
     //    so capability_module (loaded inside logos_core_start) gets the
     //    listeners the operator asked for, with ephemeral ports already

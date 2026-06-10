@@ -60,6 +60,9 @@ struct DaemonConfig {
     // Mirrors --insecure-tcp. Persisted so operators don't have to
     // retype it next launch. False by default.
     bool insecureTcp = false;
+    // Inter-module access policy: resolved JSON text (from --access-policy
+    // file or inline). Empty means none. Persisted across launches.
+    std::string accessPolicy;
 };
 
 // Live-instance runtime state. Written to daemon/state.json on every
