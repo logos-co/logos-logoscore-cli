@@ -9,6 +9,7 @@
 #include <thread>
 #include <cstdlib>
 #include <unistd.h>
+#include <unordered_set>
 
 void CoreServiceImpl::onInit(LogosAPI* api)
 {
@@ -58,6 +59,14 @@ static bool containsName(const std::vector<std::string>& v, const std::string& n
 
 StdLogosResult CoreServiceImpl::loadModule(const std::string& name)
 {
+    // Snapshot the loaded set before the call so we can report which
+    // *dependencies* this load brought up as a side effect.
+    // logos_core_load_module(..., /*with_dependencies=*/true) resolves and
+    // loads the target's transitive dependency closure, so any module that
+    // wasn't loaded before but is loaded after — other than the target
+    // itself — was auto-resolved on its behalf.
+    std::vector<std::string> before = getLoadedModuleNames();
+
     bool ok = logos_core_load_module(name.c_str(), true);
     if (!ok) {
         LogosMap errResult;
@@ -73,10 +82,17 @@ StdLogosResult CoreServiceImpl::loadModule(const std::string& name)
         return {false, errResult, "Failed to load module '" + name + "'."};
     }
 
+    std::unordered_set<std::string> beforeSet(before.begin(), before.end());
+    LogosList dependenciesLoaded = LogosList::array();
+    for (const auto& loaded : getLoadedModuleNames()) {
+        if (loaded != name && beforeSet.find(loaded) == beforeSet.end())
+            dependenciesLoaded.push_back(loaded);
+    }
+
     LogosMap result;
     result["status"] = "ok";
     result["module"] = name;
-    result["dependencies_loaded"] = LogosList::array();
+    result["dependencies_loaded"] = dependenciesLoaded;
     return {true, result};
 }
 
