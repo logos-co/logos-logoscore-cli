@@ -9,6 +9,11 @@
     # relying on the symbol surviving liblogos_core's link-time
     # dead-strip. liblogos's own SDK pin still drives transitive deps.
     logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk";
+    logos-cpp-sdk.inputs.logos-protocol.follows = "logos-protocol";
+    logos-protocol.url = "github:logos-co/logos-protocol";
+    logos-qt-sdk.url = "github:logos-co/logos-qt-sdk";
+    logos-qt-sdk.inputs.logos-protocol.follows = "logos-protocol";
+    logos-qt-sdk.inputs.logos-cpp-sdk.follows = "logos-cpp-sdk";
     logos-liblogos.url = "github:logos-co/logos-liblogos";
     logos-module-client.url = "github:logos-co/logos-module-client";
     logos-capability-module.url = "github:logos-co/logos-capability-module";
@@ -20,13 +25,15 @@
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-liblogos, logos-module-client, logos-capability-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
+  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-qt-sdk, logos-liblogos, logos-module-client, logos-capability-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f {
         inherit system;
         pkgs = import nixpkgs { inherit system; };
         cppSdk = logos-cpp-sdk.packages.${system}.default;
+        protocolPkg = logos-protocol.packages.${system}.default;
+        qtSdk = logos-qt-sdk.packages.${system}.default;
         liblogos = logos-liblogos.packages.${system}.logos-liblogos;
         liblogosLib = logos-liblogos.packages.${system}.logos-liblogos-lib;
         liblogosPortable = logos-liblogos.packages.${system}.portable;
@@ -40,7 +47,7 @@
       });
     in
     {
-      packages = forAllSystems ({ pkgs, system, cppSdk, liblogos, liblogosLib, liblogosPortable, moduleClient, moduleClientLib, capabilityModuleLib, installDev, installPortable, dirBundler, appBundler }:
+      packages = forAllSystems ({ pkgs, system, cppSdk, protocolPkg, qtSdk, liblogos, liblogosLib, liblogosPortable, moduleClient, moduleClientLib, capabilityModuleLib, installDev, installPortable, dirBundler, appBundler }:
         let
           pname = "logos-logoscore-cli";
           version = "0.1.0";
@@ -94,6 +101,8 @@
               pkgs.qt6.qtbase
               pkgs.qt6.qtremoteobjects
               cppSdk
+              protocolPkg
+              qtSdk
               pkgs.stduuid
               pkgs.cli11
               pkgs.gtest
@@ -110,6 +119,8 @@
               # logos::transportSetToJsonString which liblogos doesn't
               # itself reference and would otherwise be dead-stripped).
               "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
+              "-DLOGOS_PROTOCOL_ROOT=${protocolPkg}"
+              "-DLOGOS_QT_SDK_ROOT=${qtSdk}"
             ];
           };
 
@@ -205,6 +216,8 @@
               # not Qt) via its symlinkJoin's propagatedBuildInputs —
               # see the `build` derivation above for the rationale.
               cppSdk
+              protocolPkg
+              qtSdk
             ];
 
             cmakeFlags = [
@@ -212,6 +225,8 @@
               "-DLOGOS_LIBLOGOS_ROOT=${liblogos}"
               "-DLOGOS_MODULE_CLIENT_ROOT=${moduleClient}"
               "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
+              "-DLOGOS_PROTOCOL_ROOT=${protocolPkg}"
+              "-DLOGOS_QT_SDK_ROOT=${qtSdk}"
             ];
 
             installPhase = ''
@@ -283,6 +298,8 @@
               pkgs.qt6.qtbase
               pkgs.qt6.qtremoteobjects
               cppSdk
+              protocolPkg
+              qtSdk
               pkgs.gtest
               pkgs.stduuid
               pkgs.cli11
@@ -294,6 +311,8 @@
               "-DLOGOS_LIBLOGOS_ROOT=${liblogosPortable}"
               "-DLOGOS_MODULE_CLIENT_ROOT=${moduleClient}"
               "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
+              "-DLOGOS_PROTOCOL_ROOT=${protocolPkg}"
+              "-DLOGOS_QT_SDK_ROOT=${qtSdk}"
             ];
           };
 

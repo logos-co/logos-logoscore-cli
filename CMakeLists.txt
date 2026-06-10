@@ -67,11 +67,20 @@ set_target_properties(logos_module_client PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${LOGOS_MODULE_CLIENT_ROOT}/include"
 )
 
-# ── logos-cpp-sdk (imported target) ───────────────────────────────────────────
-# Required: core_service links LogosProviderObject bridge helpers and
-# logos:: transport utilities from the SDK static library.
-find_package(logos-cpp-sdk REQUIRED
-    PATHS "${LOGOS_CPP_SDK_ROOT}" NO_DEFAULT_PATH)
+# ── SDK stack (imported targets) ──────────────────────────────────────────────
+# Since the Qt split: logos-qt-sdk carries the Qt developer layer (provider
+# objects, LogosAPI) and chains logos-protocol (transports, bridge helpers,
+# logos::transportSetToJsonString). The Qt-free logos-cpp-sdk is header-only.
+if(NOT DEFINED LOGOS_PROTOCOL_ROOT AND DEFINED ENV{LOGOS_PROTOCOL_ROOT})
+    set(LOGOS_PROTOCOL_ROOT "$ENV{LOGOS_PROTOCOL_ROOT}")
+endif()
+if(NOT DEFINED LOGOS_QT_SDK_ROOT AND DEFINED ENV{LOGOS_QT_SDK_ROOT})
+    set(LOGOS_QT_SDK_ROOT "$ENV{LOGOS_QT_SDK_ROOT}")
+endif()
+find_package(logos-protocol REQUIRED
+    PATHS "${LOGOS_PROTOCOL_ROOT}/lib/cmake/logos-protocol" NO_DEFAULT_PATH)
+find_package(logos-qt-sdk REQUIRED
+    PATHS "${LOGOS_QT_SDK_ROOT}/lib/cmake/logos-qt-sdk" NO_DEFAULT_PATH)
 
 # ── nlohmann_json (header-only) ───────────────────────────────────────────────
 find_package(nlohmann_json REQUIRED)
@@ -162,13 +171,17 @@ target_link_libraries(logoscore PRIVATE
     Qt${QT_VERSION_MAJOR}::RemoteObjects
 )
 
-# Link the SDK static library (provides LogosProviderObject, bridge helpers,
+# Link the SDK stack (provides LogosProviderObject, bridge helpers,
 # logos::transportSetToJsonString, and other symbols needed by core_service).
-target_link_libraries(logoscore PRIVATE logos-cpp-sdk::logos_sdk)
+target_link_libraries(logoscore PRIVATE logos-qt-sdk::logos_qt_sdk)
 
 target_include_directories(logoscore PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${LOGOS_CPP_SDK_ROOT}/include/cpp
+    ${LOGOS_QT_SDK_ROOT}/include
+    ${LOGOS_QT_SDK_ROOT}/include/cpp
+    ${LOGOS_PROTOCOL_ROOT}/include
+    ${LOGOS_PROTOCOL_ROOT}/include/cpp
     ${LOGOS_LIBLOGOS_ROOT}/include
     ${LOGOS_LIBLOGOS_ROOT}/include/cpp
     ${LOGOS_MODULE_CLIENT_ROOT}/include
