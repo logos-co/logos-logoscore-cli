@@ -1,10 +1,15 @@
 #include <CLI/CLI.hpp>
 #include <QCoreApplication>
+#include <nlohmann/json.hpp>
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <optional>
+#include <sstream>
 #include <string>
 
 #include "config.h"
@@ -64,6 +69,46 @@ static std::string preScanConfigDir(int argc, char* argv[])
     return {};
 }
 
+// Resolve the --access-policy argument: inline JSON if it starts with
+// '{', otherwise a path to read from disk. Parse-checks the result and
+// returns nullopt (after a stderr diagnostic) on any error.
+static std::optional<std::string> resolveAccessPolicy(const std::string& arg)
+{
+    std::string content;
+    std::string source;  // for diagnostics
+
+    auto firstNonSpace = std::find_if(arg.begin(), arg.end(),
+        [](unsigned char c) { return !std::isspace(c); });
+    const bool looksInline = (firstNonSpace != arg.end() && *firstNonSpace == '{');
+
+    if (looksInline) {
+        content = arg;
+        source = "inline --access-policy JSON";
+    } else {
+        std::ifstream ifs(arg, std::ios::binary);
+        if (!ifs) {
+            std::cerr << "Error: --access-policy file '" << arg
+                      << "' could not be opened." << std::endl;
+            return std::nullopt;
+        }
+        std::ostringstream ss;
+        ss << ifs.rdbuf();
+        content = ss.str();
+        source = "--access-policy file '" + arg + "'";
+    }
+
+    // Parse-check only; schema enforcement is the runtime's job.
+    try {
+        (void)nlohmann::json::parse(content);
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << source << " is not valid JSON: "
+                  << e.what() << std::endl;
+        return std::nullopt;
+    }
+
+    return content;
+}
+
 int main(int argc, char *argv[])
 {
     // Pre-scan argv for `--config-dir` so the override applies before
@@ -117,6 +162,13 @@ int main(int argc, char *argv[])
     std::string persistencePath;
     auto* persistencePathOpt = app.add_option("--persistence-path", persistencePath,
         "Base directory for module instance persistence (default: ~/.logoscore/data)");
+
+    // --access-policy: inter-module access policy (file path or inline
+    // JSON). Daemon-only; forwarded to the runtime before modules load.
+    std::string accessPolicyArg;
+    auto* accessPolicyOpt = app.add_option("--access-policy", accessPolicyArg,
+        "Inter-module access policy: path to a JSON file, or inline JSON "
+        "(mode + per-target caller allowlists)");
 
     // --persist-config: write the merged (defaults < config.json < CLI)
     // result to disk. Without it, CLI flags affect the running process
@@ -460,12 +512,19 @@ int main(int argc, char *argv[])
         const bool anyCliFlag = (modulesDirOpt->count()      > 0)
                              || (persistencePathOpt->count() > 0)
                              || (moduleTransportOpt->count() > 0)
-                             || (insecureTcpOpt->count()     > 0);
+                             || (insecureTcpOpt->count()     > 0)
+                             || (accessPolicyOpt->count()    > 0);
         if (anyCliFlag) configSource = "cli";
 
         if (modulesDirOpt->count() > 0)      mergedCfg.modulesDirs     = modulesDirs;
         if (persistencePathOpt->count() > 0) mergedCfg.persistencePath = persistencePath;
         if (insecureTcpOpt->count() > 0)     mergedCfg.insecureTcp     = insecureTcp;
+        // Resolve --access-policy (file-or-inline); abort on bad input.
+        if (accessPolicyOpt->count() > 0) {
+            auto resolved = resolveAccessPolicy(accessPolicyArg);
+            if (!resolved) return 1;
+            mergedCfg.accessPolicy = std::move(*resolved);
+        }
         // --module-transport replaces the disk's modules wholesale
         // when the operator passes any. There's no per-module merge:
         // mixing operator intent with stale disk entries leads to

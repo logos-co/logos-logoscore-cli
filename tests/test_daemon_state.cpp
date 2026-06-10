@@ -73,6 +73,9 @@ DaemonConfig sampleConfig()
     cfg.sslKey  = "/etc/ssl/key.pem";
     cfg.sslCa   = "/etc/ssl/ca.pem";
     cfg.insecureTcp = true;
+    cfg.accessPolicy =
+        R"({"version":1,"mode":"enforce","restrictions":)"
+        R"({"package_manager":{"allowedCallers":["package_manager_ui"]}}})";
     return cfg;
 }
 
@@ -185,6 +188,20 @@ TEST_F(DaemonStateTest, Config_RoundTripsEveryField)
     EXPECT_EQ(got->sslKey,  "/etc/ssl/key.pem");
     EXPECT_EQ(got->sslCa,   "/etc/ssl/ca.pem");
     EXPECT_TRUE(got->insecureTcp);
+    EXPECT_EQ(got->accessPolicy, sampleConfig().accessPolicy);
+}
+
+TEST_F(DaemonStateTest, Config_OmitsAccessPolicyWhenEmpty)
+{
+    DaemonConfig cfg = sampleConfig();
+    cfg.accessPolicy.clear();
+    ASSERT_TRUE(DaemonConfigFile::write(cfg));
+
+    // Empty policy is not serialized (the key is omitted), and reads
+    // back as empty rather than as a stray "" entry.
+    auto got = DaemonConfigFile::read();
+    ASSERT_TRUE(got.has_value());
+    EXPECT_TRUE(got->accessPolicy.empty());
 }
 
 TEST_F(DaemonStateTest, Config_PreservesPortZeroIntent)
