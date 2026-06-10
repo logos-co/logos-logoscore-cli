@@ -146,10 +146,6 @@ set(CLI_SOURCES
     # Core service (in-process daemon module)
     src/core_service/core_service_impl.cpp
     src/core_service/core_service_dispatch.cpp
-
-    # Inline path (legacy)
-    src/inline/command_line_parser.cpp
-    src/inline/call_executor.cpp
 )
 
 add_executable(logoscore ${CLI_SOURCES})

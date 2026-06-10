@@ -73,7 +73,7 @@ nix flake check
 
 ## Usage
 
-`logoscore` operates in two modes: **daemon mode** (long-running process with client commands) and **inline mode** (single-process, legacy).
+`logoscore` runs as a **daemon** (long-running process) that you drive with **client commands** to load modules and call methods.
 
 ### Daemon Mode
 
@@ -559,50 +559,44 @@ kill $WATCH_PID
 logoscore stop
 ```
 
-### Inline Mode (Legacy)
+### Quick start: load modules and call methods
 
-Single-process mode — no daemon needed. Start the core, load modules, call methods, and exit.
+The daemon starts **clean** (it scans the module directories but loads nothing
+on its own). Load modules with `load-module` — transitive dependencies are
+resolved automatically — then call methods:
 
 ```bash
-logoscore -m ./modules -l waku,chat -c "chat.send_message(hello)" --quit-on-finish
+# Start a clean daemon scanning ./modules
+logoscore -D -m ./modules
+
+# Load modules (deps resolved automatically)
+logoscore load-module waku
+logoscore load-module chat
+
+# Call methods (positional args; @file reads a parameter from a file)
+logoscore call chat send_message hello
+logoscore call storage init config 42 true
+logoscore call storage loadConfig @config.json
+
+# Multiple module directories + a custom persistence path
+logoscore -D -m ./core-modules -m ./extra-modules --persistence-path /tmp/test-data
+
+# Stop the daemon when done
+logoscore stop
 ```
 
-#### Inline Options
+Daemon startup options:
 
 ```
+  -D                             Start the daemon
   -m, --modules-dir <path>       Directory to scan for modules (repeatable)
-  -l, --load-modules <modules>   Comma-separated list of modules to load
-  -c, --call <call>              Call a module method: module.method(arg1, arg2)
-                                 Use @file to read a parameter from a file.
-                                 Can be repeated for sequential calls.
-      --quit-on-finish           Exit after all -c calls complete
       --persistence-path <path>  Base directory for module instance persistence
                                  (default: ~/.logoscore/data)
 ```
 
-#### Inline Examples
-
-```bash
-# Load specific modules (deps resolved automatically)
-logoscore -m ./modules -l module1,module2
-
-# Call with parameters
-logoscore -l storage -c "storage.init('config', 42, true)"
-
-# Read a parameter from a file
-logoscore -l storage -c "storage.loadConfig(@config.json)"
-
-# Multiple sequential calls (abort on first error)
-logoscore -l storage \
-  -c "storage.init(@config.json)" \
-  -c "storage.start()"
-
-# Multiple modules directory sources
-logoscore -m ./core-modules -m ./extra-modules -l my_module
-
-# Custom persistence directory for module instance data
-logoscore -m ./modules -l my_module --persistence-path /tmp/test-data
-```
+> **Note:** the legacy inline mode (`-c "module.method(args)"` / `--quit-on-finish`,
+> which ran calls in a single short-lived process) has been removed. Use a daemon
+> plus `logoscore call ...` as shown above.
 
 ### Dependency Resolution
 

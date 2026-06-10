@@ -296,7 +296,7 @@ int Daemon::start(int argc, char* argv[],
     state.startedAt     = currentUtcIso8601();
     state.configSource  = configSource;
     // Start from the operator-merged config so downstream consumers
-    // see every preference (loadModules, ssl paths, insecureTcp), then
+    // see every preference (ssl paths, insecureTcp), then
     // overwrite the per-module map with the resolved (post-bind)
     // transports — that's the only field where state.json diverges
     // from config.json on intent.

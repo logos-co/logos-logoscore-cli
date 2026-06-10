@@ -82,7 +82,6 @@ json daemonConfigToJson(const DaemonConfig& cfg)
 {
     json obj;
     obj["modules_dirs"]     = cfg.modulesDirs;
-    obj["load_modules"]     = cfg.loadModules;
     obj["persistence_path"] = cfg.persistencePath;
 
     json modulesObj = json::object();
@@ -119,7 +118,6 @@ std::optional<DaemonConfig> daemonConfigFromJson(const json& obj)
 {
     DaemonConfig cfg;
     cfg.modulesDirs     = obj.value("modules_dirs", std::vector<std::string>{});
-    cfg.loadModules     = obj.value("load_modules", "");
     cfg.persistencePath = obj.value("persistence_path", "");
 
     if (obj.contains("modules") && obj["modules"].is_object()) {

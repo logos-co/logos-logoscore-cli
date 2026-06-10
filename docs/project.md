@@ -6,7 +6,6 @@ The `logoscore` CLI is a standalone application that provides the command-line i
 
 - Running as a daemon that hosts the liblogos runtime
 - Providing client commands that talk to the daemon via RPC
-- Supporting inline mode for quick one-off operations
 
 This project will live in its own repository. liblogos is consumed as an external C library dependency.
 
@@ -47,10 +46,6 @@ logoscore-cli/
 │   │       ├── revoke_token_command.cpp/h   # Revokes by name
 │   │       └── list_tokens_command.cpp/h    # Lists issued tokens (name + metadata, no plaintext)
 │   │
-│   ├── inline/                       # Inline path (-m, -l, -c flags)
-│   │   ├── command_line_parser.cpp/h  # Argument parser for flat-flag interface
-│   │   └── call_executor.cpp/h        # Direct method execution via C API
-│   │
 │   └── core_service/                 # Built-in module — CLI ↔ daemon RPC gateway
 │       ├── core_service_impl.h       # LOGOS_PROVIDER class with LOGOS_METHOD declarations
 │       ├── core_service_impl.cpp     # Method implementations (delegates to liblogos C API)
@@ -63,8 +58,7 @@ logoscore-cli/
 │   ├── test_cli_commands.cpp         # Mode detection, subcommand dispatch
 │   ├── test_cli_output.cpp           # Output formatter tests
 │   ├── test_cli_daemon.cpp           # Daemon lifecycle, state file
-│   ├── test_cli_client.cpp           # Client connection to core_service
-│   └── test_inline.cpp              # Inline argument parsing tests
+│   └── test_cli_client.cpp           # Client connection to core_service
 │
 ├── docs/
 │   ├── spec.md                       # CLI specification (user-facing behavior)
@@ -94,12 +88,12 @@ The CLI uses these functions from liblogos (declared in `logos_core.h`):
 
 | Function | Used by |
 |---|---|
-| `logos_core_init(argc, argv)` | Daemon, Inline |
-| `logos_core_add_modules_dir(path)` | Daemon, Inline |
-| `logos_core_start()` | Daemon, Inline |
-| `logos_core_exec()` | Daemon, Inline |
+| `logos_core_init(argc, argv)` | Daemon |
+| `logos_core_add_modules_dir(path)` | Daemon |
+| `logos_core_start()` | Daemon |
+| `logos_core_exec()` | Daemon |
 | `logos_core_cleanup()` | Daemon |
-| `logos_core_load_module(name, true)` | core_service, Inline |
+| `logos_core_load_module(name, true)` | Daemon, core_service |
 | `logos_core_unload_module(name, false)` | core_service |
 | `logos_core_get_known_modules()` | core_service |
 | `logos_core_get_loaded_modules()` | core_service |
@@ -109,12 +103,11 @@ The CLI uses these functions from liblogos (declared in `logos_core.h`):
 
 ## CLI Execution Paths
 
-The `logoscore` binary detects its mode from the first argument and dispatches to one of three paths:
+The `logoscore` binary detects its mode from the first argument and dispatches to one of two paths:
 
 ```
 logoscore -D / daemon         →  Daemon path    (long-running, hosts modules)
 logoscore <subcommand>        →  Client path    (short-lived, talks to daemon)
-logoscore -m -l -c            →  Inline path    (single-process, no daemon needed)
 ```
 
 ### Detection logic (main.cpp)
@@ -124,7 +117,7 @@ Before mode detection, `main()` scans argv for `-v`/`--verbose` and installs a c
 ```
 if argv contains "-D" or "daemon"      → daemon path
 else if argv[1] is a known subcommand  → client path
-else if argv contains -m, -l, or -c    → inline path
+else if argv contains -m/-p (no -D)    → error (inline mode removed)
 else                                   → print help
 ```
 
@@ -231,17 +224,14 @@ and parses" — the on-disk precondition, not liveness. The `status` command
 same-host stale-state detection, but that's a short-circuit before falling
 through to the same RPC path.
 
-### Inline Path (`logoscore -m -l -c`)
+### Inline Path (removed)
 
-```
-main.cpp
-  → parseCommandLineArgs(app)                 // existing parser
-  → logos_core_init / start / exec            // starts core in same process
-  → CallExecutor::executeCalls(calls)         // direct C API calls
-  → exit or event loop
-```
-
-The inline path starts the core in the same process, loads modules, executes calls, and exits. No daemon, no core_service. This is the existing behavior and remains unchanged.
+The legacy inline path (`logoscore -m -l -c "module.method(args)" --quit-on-finish`)
+started the core in the same short-lived process, loaded modules, executed the
+`-c` calls directly via the C API, and exited. It has been removed — use a
+daemon (`-D`) plus `load-module` / `call` client subcommands instead. The
+daemon starts clean; `-m`/`--persistence-path` configure daemon startup only
+(the `-l/--load-modules` autoload flag was also removed).
 
 ---
 
@@ -392,8 +382,8 @@ QVariant CoreServiceImpl::callMethod(const QString& method, const QVariantList& 
 
 | Function | Description |
 |----------|-------------|
-| `detectMode(argc, argv) -> Mode` | Returns `Daemon`, `Client`, or `Inline` |
-| `main(argc, argv) -> int` | Dispatch to Daemon::start, Client command, or inline flow |
+| `detectMode(argc, argv) -> Mode` | Returns `Daemon` or `Client` |
+| `main(argc, argv) -> int` | Dispatch to Daemon::start or a Client command |
 
 ### Daemon
 
@@ -435,7 +425,6 @@ QVariant CoreServiceImpl::callMethod(const QString& method, const QVariantList& 
   "config_source": "cli",
   "resolved": {
     "modules_dirs": ["/path/to/modules"],
-    "load_modules": "",
     "persistence_path": "/var/lib/logoscore",
     "modules": {
       "core_service": {
@@ -671,14 +660,6 @@ Parallel daemons run side-by-side when invoked with distinct `--config-dir` valu
 | `Command::execute(args) -> int` | Run the command, return exit code |
 | `Command::client() -> Client&` | Access the core_service client |
 | `Command::output() -> Output&` | Access the output formatter |
-
-### Inline Components
-
-**CommandLineParser** (`src/inline/command_line_parser.cpp/h`):
-Parses `-m`, `-l`, `-c`, `--quit-on-finish` flags. Returns `CoreArgs` struct.
-
-**CallExecutor** (`src/inline/call_executor.cpp/h`):
-Executes method calls via `logos_core_call_plugin_method_async()` with 30s timeout. Supports `@file` parameter resolution.
 
 ---
 
@@ -933,10 +914,6 @@ Client commands call core_service LOGOS_METHODs, which delegate to liblogos inte
 | `stop` | `shutdown()` | `QTimer::singleShot(200, ..., &QCoreApplication::quit)` |
 | `info` | alias for `module-info` | — |
 
-### Inline path — direct liblogos
-
-Inline mode (`-m -l -c`) calls liblogos functions directly in the same process. No daemon, no core_service.
-
 ---
 
 ## Build
@@ -1068,13 +1045,6 @@ scp daemon-host:~/.logoscore/daemon/tokens/alice.json ~/.logoscore/client/
 logoscore load-module waku
 ```
 
-### Inline Mode
-
-```bash
-# Single-process mode — no daemon needed
-logoscore -m ./modules -l waku,chat -c "chat.send_message(hello)" --quit-on-finish
-```
-
 ### Piping and Composition
 
 ```bash
@@ -1106,12 +1076,12 @@ done
 | Test File | Coverage |
 |-----------|----------|
 | `test_commands.cpp` | All subcommand implementations via mock client: load/unload/reload module, list-modules, status, module-info, call, stats, watch, stop. Tests both success and error paths, JSON and human output modes. |
-| `test_mode_detection.cpp` | Mode detection (daemon/client/inline/help/version), known subcommands list, argument parsing. |
+| `test_mode_detection.cpp` | Mode detection (daemon/client/help/version), known subcommands list, argument parsing. |
 | `test_output.cpp` | Output formatter (human/JSON), TTY detection, printSuccess/printError/printRaw. |
 | `test_daemon_state.cpp` | Round-trip `daemon/state.json` — instance_id, pid, modulesDirs, per-module `transports` entries (local/tcp/tcp_ssl, codec defaulting), and the `tokens` array (`name, hash, issued_at, expires_at, local_only`). `fileOk` is independent of the pid (it's a parse check, not liveness). |
 | `test_token_store.cpp` | Token issuance (including `--expires` and `--local-only`), duplicate-name rejection (unless `--replace`), revocation, list, persistence round-trip. Confirms `tokens.json["tokens"]` stores hashes only; plaintext lives in `daemon/tokens/<name>.json`. |
 | `test_config.cpp` | Token resolution order (env var → `client/<token_file>`); `client/config.json` parsing. |
-| `test_cli.cpp` | End-to-end CLI tests: help, version, no-args, client commands without daemon, inline mode with --verbose. |
+| `test_cli.cpp` | End-to-end CLI tests: help, version, no-args, client commands without daemon, daemon startup with --verbose. |
 
 ---
 

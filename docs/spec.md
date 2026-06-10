@@ -11,7 +11,7 @@ The CLI follows a daemon + client architecture. A long-running daemon process ho
 1. **Human-friendly** — Readable output, discoverable commands, helpful error messages with recovery suggestions.
 2. **Agent-friendly** — Structured JSON output, non-interactive operation, streaming events as NDJSON, deterministic exit codes. An AI agent using a bash tool should be able to operate the full lifecycle without any interactive prompts or ambiguous output.
 3. **Composable** — Each command does one thing and works well in pipelines. Output goes to stdout, diagnostics to stderr.
-4. **Backward-compatible** — The existing flat-flag interface (`-m`, `-l`, `-c`, `--quit-on-finish`) continues to work.
+4. **Daemon-oriented** — A long-running daemon owns the modules; clients connect to it. The daemon starts clean (`-m`/`--persistence-path` configure startup with `-D`); modules are loaded via `load-module`.
 
 ---
 
@@ -479,7 +479,6 @@ The daemon dir splits by lifetime into three files:
   "config_source": "cli",
   "resolved": {
     "modules_dirs": ["/path/to/modules"],
-    "load_modules": "",
     "persistence_path": "/var/lib/logoscore",
     "modules": {
       "core_service": {
@@ -1043,22 +1042,25 @@ Error codes: `NO_DAEMON`, `DAEMON_UNREACHABLE`, `MODULE_NOT_FOUND`, `MODULE_LOAD
 
 ---
 
-## Backward Compatibility
+## Daemon + client workflow
 
-The existing flat-flag interface continues to work as inline mode (no daemon needed):
+Module method calls go through a running daemon. Start a **clean** daemon with
+`-D` (it loads no modules on its own), then load modules and call methods with
+client subcommands:
 
 ```bash
-# Legacy mode — start core, load modules, call methods, exit
-logoscore -m /path -l waku,chat -c "chat.send_message(hello)" --quit-on-finish
-
-# Equivalent using new subcommands (requires running daemon)
+# Start a clean daemon scanning /path
 logoscore -D -m /path &
-logoscore load-module waku
+logoscore load-module waku          # deps resolved automatically
 logoscore load-module chat
 logoscore call chat send_message "hello"
 ```
 
-When legacy flags (`-l`, `-c`) are present, the binary operates in inline mode: it starts the core, performs the requested operations, and exits. When a subcommand is detected, it operates in client mode and connects to a running daemon.
+The legacy inline mode (`-c "module.method(args)"` / `--quit-on-finish`, which
+started the core, ran calls in one short-lived process, and exited) has been
+removed, as has `-l/--load-modules` (the daemon now starts clean — load via
+`load-module`). `-m`/`--persistence-path` apply only to daemon startup (`-D`);
+a subcommand operates in client mode and connects to a running daemon.
 
 ---
 
