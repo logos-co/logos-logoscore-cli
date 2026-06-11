@@ -3286,11 +3286,11 @@
         "process-stats": "process-stats_3"
       },
       "locked": {
-        "lastModified": 1781220301,
-        "narHash": "sha256-J4F73z0icRuKn8kOXwitU3veOXBikFH+hQgG+4wjK2Q=",
+        "lastModified": 1781220577,
+        "narHash": "sha256-Cr5WBHFwpxEqbx1W9pYdHKWIvJJQ4NQBAY1OmkcNiao=",
         "owner": "logos-co",
         "repo": "logos-liblogos",
-        "rev": "ae9b8bd5883544346d9af8552ad0f98192f3c18f",
+        "rev": "cf793ea8e7b530aa77074d5f4143d784abe8c656",
         "type": "github"
       },
       "original": {
