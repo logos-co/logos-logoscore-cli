@@ -4034,11 +4034,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1781306940,
+        "lastModified": 1781311895,
         "narHash": "sha256-E2gSZWQGrTAbXhgr1ViaiPJ/zFr5W6NxplDHL8yRuXg=",
         "owner": "logos-co",
         "repo": "logos-module-client",
-        "rev": "a307ad6a27c89742775d790977e8ef5812c4eb9e",
+        "rev": "7abdc8b5eb62af51b7336310df70ec52c8bef4fb",
         "type": "github"
       },
       "original": {
