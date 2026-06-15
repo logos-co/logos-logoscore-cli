@@ -61,6 +61,10 @@ void CoreServiceImpl::init(void* apiInstance)
 nlohmann::json CoreServiceImpl::callMethodStd(const std::string& methodName,
                                                const nlohmann::json& args)
 {
+  // args[i].get<std::string>() throws type_error on a non-string arg; without
+  // this catch the exception escapes the event loop and kills the daemon, so a
+  // malformed RPC becomes a structured error instead of a crash.
+  try {
     if (methodName == "loadModule" && args.size() >= 1)
         return stdLogosResultToJson(loadModule(args[0].get<std::string>()));
 
@@ -98,6 +102,15 @@ nlohmann::json CoreServiceImpl::callMethodStd(const std::string& methodName,
         return shutdown();
 
     return nullptr;
+  } catch (const std::exception& e) {
+    // Malformed argument types (or any other dispatch-time failure) become a
+    // structured error rather than an uncaught exception that kills the daemon.
+    return nlohmann::json{
+        {"status",  "error"},
+        {"code",    "INVALID_ARGS"},
+        {"message", std::string("invalid arguments: ") + e.what()},
+    };
+  }
 }
 
 void CoreServiceImpl::setEventListenerStd(UniversalEventCallback callback)

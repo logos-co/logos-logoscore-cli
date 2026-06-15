@@ -439,9 +439,13 @@ int main(int argc, char *argv[])
                     }
                 }
                 else if (k == "port") {
+                    // Require the WHOLE value to parse — std::stoi would accept
+                    // "6000x" as 6000 / "0x1F90" as 0, silently binding the wrong port.
                     int parsedPort = 0;
-                    try { parsedPort = std::stoi(v); }
-                    catch (...) {
+                    size_t consumed = 0;
+                    try { parsedPort = std::stoi(v, &consumed); }
+                    catch (...) { consumed = 0; }
+                    if (v.empty() || consumed != v.size()) {
                         std::cerr << "Error: --module-transport port '" << v
                                   << "' is not a valid integer" << std::endl;
                         return 1;
@@ -630,6 +634,15 @@ int main(int argc, char *argv[])
                                    || (clientSslCaOpt->count()        > 0);
 
         if (anyClientCfgFlag || persistConfig) {
+            // Validate --client-codec up front; otherwise a typo is stored
+            // verbatim and silently coerced to JSON at dial time.
+            if (clientCodecOpt->count() > 0
+             && clientCodec != "json" && clientCodec != "cbor") {
+                std::cerr << "Error: --client-codec '" << clientCodec
+                          << "' must be 'json' or 'cbor'" << std::endl;
+                return 1;
+            }
+
             ClientState merged = ClientStateFile::read();  // disk (or empty)
 
             // The transport-shape overrides apply to BOTH dialed
@@ -666,6 +679,16 @@ int main(int argc, char *argv[])
                               << "' does not exist at "
                               << Config::clientDir() << "/" << clientTokenFile
                               << ". Copy it from the daemon's daemon/tokens/ dir first."
+                              << std::endl;
+                    return 1;
+                }
+                // Existence isn't enough — validate the content now so a file
+                // with no usable token errors here, not later at connect time.
+                if (ClientStateFile::readTokenFile(clientTokenFile).empty()) {
+                    std::cerr << "Error: --token-file '" << clientTokenFile
+                              << "' at " << Config::clientTokenPath(clientTokenFile)
+                              << " has no usable 'token' field (missing key, "
+                                 "empty, or unparseable JSON)."
                               << std::endl;
                     return 1;
                 }

@@ -122,15 +122,30 @@ StdLogosResult CoreServiceImpl::reloadModule(const std::string& name)
     result["module"] = name;
 
     auto loaded = getLoadedModuleNames();
-    std::string previousStatus = containsName(loaded, name) ? "loaded" : "not_loaded";
+    const bool wasLoaded = containsName(loaded, name);
+    std::string previousStatus = wasLoaded ? "loaded" : "not_loaded";
     result["previous_status"] = previousStatus;
 
-    if (containsName(loaded, name)) {
+    if (wasLoaded) {
         logos_core_unload_module(name.c_str(), false);
     }
 
     bool ok = logos_core_load_module(name.c_str(), true);
     if (!ok) {
+        // Non-destructive on failure: if it was running, try to bring it back
+        // (the user asked to reload, not to take it down) and report whether
+        // the prior instance was restored.
+        if (wasLoaded) {
+            const bool restored = logos_core_load_module(name.c_str(), true);
+            result["status"]   = "error";
+            result["error"]    = restored
+                ? "reload failed; previous instance restored"
+                : "reload failed; module is now unloaded";
+            result["restored"] = restored;
+            return {false, result,
+                    restored ? "reload failed; previous instance restored"
+                             : "reload failed; module is now unloaded"};
+        }
         result["status"] = "error";
         result["error"] = "module failed to start";
         return {false, result, "module failed to start"};

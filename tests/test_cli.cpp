@@ -313,3 +313,87 @@ TEST_F(CLITest, DaemonFlags_WithClientSubcommand_Rejected) {
     EXPECT_NE(output.find("daemon"), std::string::npos)
         << "Should reject -m with a client subcommand. Output:\n" << output;
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// BUG-026: --module-transport port must reject trailing garbage
+// std::stoi("6000x") returns 6000 and std::stoi("0x1F90") returns 0; the
+// parser must require the WHOLE value to be a valid integer or error out,
+// so a typo can't silently bind a different (or auto-allocated) port.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Use the timeout helper: a correct build REJECTS the bad port and exits 1
+// before the event loop; a buggy build parses the prefix, starts the daemon,
+// and would block — surfacing as timeout's exit 124 rather than a hung test.
+TEST_F(CLITest, ModuleTransportPort_TrailingGarbageRejected) {
+    std::string output;
+    int exitCode = runLogoscoreWithTimeout(
+        "-D --module-transport core_service=tcp,port=6000x", &output, 5);
+    EXPECT_EQ(exitCode, 1)
+        << "port=6000x must be rejected (exit 1), not parsed as 6000 and "
+           "started (124=timeout). Output:\n" << output;
+    EXPECT_NE(output.find("not a valid integer"), std::string::npos)
+        << "Output:\n" << output;
+}
+
+TEST_F(CLITest, ModuleTransportPort_HexLikeRejected) {
+    std::string output;
+    int exitCode = runLogoscoreWithTimeout(
+        "-D --module-transport core_service=tcp,port=0x1F90", &output, 5);
+    EXPECT_EQ(exitCode, 1)
+        << "port=0x1F90 must be rejected (exit 1), not parsed as 0. "
+           "Output:\n" << output;
+    EXPECT_NE(output.find("not a valid integer"), std::string::npos)
+        << "Output:\n" << output;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// BUG-027: --client-codec must be validated (json|cbor), mirroring the daemon
+// side. An invalid value was stored verbatim and silently coerced to JSON at
+// dial time, defeating the documented "connect fails on codec mismatch".
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST_F(CLITest, ClientCodec_InvalidRejected) {
+    // Codec validation happens during the client-config merge, before any
+    // connect. A correct build exits 1 with "must be"; a buggy build silently
+    // coerces to JSON and proceeds to `status` (exit 2, no daemon). Timeout
+    // helper guards against any unexpected block.
+    // Global client flags are parsed before the subcommand (after it they're
+    // swallowed by allow_extras), so place --client-codec ahead of `status`.
+    std::string output;
+    int exitCode = runLogoscoreWithTimeout(
+        "--client-codec jsonn status", &output, 5);
+    EXPECT_EQ(exitCode, 1)
+        << "An invalid --client-codec must be rejected with exit 1, not "
+           "coerced to JSON (exit 2). Output:\n" << output;
+    EXPECT_NE(output.find("must be"), std::string::npos)
+        << "Output:\n" << output;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// BUG-028: --token-file must reject a file that exists but carries no usable
+// token (missing/empty token field, or unparseable JSON), instead of marking
+// the config usable and failing later at connect time.
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST_F(CLITest, TokenFile_PresentButEmptyTokenRejected) {
+    // Stage a client/ dir with a token file that has no usable token field.
+    const fs::path cfgDir = fs::temp_directory_path() /
+        ("logoscore_cli_tf_" + std::to_string(::getpid()));
+    const fs::path clientDir = cfgDir / "client";
+    fs::create_directories(clientDir);
+    {
+        std::ofstream ofs(clientDir / "empty.json", std::ios::trunc);
+        ofs << "{}\n";  // valid JSON, but no "token" key
+    }
+    // --token-file is a global client flag too; place it before `status`.
+    std::string output;
+    int exitCode = runLogoscoreWithTimeout(
+        "--config-dir " + cfgDir.string() +
+        " --token-file empty.json status", &output, 5);
+    fs::remove_all(cfgDir);
+    EXPECT_EQ(exitCode, 1)
+        << "A token file with no usable token must be rejected up front "
+           "(exit 1), not accepted and failed later. Output:\n" << output;
+    EXPECT_NE(output.find("token"), std::string::npos)
+        << "Output:\n" << output;
+}

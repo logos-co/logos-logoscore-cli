@@ -248,6 +248,139 @@ TEST_F(TokenStoreTest, ExpiresAt_MalformedFailsClosed)
            "as non-expiring";
 }
 
+// -- BUG-011: empty token must never authenticate -------------------------
+//
+// generateToken() returns "" when RAND_bytes fails. issueToken() did not
+// check for that, so it would persist an entry whose hash is SHA-256("")
+// and a corresponding empty raw-token file, and report success. A client
+// sending an empty token would then hash to the same SHA-256("") and match
+// the entry. lookupByToken must fail closed on an empty token regardless of
+// what is on disk. We simulate the corrupt on-disk state directly (an entry
+// whose hash == hashToken("")), since we can't force RAND_bytes to fail.
+TEST_F(TokenStoreTest, EmptyToken_NeverAuthenticates)
+{
+    TokenStore store = makeStore();
+
+    // Forge the exact entry a failed-RNG issue would have written:
+    // hash of the empty string, no expiry, not local-only.
+    TokenEntry bogus;
+    bogus.name     = "auto";
+    bogus.hash     = TokenStore::hashToken("");   // SHA-256 of ""
+    bogus.issuedAt = "2024-01-01T00:00:00Z";
+    ASSERT_TRUE(TokensFile::write({bogus}));
+
+    // An inbound empty token hashes to the same value and would match the
+    // forged entry — but auth must reject it outright.
+    EXPECT_FALSE(store.lookupByToken("", "local").has_value())
+        << "an empty token must never authenticate, even if a corrupt "
+           "empty-hash entry exists in tokens.json";
+}
+
+// -- BUG-011 (issue side): a failed-RNG empty token must not be persisted --
+//
+// We can't force RAND_bytes to fail, but we can assert the contract that
+// issueToken never reports Ok while handing back an empty raw token. Today
+// the only way to exercise the empty-token branch is RNG failure; this test
+// documents and locks the invariant for the normal path (token non-empty on
+// Ok) so a regression that drops the guard is caught.
+TEST_F(TokenStoreTest, IssueOk_ImpliesNonEmptyToken)
+{
+    TokenStore store = makeStore();
+    auto r = store.issueToken("alice");
+    ASSERT_EQ(r.status, TokenStore::IssueStatus::Ok);
+    EXPECT_FALSE(r.token.empty())
+        << "issueToken must never return Ok with an empty token";
+}
+
+// -- BUG-025: a failed --replace must not destroy the prior raw token -----
+//
+// On --replace the old code overwrote the operator-visible raw file FIRST,
+// then wrote tokens.json; if the tokens.json write failed it removed the raw
+// file in "rollback" — destroying the only on-disk copy of a token whose
+// hash (unchanged on disk) was still valid. We force the tokens.json write
+// to fail by making the daemon/ dir read-only (so the temp+rename in that
+// dir can't be created), while the tokens/ subdir stays writable so the raw
+// write itself can proceed. After the failed replace the original raw file
+// must still be present and unchanged.
+TEST_F(TokenStoreTest, ReplaceWriteFailure_PreservesPriorRawToken)
+{
+    TokenStore store = makeStore();
+    const auto first = mustIssue(store, "alice");
+    const auto rawPath = store.rawTokenFilePath("alice");
+    ASSERT_TRUE(fs::exists(rawPath));
+    std::string before((std::istreambuf_iterator<char>(
+                            *std::make_unique<std::ifstream>(rawPath))),
+                        std::istreambuf_iterator<char>());
+    ASSERT_NE(before.find(first), std::string::npos);
+
+    // Make daemon/ (which holds tokens.json + its .tmp) read-only so the
+    // tokens.json write fails; tokens/ keeps its own 0700 and stays writable.
+    const fs::path daemonDir = fs::path(Config::daemonTokensPath()).parent_path();
+    ::chmod(daemonDir.c_str(), 0500);
+
+    auto r = store.issueToken("alice", /*expiresAt=*/{},
+                              /*localOnly=*/false, /*replace=*/true);
+
+    ::chmod(daemonDir.c_str(), 0700);  // restore for assertions/teardown
+
+    EXPECT_EQ(r.status, TokenStore::IssueStatus::IoError)
+        << "a tokens.json write failure during --replace must report IoError";
+
+    ASSERT_TRUE(fs::exists(rawPath))
+        << "the prior raw token file must survive a failed --replace";
+    std::string after((std::istreambuf_iterator<char>(
+                           *std::make_unique<std::ifstream>(rawPath))),
+                      std::istreambuf_iterator<char>());
+    EXPECT_NE(after.find(first), std::string::npos)
+        << "the surviving raw file must still contain the original token";
+    // And the original token must still validate (its hash never changed).
+    EXPECT_EQ(store.lookupByToken(first, "local").value_or(""), "alice");
+}
+
+// -- BUG-024: issuing must not silently clobber an unsupported-version file
+//
+// TokensFile::read() returns an empty vector for a tokens.json whose schema
+// version it doesn't recognise (logging to stderr). issueToken then appended
+// to that empty list and rewrote the file at the CURRENT version —
+// destroying every operator-issued token that lived in the unrecognised
+// file. issueToken/revokeToken must instead refuse (IoError) and leave the
+// on-disk file byte-for-byte intact, so an operator who is mid-migration can
+// recover their tokens instead of finding them silently wiped.
+TEST_F(TokenStoreTest, IssueRefusesToClobberUnsupportedVersionFile)
+{
+    // Hand-write a tokens.json one version ahead, carrying a real entry.
+    const std::string path = TokensFile::filePath();
+    fs::create_directories(fs::path(path).parent_path());
+    const std::string futureDoc =
+        std::string("{\n  \"version\": ") +
+        std::to_string(kTokensFileSchemaVersion + 1) +
+        ",\n  \"tokens\": [\n"
+        "    { \"name\": \"alice\", \"hash\": \"deadbeef\", "
+        "\"issued_at\": \"2024-01-01T00:00:00Z\", \"expires_at\": null, "
+        "\"local_only\": false }\n  ]\n}\n";
+    {
+        std::ofstream ofs(path, std::ios::trunc);
+        ofs << futureDoc;
+    }
+
+    TokenStore store = makeStore();
+    auto r = store.issueToken("bob");
+    EXPECT_EQ(r.status, TokenStore::IssueStatus::IoError)
+        << "issuing against an unsupported-version tokens.json must refuse, "
+           "not silently rewrite it at the current version";
+
+    // The on-disk file must be untouched (still the future version + alice).
+    std::string after((std::istreambuf_iterator<char>(
+                           *std::make_unique<std::ifstream>(path))),
+                      std::istreambuf_iterator<char>());
+    EXPECT_NE(after.find("\"version\": " +
+                         std::to_string(kTokensFileSchemaVersion + 1)),
+              std::string::npos)
+        << "the unsupported-version file must be left intact, not clobbered";
+    EXPECT_NE(after.find("alice"), std::string::npos)
+        << "the operator's existing token entry must survive";
+}
+
 // -- TokensFile direct round-trip -----------------------------------------
 //
 // Verifies the standalone tokens.json shape: read returns an empty

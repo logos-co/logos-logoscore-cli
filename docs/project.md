@@ -127,6 +127,11 @@ else                                   → print help
 main.cpp
   → Daemon::start(modulesDirs, persistencePath, transportInfos)
     1. Generate instance ID, set LOGOS_INSTANCE_ID env var
+       Refuse to start if a live daemon already owns this config-dir: read
+       daemon/state.json and, if its pid is still alive (kill(pid,0)), exit 1.
+       A stale state.json from a crashed daemon (pid gone) is not a live
+       owner and is overwritten normally. This runs before logos_core_init so
+       a duplicate launch fails fast instead of spawning module hosts first.
     2. logos_core_init(argc, argv)
     3. logos_core_add_modules_dir() for each -m path
     4. logos_core_start()                         // discover modules
@@ -174,6 +179,16 @@ followed by operator-named entries in the order they were typed.
 **Plaintext-TCP guard.** Plaintext `tcp` listeners on a non-loopback host
 expose tokens in cleartext. The daemon refuses to bind such a listener
 unless `--insecure-tcp` was passed.
+
+**IPv6 bind targets.** Ephemeral-port allocation (used when a transport asks
+the kernel to pick a port) binds on the address family that matches the host:
+an IPv6 literal such as `::` or `::1` allocates on `AF_INET6`, IPv4 literals on
+`AF_INET`. (Previously the allocator was IPv4-only and returned 0 for any IPv6
+host, aborting daemon startup for IPv6 TCP transports.)
+
+**Strict port parsing.** A `--module-transport ...,port=<n>` value must be a
+whole valid integer — trailing garbage (`6000x`) or hex (`0x1F90`) is a hard
+error (exit 1), not a silently-wrong or auto-allocated `0` port.
 
 **Named tokens.** `TokenStore` (owned by the daemon) persists the issued-token
 table inside `<configDir>/daemon/tokens.json["tokens"]` (`{name, hash,
@@ -296,7 +311,7 @@ private:
 |---|---|
 | `loadModule(name)` | Calls `logos_core_load_module(name, true)`. Returns `{"status":"ok","module":"...","version":"...","dependencies_loaded":[...]}` |
 | `unloadModule(name)` | Calls `logos_core_unload_module(name, false)`. Returns `{"status":"ok","module":"..."}` |
-| `reloadModule(name)` | Checks if loaded/crashed → unload if needed → load. Returns result with `previous_status` |
+| `reloadModule(name)` | Checks if loaded/crashed → unload if needed → load. Returns result with `previous_status`. Non-destructive on failure: if the module was loaded before and the reload's load step fails, it attempts to restore the prior instance and reports `restored: true/false` plus an explanatory error rather than leaving the module down |
 | `listModules(filter)` | Calls `logos_core_get_known_modules()` + `logos_core_get_loaded_modules()`. Merges with crash metadata. Returns JSON array with status enum |
 | `getStatus()` | Reads daemon state (PID, uptime, version) + calls `listModules("all")`. Returns `{"daemon":{...},"modules_summary":{...},"modules":[...]}` |
 | `getModuleInfo(name)` | Fetches metadata, methods (via SDK introspection), process info, crash history. Returns extended JSON |
@@ -359,6 +374,8 @@ This registers the module directly into the runtime using the C++ SDK classes (`
 
 The `core_service_dispatch.cpp` file provides a manual `callMethod()` dispatch table and `getMethods()` metadata for `CoreServiceImpl`. Unlike dynamically loaded modules that use `logos-cpp-generator`, core_service uses a hand-written dispatch because it is statically linked into the daemon binary.
 
+The dispatch wraps argument coercion in a try/catch: a malformed RPC (e.g. a number where a string arg is expected, which makes `args[i].get<std::string>()` throw `nlohmann::json::type_error`) is converted into a structured `{status:"error", code:"INVALID_ARGS", message:...}` response instead of an uncaught exception that would propagate through the Qt event loop and terminate the whole daemon. This keeps one authenticated client from crashing the daemon with a single bad argument.
+
 ```cpp
 // core_service_dispatch.cpp — maps method names to CoreServiceImpl methods
 QVariant CoreServiceImpl::callMethod(const QString& method, const QVariantList& args) {
@@ -410,7 +427,7 @@ QVariant CoreServiceImpl::callMethod(const QString& method, const QVariantList& 
 |--------|-------------|
 | `DaemonConfigFile::read() -> optional<DaemonConfig>` | Parse `daemon/config.json`. Returns `nullopt` if missing or schema-mismatched. |
 | `DaemonConfigFile::write(cfg)` | Atomic write of operator-intent values. `port: 0` stays `0` (resolved values live in `state.json`). |
-| `DaemonRuntimeStateFile::write(state)` | Atomic write of resolved live state (`instance_id`, `pid`, `started_at`, `resolved.modules` with actually-bound ports). |
+| `DaemonRuntimeStateFile::write(state)` | Atomic write of resolved live state (`instance_id`, `pid`, `started_at`, `resolved.modules` with actually-bound ports). The temp file staged before the atomic rename is per-writer-unique (`<path>.tmp.<pid>.<seq>`) so concurrent writers can't truncate/rename the same temp and corrupt the result. |
 | `DaemonRuntimeStateFile::read() -> DaemonRuntimeState` | Parse `state.json`. `fileOk` is true iff the file exists with a non-empty `instance_id` — says nothing about liveness; pair with `kill(pid, 0)` for that. |
 | `DaemonRuntimeStateFile::remove()` | Remove `state.json`. Called from clean shutdown / `aboutToQuit` hook. |
 
@@ -474,10 +491,10 @@ QVariant CoreServiceImpl::callMethod(const QString& method, const QVariantList& 
 | Method | Description |
 |--------|-------------|
 | `TokenStore()` | Default-constructed; paths come from `Config::*` (the process-global config dir). Seeds itself from `tokens.json["tokens"]`. Tests isolate state via `LOGOSCORE_CONFIG_DIR` / `Config::setConfigDir`. |
-| `issueToken(name, expires, localOnly, replace) -> IssueResult { status, token }` | Mint a new token. `status` is one of `Ok` / `InvalidName` / `AlreadyExists` / `IoError`; `token` is set only on `Ok`. The CLI keys exit-code distinct error categories off this status so operators don't see "name collision" for permission failures. |
-| `revokeToken(name) -> RevokeStatus` | Remove the `name` entry from `tokens.json["tokens"]` and delete `daemon/tokens/<name>.json`. Returns `Ok` / `InvalidName` / `NotFound` / `IoError`. |
+| `issueToken(name, expires, localOnly, replace) -> IssueResult { status, token }` | Mint a new token. `status` is one of `Ok` / `InvalidName` / `AlreadyExists` / `IoError`; `token` is set only on `Ok`. The CLI keys exit-code distinct error categories off this status so operators don't see "name collision" for permission failures. **Fails closed** rather than corrupting state: a CSPRNG failure (empty raw token) returns `IoError` and persists nothing; an on-disk `tokens.json` whose schema version this build doesn't support returns `IoError` and is left byte-for-byte intact (instead of being rewritten at the current version, wiping operator tokens). On `--replace` the new raw token is staged to `daemon/tokens/<name>.json.new` and promoted only after `tokens.json` commits, so a failed write never destroys the still-valid prior raw token. |
+| `revokeToken(name) -> RevokeStatus` | Remove the `name` entry from `tokens.json["tokens"]` and delete `daemon/tokens/<name>.json`. Returns `Ok` / `InvalidName` / `NotFound` / `IoError`. Like `issueToken`, refuses (`IoError`) to rewrite an unsupported-schema-version `tokens.json`. |
 | `listTokens() -> vector<IssuedToken>` | Enumerate `{name, issued_at, expires_at, local_only}` — never plaintext, never the digest. |
-| `lookupByToken(token) -> optional<Entry>` | Daemon-side: validate an incoming token against the in-memory digest map (also enforces `expires_at` and `local_only`). |
+| `lookupByToken(token) -> optional<Entry>` | Daemon-side: validate an incoming token against the in-memory digest map (also enforces `expires_at` and `local_only`). Fails closed on an empty token — `hashToken("")` is a fixed digest, so an empty credential is rejected before consulting the store and can never match a corrupt empty-hash entry. |
 
 The on-disk digest is a SHA-256 hex string — collision-resistant by design so
 two distinct tokens can never validate to the same name. The only place the
@@ -553,6 +570,10 @@ For `tcp_ssl`, each module entry also accepts `"ca": "<path>"` and
   surface as an obscure connect error later.
 - A `version` other than `2` is rejected with a "relaunch the daemon to
   regenerate, or hand-edit" message and `fileOk=false`.
+- `codec` is validated up front when supplied via `--client-codec`: anything
+  other than `json` or `cbor` is a hard error (exit 1) at flag-merge time,
+  rather than being stored verbatim and silently coerced to JSON at dial time
+  (which would defeat the "connect fails on codec mismatch" guarantee).
 - `fileOk` (the "usable for dialing" bit `RpcClient::connect` checks) is true
   iff at least one `daemon` entry parsed **and** `token_file` is non-empty.
 - `core_service` and `capability_module` may target different ports — they're
@@ -566,7 +587,7 @@ For `tcp_ssl`, each module entry also accepts `"ca": "<path>"` and
 | `ClientStateFile::read() -> ClientState` | Parse `client/config.json` (or return the in-process override set by `setOverride`). `fileOk=false` on missing file, bad version, or invalid transport entry. |
 | `ClientStateFile::write(state) -> bool` | Serialize a `ClientState` back to `client/config.json` (used by the `--persist-config` path). Writes `transport`/`host`/`port`/`codec` (+ `ca`/`verify_peer` for tcp_ssl), and `instance_id` only when non-empty. |
 | `ClientStateFile::setOverride(opt)` | Inject a CLI-flag-merged `ClientState` that `read()` returns verbatim — lets `--client-*` flags affect a run without writing to disk. |
-| `ClientStateFile::readTokenFile(filename) -> string` | Read `<configDir>/client/<filename>` and return its `"token"` field. Empty string if missing/malformed. |
+| `ClientStateFile::readTokenFile(filename) -> string` | Read `<configDir>/client/<filename>` and return its `"token"` field. Empty string if missing/malformed. When `--token-file` is passed explicitly, `main` now validates the content with this up front: a file that exists but yields an empty token (missing/empty `token` field, or unparseable JSON) is a hard error (exit 1) pointing at the bad file, instead of being accepted and surfacing later as "No authentication token" at connect time. |
 
 ### Client
 
@@ -632,7 +653,7 @@ QVariant Client::loadModule(const QString& name) {
 | `Config::configDir() -> QString` | Resolve config dir: explicit setter (`--config-dir`) → `LOGOSCORE_CONFIG_DIR` env → `~/.logoscore` |
 | `Config::setConfigDir(QString)` | Process-wide override set from `main` when `--config-dir` is passed |
 | `Config::daemonConfigPath() / daemonStatePath() / daemonTokensPath() / daemonTokensDir()` | Daemon-side path helpers under `<configDir>/daemon/` |
-| `Config::clientConfigPath() / clientDir() / clientTokenPath(filename)` | Client-side path helpers under `<configDir>/client/` |
+| `Config::clientConfigPath() / clientDir() / clientTokenPath(filename)` | Client-side path helpers under `<configDir>/client/`. `clientTokenPath` rejects any `filename` that isn't a plain name (contains `/`, `\`, or `..`) and resolves it to an in-`client/` sentinel, so an operator-influenced `token_file` value can't escape the dir to read an arbitrary file as a credential. |
 
 The client dial spec lives in `client/config.json` and is loaded via `ClientStateFile::read()` (not `Config`). See the **ClientStateFile** section above for the schema and parsing contract.
 
@@ -645,7 +666,7 @@ The client dial spec lives in `client/config.json` and is loaded via `ClientStat
 2. `LOGOSCORE_CONFIG_DIR` environment variable
 3. `~/.logoscore` (default)
 
-Parallel daemons run side-by-side when invoked with distinct `--config-dir` values; client commands must target the daemon by passing the same `--config-dir`.
+Parallel daemons run side-by-side when invoked with distinct `--config-dir` values; client commands must target the daemon by passing the same `--config-dir`. Two daemons may **not** share a config-dir: startup reads `daemon/state.json` and refuses (exit 1) if its recorded pid is still alive, since both would write the same `state.json` and either one's clean shutdown would unlink it out from under the other. A stale `state.json` left by a crashed daemon (pid no longer alive) is ignored and overwritten.
 
 ### Command Base Class
 
@@ -1079,9 +1100,10 @@ done
 | `test_mode_detection.cpp` | Mode detection (daemon/client/help/version), known subcommands list, argument parsing. |
 | `test_output.cpp` | Output formatter (human/JSON), TTY detection, printSuccess/printError/printRaw. |
 | `test_daemon_state.cpp` | Round-trip `daemon/state.json` — instance_id, pid, modulesDirs, per-module `transports` entries (local/tcp/tcp_ssl, codec defaulting), and the `tokens` array (`name, hash, issued_at, expires_at, local_only`). `fileOk` is independent of the pid (it's a parse check, not liveness). |
-| `test_token_store.cpp` | Token issuance (including `--expires` and `--local-only`), duplicate-name rejection (unless `--replace`), revocation, list, persistence round-trip. Confirms `tokens.json["tokens"]` stores hashes only; plaintext lives in `daemon/tokens/<name>.json`. |
-| `test_config.cpp` | Token resolution order (env var → `client/<token_file>`); `client/config.json` parsing. |
-| `test_cli.cpp` | End-to-end CLI tests: help, version, no-args, client commands without daemon, daemon startup with --verbose. |
+| `test_token_store.cpp` | Token issuance (including `--expires` and `--local-only`), duplicate-name rejection (unless `--replace`), revocation, list, persistence round-trip. Confirms `tokens.json["tokens"]` stores hashes only; plaintext lives in `daemon/tokens/<name>.json`. Fail-closed invariants: an empty token never authenticates, `issueToken` Ok implies a non-empty token, a failed `--replace` preserves the prior raw token, and issuing against an unsupported-schema-version file refuses instead of clobbering it. |
+| `test_config.cpp` | Token resolution order (env var → `client/<token_file>`); `client/config.json` parsing; `clientTokenPath` accepts plain filenames and rejects path-traversal (`../`, absolute, sub-dirs). |
+| `test_port_allocator.cpp` | Ephemeral-port allocation: bad host returns 0, an IPv6 any-address (`::`) allocates a port, consecutive allocations are distinct. |
+| `test_cli.cpp` | End-to-end CLI tests: help, version, no-args, client commands without daemon, daemon startup with --verbose; rejection of an invalid `--module-transport` port, an invalid `--client-codec`, and a `--token-file` that carries no usable token. |
 
 ---
 
