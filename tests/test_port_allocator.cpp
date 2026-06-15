@@ -25,6 +25,17 @@ TEST(PortAllocator, BadHostReturnsZero)
     EXPECT_EQ(p, 0u);
 }
 
+TEST(PortAllocator, IPv6HostAllocatesPort)
+{
+    // BUG-010: the allocator hardcoded AF_INET, so an IPv6 bind target
+    // (e.g. "::" / "::1") fell through inet_pton(AF_INET,...) and returned 0,
+    // aborting daemon startup for any IPv6 TCP transport. "::" (any-address)
+    // is bindable even in containers without a configured ::1, so use it.
+    uint16_t p = PortAllocator::allocateEphemeralTcp("::");
+    EXPECT_GT(p, 0u)
+        << "IPv6 any-address must allocate an ephemeral port, not fail";
+}
+
 TEST(PortAllocator, ConsecutiveAllocationsAreDistinct)
 {
     // Two ephemeral allocations in a row should pick different ports

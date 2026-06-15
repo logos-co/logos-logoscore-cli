@@ -14,6 +14,7 @@
 #include "../core_service/core_service_impl.h"
 
 #include <QCoreApplication>
+#include <QSocketNotifier>
 
 #include <uuid.h>
 
@@ -31,18 +32,38 @@
 
 static volatile sig_atomic_t g_shutdownRequested = 0;
 
+// Self-pipe: the handler write()s one byte (async-signal-safe), and a
+// QSocketNotifier on the read end calls QCoreApplication::quit() in normal
+// context — quit() itself is not async-signal-safe to call from a handler.
+static int g_signalPipe[2] = {-1, -1};
+
 void Daemon::signalHandler(int signal)
 {
     (void)signal;
     g_shutdownRequested = 1;
-
-    // Post a quit event to the Qt event loop
-    if (QCoreApplication::instance())
-        QCoreApplication::quit();
+    if (g_signalPipe[1] != -1) {
+        const char byte = 1;
+        ssize_t n = ::write(g_signalPipe[1], &byte, 1);
+        (void)n;
+    }
 }
 
 void Daemon::setupSignalHandlers()
 {
+    // Create the self-pipe and wire its read end to a QSocketNotifier that
+    // performs the actual (non-async-signal-safe) quit() in normal context.
+    if (::pipe(g_signalPipe) == 0) {
+        auto* notifier = new QSocketNotifier(g_signalPipe[0],
+                                             QSocketNotifier::Read,
+                                             QCoreApplication::instance());
+        QObject::connect(notifier, &QSocketNotifier::activated, []() {
+            char buf[16];
+            ssize_t n = ::read(g_signalPipe[0], buf, sizeof(buf));
+            (void)n;  // just draining; one wake is enough
+            QCoreApplication::quit();
+        });
+    }
+
     struct sigaction sa;
     sa.sa_handler = signalHandler;
     sigemptyset(&sa.sa_mask);
@@ -158,6 +179,24 @@ int Daemon::start(int argc, char* argv[],
     int64_t pid = getpid();
 
     setenv("LOGOS_INSTANCE_ID", instanceId.c_str(), 1);
+
+    // Refuse to start if a live daemon already owns this config-dir — two would
+    // clobber the shared state.json and re-issue the auto-token. Checked before
+    // logos_core_init so it fails fast. A stale file from a crashed daemon (pid
+    // gone) is not a live owner and is overwritten below.
+    {
+        const DaemonRuntimeState existing = DaemonRuntimeStateFile::read();
+        if (existing.fileOk && existing.pid > 0
+            && ::kill(static_cast<pid_t>(existing.pid), 0) == 0) {
+            fprintf(stderr,
+                    "Error: a logoscore daemon is already running in this config dir "
+                    "(pid %lld, instance %s). Refusing to start a second one — use "
+                    "--config-dir for a parallel instance.\n",
+                    static_cast<long long>(existing.pid),
+                    existing.instanceId.c_str());
+            return 1;
+        }
+    }
 
     // 2. Initialize logos core
     logos_core_init(argc, argv);

@@ -4,6 +4,9 @@
 #include <nlohmann/json.hpp>
 
 #include <sys/stat.h>
+#include <unistd.h>     // getpid — for unique temp-file names
+
+#include <atomic>
 
 #include <chrono>
 #include <ctime>
@@ -171,7 +174,14 @@ bool atomicWriteJson(const fs::path& path, const json& obj)
     fs::create_directories(path.parent_path(), ec);
     if (ec) return false;
 
-    const fs::path tmp = path.string() + ".tmp";
+    // Per-writer-unique temp name (pid + counter) instead of a shared
+    // "<path>.tmp": concurrent writers to the same destination would otherwise
+    // truncate/rename the same temp and corrupt the result. The rename stays
+    // the atomic publish step.
+    static std::atomic<unsigned long> tmpSeq{0};
+    const fs::path tmp = path.string() + ".tmp." +
+        std::to_string(static_cast<long>(::getpid())) + "." +
+        std::to_string(tmpSeq.fetch_add(1, std::memory_order_relaxed));
     {
         std::ofstream ofs(tmp, std::ios::trunc);
         if (!ofs) return false;
