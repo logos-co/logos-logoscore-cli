@@ -97,6 +97,19 @@ std::vector<TokenEntry> TokensFile::read()
     return out;
 }
 
+bool TokensFile::onDiskVersionUnsupported()
+{
+    std::ifstream ifs(filePath());
+    if (!ifs) return false;            // missing — nothing to protect
+    json obj;
+    try { obj = json::parse(ifs); }
+    catch (...) { return false; }      // unparseable — read() already treats
+                                       // as empty; not a version conflict
+    if (!obj.is_object()) return false;
+    const int v = obj.value("version", 0);
+    return v != kTokensFileSchemaVersion;
+}
+
 bool TokensFile::write(const std::vector<TokenEntry>& tokens)
 {
     fs::path path(filePath());
@@ -319,6 +332,16 @@ TokenStore::issueToken(const std::string& name,
 {
     if (!isSafeName(name)) return {IssueStatus::InvalidName, {}};
 
+    // Refuse on an unsupported-version file: read() returns empty for it, so
+    // issuing would rewrite it at the current version and wipe the operator's
+    // tokens. Fail closed so they can back up/migrate first.
+    if (TokensFile::onDiskVersionUnsupported()) {
+        std::cerr << "TokenStore: refusing to issue — " << TokensFile::filePath()
+                  << " has an unsupported schema version. Back it up and "
+                     "reissue tokens to regenerate it." << std::endl;
+        return {IssueStatus::IoError, {}};
+    }
+
     auto tokens = TokensFile::read();
     auto it = std::find_if(tokens.begin(), tokens.end(),
         [&](const TokenEntry& e) { return e.name == name; });
@@ -328,6 +351,10 @@ TokenStore::issueToken(const std::string& name,
     }
 
     const std::string raw = generateToken();
+    // Empty only on CSPRNG failure. Persisting it would store a SHA-256("")
+    // entry that an empty token could authenticate against — fail closed.
+    if (raw.empty())
+        return {IssueStatus::IoError, {}};
     const std::string issuedAt = currentUtcIso8601();
 
     TokenEntry e;
@@ -338,25 +365,29 @@ TokenStore::issueToken(const std::string& name,
     e.localOnly = localOnly;
     tokens.push_back(e);
 
-    // Write order matters for atomicity:
-    //   1. raw file FIRST — its absence is recoverable (operator can
-    //      `revoke-token <name>` then re-issue), and there's no
-    //      authentication impact while it's missing.
-    //   2. tokens.json with the new hash entry SECOND — only after
-    //      the raw file is on disk. If we wrote tokens.json first
-    //      and then raw-file write failed, the hash entry would be
-    //      stranded: validators would accept the token but no
-    //      operator-readable copy of the raw value exists.
-    //
-    // If step 1 fails, abort cleanly: nothing was committed.
-    // If step 2 fails, roll back the raw file we just wrote so
-    // we don't leave an unreferenced credential file behind.
-    if (!writeRawTokenFile(rawTokenFilePath(name), name, raw, issuedAt))
+    // Stage the raw token to <path>.new, commit tokens.json, then promote it.
+    // This keeps the prior raw file intact until the new hash is durably
+    // committed — so a failed write under --replace can't strand a valid token.
+    const std::string rawPath    = rawTokenFilePath(name);
+    const std::string rawNewPath = rawPath + ".new";
+    if (!writeRawTokenFile(rawNewPath, name, raw, issuedAt))
         return {IssueStatus::IoError, {}};
     if (!TokensFile::write(tokens)) {
+        // Drop only the side file; the prior raw file (and the still-valid
+        // old hash in the on-disk tokens.json) are left exactly as they were.
         std::error_code ec;
-        fs::remove(fs::path(rawTokenFilePath(name)), ec);
+        fs::remove(fs::path(rawNewPath), ec);
         return {IssueStatus::IoError, {}};
+    }
+    // tokens.json is committed; atomically move the new raw file into place.
+    std::error_code rec;
+    fs::rename(fs::path(rawNewPath), fs::path(rawPath), rec);
+    if (rec) {
+        // Extremely unlikely (same-directory rename). The token is already
+        // valid via its committed hash; leave the .new file for the operator
+        // to promote rather than failing the whole issue.
+        std::error_code ec;
+        fs::rename(fs::path(rawNewPath), fs::path(rawPath), ec);
     }
 
     return {IssueStatus::Ok, raw};
@@ -365,6 +396,14 @@ TokenStore::issueToken(const std::string& name,
 TokenStore::RevokeStatus TokenStore::revokeToken(const std::string& name)
 {
     if (!isSafeName(name)) return RevokeStatus::InvalidName;
+
+    // Same unsupported-version protection as issueToken.
+    if (TokensFile::onDiskVersionUnsupported()) {
+        std::cerr << "TokenStore: refusing to revoke — " << TokensFile::filePath()
+                  << " has an unsupported schema version. Back it up and "
+                     "reissue tokens to regenerate it." << std::endl;
+        return RevokeStatus::IoError;
+    }
 
     auto tokens = TokensFile::read();
     const auto before = tokens.size();
@@ -401,6 +440,11 @@ std::optional<std::string>
 TokenStore::lookupByToken(const std::string& token,
                           const std::string& transportProtocol) const
 {
+    // Fail closed on an empty token: it would hash to SHA-256("") and could
+    // match a corrupt empty-hash entry. An empty credential is never valid.
+    if (token.empty())
+        return std::nullopt;
+
     const std::string h = hashToken(token);
     const auto tokens = TokensFile::read();
     for (const auto& e : tokens) {

@@ -45,6 +45,16 @@ std::string Config::clientConfigPath() { return clientDir() + "/config.json"; }
 
 std::string Config::clientTokenPath(const std::string& filename)
 {
+    // token_file is operator-influenced (--token-file / env / config.json); a
+    // separator or ".." would escape client/ to read an arbitrary file as a
+    // credential. Reject non-plain names and resolve to an in-client/ sentinel
+    // that won't exist, so callers fail closed with "token file not found".
+    const bool unsafe = filename.empty()
+                     || filename.find('/')  != std::string::npos
+                     || filename.find('\\') != std::string::npos
+                     || filename.find("..") != std::string::npos;
+    if (unsafe)
+        return clientDir() + "/__invalid_token_filename__";
     return clientDir() + "/" + filename;
 }
 

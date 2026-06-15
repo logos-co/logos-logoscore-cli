@@ -78,6 +78,41 @@ TEST_F(ConfigTest, Paths_DaemonAndClientUnderConfigDir)
 }
 
 // ----------------------------------------------------------------------
+// BUG-019: clientTokenPath() must not let a token_file value escape the
+// client/ dir. The filename comes from --token-file, the
+// LOGOSCORE_CLIENT_TOKEN_FILE env var, or client/config.json's token_file
+// field; a value like "../daemon/tokens.json" or "../../etc/passwd" would
+// otherwise resolve outside client/ and be read as a credential file.
+// ----------------------------------------------------------------------
+
+TEST_F(ConfigTest, ClientTokenPath_AcceptsSimpleFilenames)
+{
+    const std::string cfg = Config::configDir();
+    EXPECT_EQ(Config::clientTokenPath("auto.json"),  cfg + "/client/auto.json");
+    EXPECT_EQ(Config::clientTokenPath("alice.json"), cfg + "/client/alice.json");
+}
+
+TEST_F(ConfigTest, ClientTokenPath_RejectsTraversal)
+{
+    const std::string clientDir = Config::clientDir();
+    // Every traversal/absolute attempt must stay strictly inside client/:
+    // the resolved path must begin with "<clientDir>/" and must not contain
+    // a ".." component that climbs out.
+    for (const std::string bad : {
+            std::string("../daemon/tokens.json"),
+            std::string("../../etc/passwd"),
+            std::string("sub/dir/token.json"),
+            std::string("/etc/passwd"),
+        }) {
+        const std::string got = Config::clientTokenPath(bad);
+        EXPECT_EQ(got.rfind(clientDir + "/", 0), 0u)
+            << "clientTokenPath('" << bad << "') escaped client/: " << got;
+        EXPECT_EQ(got.find(".."), std::string::npos)
+            << "clientTokenPath('" << bad << "') still contains '..': " << got;
+    }
+}
+
+// ----------------------------------------------------------------------
 // Config-dir override precedence
 // ----------------------------------------------------------------------
 
