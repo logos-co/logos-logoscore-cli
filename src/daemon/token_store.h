@@ -66,6 +66,12 @@ public:
     static std::vector<TokenEntry> read();
     // Atomic full-file write. Returns false on any I/O error.
     static bool write(const std::vector<TokenEntry>& tokens);
+    // True iff the file exists and is parseable JSON but carries a schema
+    // version this build does not support. Callers that would otherwise
+    // rewrite the file (issue/revoke) use this to refuse rather than
+    // silently clobber an operator's tokens during a version mismatch.
+    // Missing/empty/unparseable files return false (nothing to protect).
+    static bool onDiskVersionUnsupported();
 };
 
 struct IssuedToken {
