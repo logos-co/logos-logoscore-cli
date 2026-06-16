@@ -1,8 +1,10 @@
 name: logoscore Doc-Tests
 
-# Runs the executable logoscore doc-test (doctests/logoscore-daemon.test.yaml)
+# Runs the executable logoscore doc-tests (everything under doctests/*.test.yaml)
 # end-to-end via the shared doctest CLI: builds logoscore from the published
-# flake, starts the daemon, loads a module, calls methods, and asserts on output.
+# flake, starts the daemon, loads a module, calls methods, exercises the TCP /
+# TCP+TLS transports, and asserts on output. Every spec is run back-to-back into
+# a single HTML report (each spec is its own dropdown entry).
 #
 # ──────────────────────────────────────────────────────────────────────────────
 # One-time setup required for the clickable report links to work:
@@ -86,13 +88,21 @@ jobs:
       # commit under test, so `github:logos-co/logos-logoscore-cli{release}` in
       # the spec becomes `.../<sha>` — the doc-test exercises this PR/push rather
       # than master. Every other repo URL still resolves to latest.
-      - name: Run logoscore daemon doc-test
+      - name: Run logoscore doc-tests
+        shell: bash
         run: |
+          # Run every doctests/*.test.yaml back-to-back into one report; each
+          # spec becomes its own dropdown entry. Discovered dynamically so new
+          # specs are picked up without editing this workflow. A plain glob keeps
+          # this portable to the macOS runner's stock bash 3.2 (no mapfile); the
+          # filenames sort lexically for a stable order in the report.
+          SPECS=(doctests/*.test.yaml)
+          echo "Running ${#SPECS[@]} doc-test spec(s): ${SPECS[*]}"
           # --continue-on-fail so the run walks every step and the published
           # report is complete. The job still fails (non-zero exit) if any step
           # failed; this only changes whether we stop early.
           nix run github:logos-co/logos-doctest -- run \
-            doctests/logoscore-daemon.test.yaml \
+            "${SPECS[@]}" \
             --verbose \
             --continue-on-fail \
             --release-for logos-logoscore-cli=${{ steps.commit.outputs.sha }} \
@@ -119,13 +129,18 @@ jobs:
           if-no-files-found: warn
 
       - name: Verify markdown generation
+        shell: bash
         run: |
-          nix run github:logos-co/logos-doctest -- generate \
-            doctests/logoscore-daemon.test.yaml \
-            --release-for logos-logoscore-cli=${{ steps.commit.outputs.sha }} \
-            -o /tmp/logoscore-daemon.md
-          test -s /tmp/logoscore-daemon.md
-          echo "Generated markdown successfully"
+          # Render every spec and assert each produced non-empty markdown.
+          for spec in doctests/*.test.yaml; do
+            out="/tmp/$(basename "${spec}" .test.yaml).md"
+            nix run github:logos-co/logos-doctest -- generate \
+              "${spec}" \
+              --release-for logos-logoscore-cli=${{ steps.commit.outputs.sha }} \
+              -o "${out}"
+            test -s "${out}"
+            echo "Generated ${out} successfully"
+          done
 
   publish-report:
     name: Publish report to GitHub Pages
