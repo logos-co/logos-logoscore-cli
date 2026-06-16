@@ -42,7 +42,7 @@ Build the logoscore CLI from the published flake. The result is symlinked to
 ### 1.1 Build the CLI
 
 ```bash
-nix build 'github:logos-co/logos-logoscore-cli/5c634134d05d1f9faaf1624d3ccb67a6d72aebe6' --out-link ./logos
+nix build 'github:logos-co/logos-logoscore-cli/0a26e6ceebcd74a6fe1ab07c57a785dcf60b3dfe' --out-link ./logos
 ```
 
 The build produces `logos/bin/logoscore` plus bundled runtime libraries and

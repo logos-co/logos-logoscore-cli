@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 #
-# Execute the logoscore daemon doc-test end-to-end and regenerate its Markdown.
+# Execute every logoscore doc-test end-to-end and regenerate its Markdown.
+#
+# Each `*.test.yaml` in this directory is a self-contained doc-test:
+#   - logoscore-daemon.test.yaml      — daemon lifecycle (local same-host)
+#   - logoscore-transports.test.yaml  — reaching the daemon over TCP / TCP+TLS
 #
 # The runner is the shared `doctest` CLI
 # (https://github.com/logos-co/logos-doctest), invoked directly via its flake.
@@ -12,6 +16,9 @@
 # To run against a local logos-doctest checkout instead of the published flake,
 # set DOCTEST, e.g.:  DOCTEST="nix run path:../../logos-doctest --" ./run.sh
 #
+# By default every spec runs. Pass spec filenames as arguments to run a subset,
+# e.g.:  ./run.sh logoscore-transports.test.yaml
+#
 set -euo pipefail
 
 # Run from this doctests/ directory regardless of where the script is invoked from.
@@ -20,10 +27,27 @@ cd "$(dirname "$0")"
 # The doctest CLI. Override by exporting DOCTEST (space-separated command).
 read -r -a DOCTEST <<< "${DOCTEST:-nix run github:logos-co/logos-doctest --}"
 OUTPUT_DIR="./outputs"
-SPEC="logoscore-daemon.test.yaml"
 
-# Build the doc-test against THIS repo's current commit rather than the latest
-# published flake. The spec's `github:logos-co/logos-logoscore-cli{release}` URL
+# Specs to run: the CLI args if given, otherwise every *.test.yaml here.
+if [ "$#" -gt 0 ]; then
+  SPECS=("$@")
+else
+  SPECS=(*.test.yaml)
+fi
+
+# Resolve a spec's rendered-Markdown filename from its `output:` field, falling
+# back to "<spec-basename>.md" if the spec doesn't declare one.
+output_md_for() {
+  local spec="$1" name
+  name="$(sed -n 's/^output:[[:space:]]*//p' "${spec}" | head -n1 | tr -d '"'"'"' \r')"
+  if [ -z "${name}" ]; then
+    name="$(basename "${spec}" .test.yaml).md"
+  fi
+  printf '%s' "${name}"
+}
+
+# Build the doc-tests against THIS repo's current commit rather than the latest
+# published flake. Each spec's `github:logos-co/logos-logoscore-cli{release}` URL
 # is pinned to $COMMIT via --release-for, so the run exercises exactly what's
 # checked out here. Override by exporting COMMIT (e.g. a tag), or set COMMIT=""
 # to fall back to latest.
@@ -48,21 +72,25 @@ if [ -e "${OUTPUT_DIR}" ]; then
   chmod -R u+w "${OUTPUT_DIR}" 2>/dev/null || true
 fi
 rm -rf "${OUTPUT_DIR}"
-
-echo "==> Running ${SPEC} into ${OUTPUT_DIR}/"
-# ${RELEASE_FOR[@]+...} guards the expansion so an empty array doesn't trip
-# `set -u` on older bash (e.g. macOS's stock 3.2).
-"${DOCTEST[@]}" run "${SPEC}" \
-  --verbose \
-  --continue-on-fail \
-  ${RELEASE_FOR[@]+"${RELEASE_FOR[@]}"} \
-  --output-dir "${OUTPUT_DIR}/"
-
-echo "==> Generating ${OUTPUT_DIR}/logoscore-daemon.md"
 mkdir -p "${OUTPUT_DIR}"
-"${DOCTEST[@]}" generate "${SPEC}" \
-  ${RELEASE_FOR[@]+"${RELEASE_FOR[@]}"} \
-  -o "${OUTPUT_DIR}/logoscore-daemon.md"
+
+for SPEC in "${SPECS[@]}"; do
+  MD="$(output_md_for "${SPEC}")"
+
+  echo "==> Running ${SPEC} into ${OUTPUT_DIR}/"
+  # ${RELEASE_FOR[@]+...} guards the expansion so an empty array doesn't trip
+  # `set -u` on older bash (e.g. macOS's stock 3.2).
+  "${DOCTEST[@]}" run "${SPEC}" \
+    --verbose \
+    --continue-on-fail \
+    ${RELEASE_FOR[@]+"${RELEASE_FOR[@]}"} \
+    --output-dir "${OUTPUT_DIR}/"
+
+  echo "==> Generating ${OUTPUT_DIR}/${MD}"
+  "${DOCTEST[@]}" generate "${SPEC}" \
+    ${RELEASE_FOR[@]+"${RELEASE_FOR[@]}"} \
+    -o "${OUTPUT_DIR}/${MD}"
+done
 
 if [ ! -d "${OUTPUT_DIR}" ]; then
   echo "==> No ${OUTPUT_DIR}/ produced; nothing to clean."
@@ -72,4 +100,4 @@ fi
 echo "==> Cleaning build artifacts from ${OUTPUT_DIR}/"
 "${DOCTEST[@]}" clean "${OUTPUT_DIR}" --verbose
 
-echo "==> Done. Rendered doc is in ${OUTPUT_DIR}/logoscore-daemon.md"
+echo "==> Done. Rendered docs are in ${OUTPUT_DIR}/"
