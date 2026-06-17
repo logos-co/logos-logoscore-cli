@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -11,6 +12,10 @@
 #include <optional>
 #include <sstream>
 #include <string>
+
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 #include "config.h"
 #include "paths.h"
@@ -342,6 +347,26 @@ int main(int argc, char *argv[])
 
     // ── Daemon mode ──────────────────────────────────────────────────────────
     if (daemonFlag || daemonSub->parsed()) {
+#ifndef _WIN32
+        // Detach the daemon into its own session/process group *before* it
+        // spawns any module subprocess (logos_host children). Otherwise a
+        // background launch like `logoscore -D &` leaves the daemon — and its
+        // whole subprocess tree — in the launcher's process group, so tearing
+        // that tree down on shutdown signals the launcher too: a script driving
+        // the daemon sees its own shell killed (e.g. a doc-test teardown step
+        // dies with exit -15 on Linux). Leading our own session makes the module
+        // tree tear down in isolation. (The integration-test harness already
+        // does this via fork+setsid; doing it here makes every launcher safe.)
+        //
+        // EPERM means we are already a process-group leader (a foreground or
+        // job-control launch), i.e. already isolated — so it is safe to ignore.
+        if (::setsid() == static_cast<pid_t>(-1) && errno != EPERM) {
+            fprintf(stderr,
+                    "Warning: setsid() failed (errno=%d); the daemon shares the "
+                    "launcher's process group and may signal it on shutdown\n",
+                    errno);
+        }
+#endif
         QCoreApplication qapp(argc, argv);
         qapp.setApplicationName("logoscore");
         qapp.setApplicationVersion("1.0");
