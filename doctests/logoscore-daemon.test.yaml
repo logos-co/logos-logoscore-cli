@@ -264,3 +264,35 @@ sections:
         code_block: "logoscore status"
         expect_contains:
           - '"status":"not_running"'
+
+      - title: "A worker is not orphaned if the daemon crashes"
+        text: |
+          The flip side of detaching workers into their own process group: a
+          module subprocess must not be left **running** if the daemon dies
+          *without* cleaning it up. We start a throwaway daemon, **hard-kill** it
+          (`SIGKILL`, so no graceful teardown runs), and confirm its module
+          subprocess exits on its own — via `PR_SET_PDEATHSIG` on Linux and a
+          `getppid` watchdog on other platforms. (Graceful shutdown, above, still
+          reaps workers per-PID; this covers the crash path.)
+        run: |
+          ./logos/bin/logoscore -D --config-dir ./crashcfg -m ./modules > crash.log 2>&1 &
+          sleep 5
+          dpid=$(./logos/bin/logoscore --config-dir ./crashcfg status --json | python3 -c "import json,sys;print(json.load(sys.stdin)['daemon']['pid'])")
+          worker=""
+          for h in $(pgrep -f logos_host); do
+            [ "$(ps -o ppid= -p "$h" | tr -d ' ')" = "$dpid" ] && { worker="$h"; break; }
+          done
+          echo "daemon=$dpid worker=$worker"
+          kill -9 "$dpid"
+          result=LEAKED
+          for i in $(seq 1 10); do
+            kill -0 "$worker" 2>/dev/null || { result=WORKER_CLEANED_UP; break; }
+            sleep 1
+          done
+          echo "RESULT=$result"
+        code_block: |
+          # hard-kill the daemon; its module subprocess must exit on its own
+          logoscore -D -m ./modules &      # (throwaway)
+          kill -9 "$(logoscore status --json | jq .daemon.pid)"
+        expect_contains:
+          - "WORKER_CLEANED_UP"
