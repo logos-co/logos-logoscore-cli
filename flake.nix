@@ -24,14 +24,9 @@
     nix-bundle-logos-module-install.url = "github:logos-co/nix-bundle-logos-module-install";
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
-    nix-bundle-macos-app = {
-      url = "github:logos-co/nix-bundle-macos-app";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.nix-bundle-dir.follows = "nix-bundle-dir";
-    };
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-qt-sdk, logos-liblogos, logos-capability-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage, nix-bundle-macos-app }:
+  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-qt-sdk, logos-liblogos, logos-capability-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f {
@@ -48,11 +43,10 @@
         installPortable = nix-bundle-logos-module-install.bundlers.${system}.portable;
         dirBundler = nix-bundle-dir.bundlers.${system}.qtApp;
         appBundler = nix-bundle-appimage.lib.${system}.mkAppImage;
-        macosAppBundler = nix-bundle-macos-app.lib.${system}.mkMacOSApp;
       });
     in
     {
-      packages = forAllSystems ({ pkgs, system, cppSdk, protocolPkg, qtSdk, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, installDev, installPortable, dirBundler, appBundler, macosAppBundler }:
+      packages = forAllSystems ({ pkgs, system, cppSdk, protocolPkg, qtSdk, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, installDev, installPortable, dirBundler, appBundler }:
         let
           pname = "logos-logoscore-cli";
           version = "0.1.0";
@@ -355,7 +349,7 @@
             paths = [ bin ];
           };
         in
-        ({
+        {
           cli = logoscoreCli;
           tests = tests;
           cli-bundle-dir = dirBundler binPortable;
@@ -367,18 +361,7 @@
             icon = ./assets/logoscore.png;
           };
           default = logoscoreCli;
-        } // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
-          # macOS .app bundle (ad-hoc signed, notarization-ready structure).
-          # Released as a tar.gz; see .github/workflows/release.yml.
-          cli-macos-app = macosAppBundler {
-            drv = binPortable;
-            name = "logoscore";
-            bundle = dirBundler binPortable;
-            icon = ./assets/logoscore.png;
-            infoPlist = ./assets/macos/Info.plist.in;
-            entitlements = ./assets/macos/logoscore.entitlements;
-          };
-        })
+        }
       );
 
       checks = forAllSystems ({ pkgs, system, liblogos, capabilityModuleLib, installDev, ... }:
