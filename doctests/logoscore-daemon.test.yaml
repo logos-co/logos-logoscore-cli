@@ -107,6 +107,41 @@ sections:
         run: "./logos/bin/logoscore status"
         code_block: "logoscore status"
 
+      - title: "Module subprocesses are isolated from the launcher's process group"
+        text: |
+          The daemon stays in the **foreground**, in its launcher's process group,
+          so a shell, `systemd`, or Docker manages it normally. But each module
+          runs in its own subprocess (`logos_host`), and those must lead their
+          **own** process group — not stay in the daemon's (i.e. the launcher's).
+          Otherwise tearing the module tree down on shutdown, or any process-group
+          signal aimed at the daemon, leaks into the launcher and can kill the
+          shell driving it (a teardown step dying with exit `-15` on Linux).
+
+          We take a module subprocess (a `logos_host` child of the daemon) and
+          assert it is its **own** process-group leader (`pgid == pid`) and is
+          **not** in the daemon's group.
+        run: |
+          dpid=$(./logos/bin/logoscore status --json | python3 -c "import json,sys;print(json.load(sys.stdin)['daemon']['pid'])")
+          dpgid=$(ps -o pgid= -p "$dpid" | tr -d ' ')
+          result=NO_MODULE_SUBPROCESS
+          for hp in $(pgrep -f logos_host); do
+            [ "$(ps -o ppid= -p "$hp" | tr -d ' ')" = "$dpid" ] || continue
+            hpgid=$(ps -o pgid= -p "$hp" | tr -d ' ')
+            if [ "$hp" = "$hpgid" ] && [ "$hpgid" != "$dpgid" ]; then
+              result=MODULE_SUBPROCESS_ISOLATED; break
+            else
+              result=MODULE_SUBPROCESS_SHARES_LAUNCHER_GROUP
+            fi
+          done
+          echo "daemon_pid=$dpid daemon_pgid=$dpgid -> $result"
+        code_block: |
+          # a module subprocess must lead its own group: pgid == pid, != daemon
+          dpid=$(logoscore status --json | jq .daemon.pid)
+          host=$(pgrep -P "$dpid" -f logos_host | head -1)
+          [ "$host" = "$(ps -o pgid= -p "$host" | tr -d ' ')" ] && echo ISOLATED
+        expect_contains:
+          - "MODULE_SUBPROCESS_ISOLATED"
+
       - title: "List discovered modules"
         text: "List modules visible in the scan directory:"
         run: "./logos/bin/logoscore list-modules"
