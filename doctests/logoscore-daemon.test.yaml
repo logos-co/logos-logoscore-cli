@@ -107,6 +107,27 @@ sections:
         run: "./logos/bin/logoscore status"
         code_block: "logoscore status"
 
+      - title: "The daemon detaches into its own session"
+        text: |
+          A daemon must lead its **own** session/process group, not stay a member
+          of the launching shell's. Otherwise tearing down its module-subprocess
+          tree (`logos_host` children) on shutdown signals the launcher too — a
+          script driving the daemon can see its own shell killed (e.g. a teardown
+          step dying with exit `-15`). We assert the daemon's process-group id
+          equals its pid, i.e. it is a session/group **leader** (what `setsid()`
+          in `-D` guarantees).
+        run: |
+          dpid=$(./logos/bin/logoscore status --json | python3 -c "import json,sys;print(json.load(sys.stdin)['daemon']['pid'])")
+          dpgid=$(ps -o pgid= -p "$dpid" | tr -d ' ')
+          echo "daemon_pid=$dpid daemon_pgid=$dpgid"
+          if [ "$dpid" = "$dpgid" ]; then echo "DAEMON_IS_SESSION_LEADER"; else echo "DAEMON_SHARES_LAUNCHER_GROUP"; fi
+        code_block: |
+          dpid=$(logoscore status --json | jq .daemon.pid)
+          # a detached daemon leads its own group: pgid == pid
+          [ "$dpid" = "$(ps -o pgid= -p $dpid | tr -d ' ')" ] && echo OK
+        expect_contains:
+          - "DAEMON_IS_SESSION_LEADER"
+
       - title: "List discovered modules"
         text: "List modules visible in the scan directory:"
         run: "./logos/bin/logoscore list-modules"
