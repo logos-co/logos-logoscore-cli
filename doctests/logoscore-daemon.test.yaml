@@ -107,15 +107,40 @@ sections:
         run: "./logos/bin/logoscore status"
         code_block: "logoscore status"
 
+      - title: "List discovered modules"
+        text: "List modules visible in the scan directory:"
+        run: "./logos/bin/logoscore list-modules"
+        code_block: "logoscore list-modules"
+        expect_contains:
+          - "test_basic_module"
+
+      - title: "Load the module"
+        text: "Load `test_basic_module` into the running daemon:"
+        run: "./logos/bin/logoscore load-module test_basic_module"
+        code_block: "logoscore load-module test_basic_module"
+        expect_contains:
+          - "test_basic_module"
+
+      - title: "Confirm the module is now loaded"
+        text: |
+          Re-run `status`. The module that was `not_loaded` before now reports
+          `loaded` (the client emits JSON when its output is piped, as it is here):
+        run: "./logos/bin/logoscore status"
+        code_block: "logoscore status"
+        expect_contains:
+          - "test_basic_module"
+          - '"status":"loaded"'
+
       - title: "Module subprocesses are isolated from the launcher's process group"
         text: |
-          The daemon stays in the **foreground**, in its launcher's process group,
-          so a shell, `systemd`, or Docker manages it normally. But each module
-          runs in its own subprocess (`logos_host`), and those must lead their
-          **own** process group — not stay in the daemon's (i.e. the launcher's).
-          Otherwise tearing the module tree down on shutdown, or any process-group
-          signal aimed at the daemon, leaks into the launcher and can kill the
-          shell driving it (a teardown step dying with exit `-15` on Linux).
+          With a module loaded, the daemon is running it in its own subprocess
+          (`logos_host`). The daemon itself stays in the **foreground**, in its
+          launcher's process group, so a shell, `systemd`, or Docker manages it
+          normally — but each `logos_host` must lead its **own** process group, not
+          stay in the daemon's (i.e. the launcher's). Otherwise tearing the module
+          tree down on shutdown, or any process-group signal aimed at the daemon,
+          leaks into the launcher and can kill the shell driving it (a teardown
+          step dying with exit `-15` on Linux).
 
           We take a module subprocess (a `logos_host` child of the daemon) and
           assert it is its **own** process-group leader (`pgid == pid`) and is
@@ -141,30 +166,6 @@ sections:
           [ "$host" = "$(ps -o pgid= -p "$host" | tr -d ' ')" ] && echo ISOLATED
         expect_contains:
           - "MODULE_SUBPROCESS_ISOLATED"
-
-      - title: "List discovered modules"
-        text: "List modules visible in the scan directory:"
-        run: "./logos/bin/logoscore list-modules"
-        code_block: "logoscore list-modules"
-        expect_contains:
-          - "test_basic_module"
-
-      - title: "Load the module"
-        text: "Load `test_basic_module` into the running daemon:"
-        run: "./logos/bin/logoscore load-module test_basic_module"
-        code_block: "logoscore load-module test_basic_module"
-        expect_contains:
-          - "test_basic_module"
-
-      - title: "Confirm the module is now loaded"
-        text: |
-          Re-run `status`. The module that was `not_loaded` before now reports
-          `loaded` (the client emits JSON when its output is piped, as it is here):
-        run: "./logos/bin/logoscore status"
-        code_block: "logoscore status"
-        expect_contains:
-          - "test_basic_module"
-          - '"status":"loaded"'
 
       - title: "Inspect the module with module-info"
         text: |
