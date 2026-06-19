@@ -131,6 +131,42 @@ sections:
           - "test_basic_module"
           - '"status":"loaded"'
 
+      - title: "Module subprocesses are isolated from the launcher's process group"
+        text: |
+          With a module loaded, the daemon is running it in its own subprocess
+          (`logos_host`). The daemon itself stays in the **foreground**, in its
+          launcher's process group, so a shell, `systemd`, or Docker manages it
+          normally — but each `logos_host` must lead its **own** process group, not
+          stay in the daemon's (i.e. the launcher's). Otherwise tearing the module
+          tree down on shutdown, or any process-group signal aimed at the daemon,
+          leaks into the launcher and can kill the shell driving it (a teardown
+          step dying with exit `-15` on Linux).
+
+          We take a module subprocess (a `logos_host` child of the daemon) and
+          assert it is its **own** process-group leader (`pgid == pid`) and is
+          **not** in the daemon's group.
+        run: |
+          dpid=$(./logos/bin/logoscore status --json | python3 -c "import json,sys;print(json.load(sys.stdin)['daemon']['pid'])")
+          dpgid=$(ps -o pgid= -p "$dpid" | tr -d ' ')
+          result=NO_MODULE_SUBPROCESS
+          for hp in $(pgrep -f logos_host); do
+            [ "$(ps -o ppid= -p "$hp" | tr -d ' ')" = "$dpid" ] || continue
+            hpgid=$(ps -o pgid= -p "$hp" | tr -d ' ')
+            if [ "$hp" = "$hpgid" ] && [ "$hpgid" != "$dpgid" ]; then
+              result=MODULE_SUBPROCESS_ISOLATED; break
+            else
+              result=MODULE_SUBPROCESS_SHARES_LAUNCHER_GROUP
+            fi
+          done
+          echo "daemon_pid=$dpid daemon_pgid=$dpgid -> $result"
+        code_block: |
+          # a module subprocess must lead its own group: pgid == pid, != daemon
+          dpid=$(logoscore status --json | jq .daemon.pid)
+          host=$(pgrep -P "$dpid" -f logos_host | head -1)
+          [ "$host" = "$(ps -o pgid= -p "$host" | tr -d ' ')" ] && echo ISOLATED
+        expect_contains:
+          - "MODULE_SUBPROCESS_ISOLATED"
+
       - title: "Inspect the module with module-info"
         text: |
           `module-info` shows a single module's status and the `Q_INVOKABLE`
@@ -229,3 +265,35 @@ sections:
         code_block: "logoscore status"
         expect_contains:
           - '"status":"not_running"'
+
+      - title: "A worker is not orphaned if the daemon crashes"
+        text: |
+          The flip side of detaching workers into their own process group: a
+          module subprocess must not be left **running** if the daemon dies
+          *without* cleaning it up. We start a throwaway daemon, **hard-kill** it
+          (`SIGKILL`, so no graceful teardown runs), and confirm its module
+          subprocess exits on its own — via `PR_SET_PDEATHSIG` on Linux and a
+          `getppid` watchdog on other platforms. (Graceful shutdown, above, still
+          reaps workers per-PID; this covers the crash path.)
+        run: |
+          ./logos/bin/logoscore -D --config-dir ./crashcfg -m ./modules > crash.log 2>&1 &
+          sleep 5
+          dpid=$(./logos/bin/logoscore --config-dir ./crashcfg status --json | python3 -c "import json,sys;print(json.load(sys.stdin)['daemon']['pid'])")
+          worker=""
+          for h in $(pgrep -f logos_host); do
+            [ "$(ps -o ppid= -p "$h" | tr -d ' ')" = "$dpid" ] && { worker="$h"; break; }
+          done
+          echo "daemon=$dpid worker=$worker"
+          kill -9 "$dpid"
+          result=LEAKED
+          for i in $(seq 1 10); do
+            kill -0 "$worker" 2>/dev/null || { result=WORKER_CLEANED_UP; break; }
+            sleep 1
+          done
+          echo "RESULT=$result"
+        code_block: |
+          # hard-kill the daemon; its module subprocess must exit on its own
+          logoscore -D -m ./modules &      # (throwaway)
+          kill -9 "$(logoscore status --json | jq .daemon.pid)"
+        expect_contains:
+          - "WORKER_CLEANED_UP"
