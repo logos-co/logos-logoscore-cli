@@ -14,9 +14,7 @@
     logos-qt-sdk.url = "github:logos-co/logos-qt-sdk";
     logos-qt-sdk.inputs.logos-protocol.follows = "logos-protocol";
     logos-qt-sdk.inputs.logos-cpp-sdk.follows = "logos-cpp-sdk";
-    # Pinned to the module-subprocess process-group isolation fix (logos_host
-    # setsid) until it lands on the liblogos default branch.
-    logos-liblogos.url = "github:logos-co/logos-liblogos/272c6b5bc762f8f66b76182d930ba541915e69f0";
+    logos-liblogos.url = "github:logos-co/logos-liblogos";
     logos-capability-module.url = "github:logos-co/logos-capability-module";
     # Real test-module plugins (test_basic_module) used by the
     # daemon-backed integration tests in tests/test_integration.cpp.
