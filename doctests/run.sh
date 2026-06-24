@@ -3,8 +3,10 @@
 # Execute every logoscore doc-test end-to-end and regenerate its Markdown.
 #
 # Each `*.test.yaml` in this directory is a self-contained doc-test:
-#   - logoscore-daemon.test.yaml      — daemon lifecycle (local same-host)
-#   - logoscore-transports.test.yaml  — reaching the daemon over TCP / TCP+TLS
+#   - logoscore-daemon.test.yaml              — daemon lifecycle (local same-host)
+#   - logoscore-transports.test.yaml          — reaching the daemon over TCP / TCP+TLS
+#   - logoscore-concurrent-blocking.test.yaml — many concurrent clients vs a blocking
+#                                               module method (serialization, no crash)
 #
 # The runner is the shared `doctest` CLI
 # (https://github.com/logos-co/logos-doctest), invoked directly via its flake.
