@@ -21,6 +21,7 @@
 #include "client/output.h"
 #include "client/commands/command.h"
 #include "logos_core.h"
+#include "version_info.h"
 
 static bool g_verbose = false;
 
@@ -136,7 +137,7 @@ int main(int argc, char *argv[])
 
     // ── CLI11 setup ──────────────────────────────────────────────────────────
     CLI::App app{"logoscore - Logos Core runtime CLI"};
-    app.set_version_flag("--version", "logoscore version 1.0");
+    app.set_version_flag("--version", logoscore_version::versionString());
     app.set_help_flag("-h,--help", "Show this help");
 
     // Global flags
@@ -344,7 +345,7 @@ int main(int argc, char *argv[])
     if (daemonFlag || daemonSub->parsed()) {
         QCoreApplication qapp(argc, argv);
         qapp.setApplicationName("logoscore");
-        qapp.setApplicationVersion("1.0");
+        qapp.setApplicationVersion(QString::fromStdString(logoscore_version::version()));
 
         // Plaintext-TCP guard: a `tcp` listener on a non-loopback host
         // sends tokens in cleartext. Refuse to start unless the
@@ -766,7 +767,7 @@ int main(int argc, char *argv[])
 
         QCoreApplication qapp(argc, argv);
         qapp.setApplicationName("logoscore");
-        qapp.setApplicationVersion("1.0");
+        qapp.setApplicationVersion(QString::fromStdString(logoscore_version::version()));
 
         // Collect remaining args from the subcommand, extracting global flags
         // (global flags placed after the subcommand end up in remaining())

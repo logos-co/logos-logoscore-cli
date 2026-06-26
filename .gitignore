@@ -1,3 +1,6 @@
 result
 doctests/outputs/*
 !doctests/outputs/*.md
+
+# Generated build-info header (staged into src/ by flake.nix at build time)
+src/logos_build_info.h

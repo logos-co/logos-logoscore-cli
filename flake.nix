@@ -27,6 +27,28 @@
   outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-qt-sdk, logos-liblogos, logos-capability-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
+      # Build info baked into the logoscore binary so `--version` reports the
+      # release version, this repo's commit, and the locked commits of the SDK
+      # stack. `revOf` yields the input's locked rev, a "<sha>-dirty" marker for
+      # a dirty checkout, or "dirty" for a path override.
+      revOf = input: input.rev or input.dirtyRev or "dirty";
+      buildInfo = {
+        # VERSION is only present on release branches. On master (pre-release CI
+        # builds) there is no VERSION file, so fall back to a "pre-release-{sha7}"
+        # string derived from self.rev. Dirty local builds lack self.rev and get
+        # an empty string, which the CLI renders as "dev".
+        version = if builtins.pathExists ./VERSION
+          then nixpkgs.lib.removeSuffix "\n" (builtins.readFile ./VERSION)
+          else if (self ? rev) then "pre-release-${builtins.substring 0 7 self.rev}" else "";
+        commit = revOf self;
+        commits = [
+          { name = "logos-liblogos"; commit = revOf logos-liblogos; }
+          { name = "logos-cpp-sdk"; commit = revOf logos-cpp-sdk; }
+          { name = "logos-protocol"; commit = revOf logos-protocol; }
+          { name = "logos-qt-sdk"; commit = revOf logos-qt-sdk; }
+          { name = "logos-capability-module"; commit = revOf logos-capability-module; }
+        ];
+      };
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f {
         inherit system;
         pkgs = import nixpkgs { inherit system; };
@@ -47,8 +69,15 @@
       packages = forAllSystems ({ pkgs, system, cppSdk, protocolPkg, qtSdk, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, installDev, installPortable, dirBundler, appBundler }:
         let
           pname = "logos-logoscore-cli";
-          version = "0.1.0";
+          # VERSION is only present on release branches; dev branches use a placeholder.
+          version = if builtins.pathExists ./VERSION
+            then nixpkgs.lib.removeSuffix "\n" (builtins.readFile ./VERSION)
+            else "0.1.0-dev";
           src = ./.;
+
+          # Generated header (version + commit hashes) staged into src/ at build
+          # time so main.cpp can bake it into the binary for `--version`.
+          buildInfoHeader = import ./nix/build-info.nix { inherit pkgs buildInfo; };
 
           meta = with pkgs.lib; {
             description = "Logos logoscore headless module runtime CLI";
@@ -75,6 +104,12 @@
             inherit pname version src meta;
 
             dontWrapQtApps = true;
+
+            # Stage the generated build-info header next to src/version_info.h.
+            preConfigure = ''
+              cp ${buildInfoHeader} src/logos_build_info.h
+              chmod +w src/logos_build_info.h
+            '';
 
             nativeBuildInputs = [
               pkgs.cmake
@@ -267,6 +302,12 @@
             inherit version src meta;
 
             dontWrapQtApps = true;
+
+            # Stage the generated build-info header next to src/version_info.h.
+            preConfigure = ''
+              cp ${buildInfoHeader} src/logos_build_info.h
+              chmod +w src/logos_build_info.h
+            '';
 
             nativeBuildInputs = [
               pkgs.cmake
