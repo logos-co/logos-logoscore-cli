@@ -146,7 +146,10 @@ TEST_F(CLITest, VersionCommand) {
     int exitCode = runLogoscore("--version", &output);
 
     EXPECT_EQ(exitCode, 0);
-    EXPECT_NE(output.find("1.0"), std::string::npos) << "Version output should contain version number";
+    // The version string is build-derived (release version / pre-release sha /
+    // "dev"), so assert on the stable tool-name prefix rather than a literal
+    // version number.
+    EXPECT_NE(output.find("logoscore version"), std::string::npos) << "Version output should identify logoscore";
 }
 
 TEST_F(CLITest, NoArgs_ShowsHelp) {
