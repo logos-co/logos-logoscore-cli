@@ -53,6 +53,49 @@ static bool containsName(const std::vector<std::string>& v, const std::string& n
     return std::find(v.begin(), v.end(), name) != v.end();
 }
 
+// Uptime in seconds for a module entry from getModulesInfo(): now - loaded_at,
+// only meaningful for loaded modules. Returns -1 when the module isn't loaded
+// or carries no load timestamp, so callers can skip emitting uptime_seconds.
+// The daemon stamps loaded_at with the same wall clock, so this stays consistent.
+static int64_t uptimeSecondsFor(const nlohmann::json& entry)
+{
+    if (!entry.value("loaded", false))
+        return -1;
+    int64_t loadedAt = entry.value("loaded_at", int64_t{0});
+    if (loadedAt <= 0)
+        return -1;
+    int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    int64_t up = now - loadedAt;
+    return up < 0 ? 0 : up;
+}
+
+nlohmann::json CoreServiceImpl::getModulesInfo()
+{
+    nlohmann::json info = nlohmann::json::array();
+    char* json = logos_core_get_modules_info();
+    if (json) {
+        nlohmann::json parsed = nlohmann::json::parse(json, nullptr, /*allow_exceptions=*/false);
+        if (parsed.is_array())
+            info = std::move(parsed);
+        free(json);
+    }
+    return info;
+}
+
+std::string CoreServiceImpl::getModuleVersion(const std::string& name)
+{
+    for (const auto& entry : getModulesInfo()) {
+        if (entry.value("name", std::string{}) == name) {
+            const auto& meta = entry["metadata"];
+            if (meta.is_object())
+                return meta.value("version", std::string{});
+            return {};
+        }
+    }
+    return {};
+}
+
 // ---------------------------------------------------------------------------
 // Module lifecycle
 // ---------------------------------------------------------------------------
@@ -92,6 +135,7 @@ StdLogosResult CoreServiceImpl::loadModule(const std::string& name)
     LogosMap result;
     result["status"] = "ok";
     result["module"] = name;
+    result["version"] = getModuleVersion(name);
     result["dependencies_loaded"] = dependenciesLoaded;
     return {true, result};
 }
@@ -152,6 +196,7 @@ StdLogosResult CoreServiceImpl::reloadModule(const std::string& name)
     }
 
     result["status"] = "loaded";
+    result["version"] = getModuleVersion(name);
     return {true, result};
 }
 
@@ -163,21 +208,25 @@ LogosList CoreServiceImpl::listModules(const std::string& filter)
 {
     LogosList modules = LogosList::array();
 
-    auto known = getKnownModuleNames();
-    auto loaded = getLoadedModuleNames();
-
-    for (const auto& name : known) {
-        LogosMap mod;
-        mod["name"] = name;
-
-        if (containsName(loaded, name)) {
-            mod["status"] = "loaded";
-        } else {
-            mod["status"] = "not_loaded";
-        }
-
-        if (filter == "loaded" && !containsName(loaded, name))
+    // Single call to the runtime gives name + loaded + metadata for every
+    // known module; version comes straight from the embedded metadata.
+    for (const auto& entry : getModulesInfo()) {
+        const bool loaded = entry.value("loaded", false);
+        if (filter == "loaded" && !loaded)
             continue;
+
+        LogosMap mod;
+        mod["name"]    = entry.value("name", std::string{});
+        mod["status"]  = loaded ? "loaded" : "not_loaded";
+
+        const auto& meta = entry["metadata"];
+        mod["version"] = meta.is_object() ? meta.value("version", std::string{})
+                                          : std::string{};
+
+        // Uptime is only meaningful for loaded modules.
+        int64_t uptime = uptimeSecondsFor(entry);
+        if (uptime >= 0)
+            mod["uptime_seconds"] = uptime;
 
         modules.push_back(mod);
     }
@@ -218,8 +267,12 @@ LogosMap CoreServiceImpl::getModuleInfo(const std::string& name)
 {
     LogosMap info;
 
-    auto known = getKnownModuleNames();
-    if (!containsName(known, name)) {
+    // Find the module's entry in the runtime's modules-info dump.
+    nlohmann::json entry;
+    for (const auto& e : getModulesInfo()) {
+        if (e.value("name", std::string{}) == name) { entry = e; break; }
+    }
+    if (entry.is_null()) {
         info["status"] = "error";
         info["code"] = "MODULE_NOT_FOUND";
         info["message"] = "Module '" + name + "' not found.";
@@ -227,10 +280,19 @@ LogosMap CoreServiceImpl::getModuleInfo(const std::string& name)
     }
 
     info["name"] = name;
+    const auto& meta = entry["metadata"];
+    info["version"] = meta.is_object() ? meta.value("version", std::string{})
+                                       : std::string{};
+    // Dependency graph comes from the same dump (direct edges).
+    info["dependencies"] = entry.value("dependencies", nlohmann::json::array());
+    info["dependents"]   = entry.value("dependents", nlohmann::json::array());
 
-    auto loaded = getLoadedModuleNames();
-    if (containsName(loaded, name)) {
+    if (entry.value("loaded", false)) {
         info["status"] = "loaded";
+
+        int64_t uptime = uptimeSecondsFor(entry);
+        if (uptime >= 0)
+            info["uptime_seconds"] = uptime;
 
         if (m_api) {
             // Use the nlohmann::json overload — no QJson types needed here
