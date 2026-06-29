@@ -258,6 +258,50 @@ TEST_F(ErrorPathTest, NoLoadNegativePaths) {
         << "module-info on unknown module should not succeed.\n" << out;
 }
 
+// Regression for #59: the version, sourced from each module's embedded
+// metadata, must appear in list-modules / module-info / load-module — and,
+// critically, for modules that are merely KNOWN (not yet loaded), since that
+// reads from on-disk metadata rather than a running plugin. test_basic_module
+// declares version 1.0.0 in its metadata.json.
+TEST_F(ErrorPathTest, ReportsModuleVersion) {
+    std::string out;
+    const std::string kVersion = "\"version\":\"1.0.0\"";
+
+    // Unloaded module: version is read from metadata, so it is present even
+    // before the module is loaded.
+    ASSERT_EQ(d.run("list-modules", &out), 0) << out;
+    EXPECT_NE(out.find("test_basic_module"), std::string::npos) << out;
+    EXPECT_NE(out.find(kVersion), std::string::npos)
+        << "list-modules must report the metadata version for a known module.\n"
+        << out;
+
+    ASSERT_EQ(d.run("module-info test_basic_module", &out), 0) << out;
+    EXPECT_NE(out.find(kVersion), std::string::npos)
+        << "module-info must report the module version.\n" << out;
+    // module-info is now backed by the generic modules-info dump, so the
+    // dependency graph is reported too (test_basic_module has no deps).
+    EXPECT_NE(out.find("\"dependencies\""), std::string::npos)
+        << "module-info must include the dependencies array.\n" << out;
+    // Uptime is loaded-only: an unloaded module reports no uptime_seconds.
+    EXPECT_EQ(out.find("uptime_seconds"), std::string::npos)
+        << "unloaded module-info must not report uptime_seconds.\n" << out;
+
+    // Loading it returns the version too, and list-modules keeps reporting it.
+    ASSERT_EQ(d.run("load-module test_basic_module", &out, kNegativeBudgetSecs), 0)
+        << "test_basic_module must load (LOGOS_HOST_PATH wired?).\n" << out;
+    EXPECT_NE(out.find(kVersion), std::string::npos)
+        << "load-module response must include the version.\n" << out;
+
+    ASSERT_EQ(d.run("list-modules", &out), 0) << out;
+    EXPECT_NE(out.find(kVersion), std::string::npos)
+        << "list-modules must still report the version once loaded.\n" << out;
+
+    // Once loaded, uptime is derived from the load timestamp and reported.
+    ASSERT_EQ(d.run("module-info test_basic_module", &out), 0) << out;
+    EXPECT_NE(out.find("uptime_seconds"), std::string::npos)
+        << "loaded module-info must report uptime_seconds.\n" << out;
+}
+
 TEST_F(ErrorPathTest, UnknownMethodOnLoadedModule) {
     std::string out;
     ASSERT_EQ(d.run("load-module test_basic_module", &out), 0)

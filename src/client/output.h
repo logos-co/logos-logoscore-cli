@@ -11,6 +11,9 @@ public:
     bool isTTY() const;
     bool isJsonMode() const;
     void setJsonMode(bool json);
+    // Force human-readable output even when stdout is not a TTY (e.g. piped).
+    // Takes precedence over JSON auto-detection; the inverse of --json.
+    void setHumanMode(bool human);
 
     // Success output — accepts any nlohmann::json value (object, array, etc.)
     void printSuccess(const nlohmann::json& data);
@@ -40,6 +43,7 @@ public:
 
 private:
     bool m_forceJson;
+    bool m_forceHuman = false;
     bool m_ttyChecked = false;
     bool m_isTTY = false;
 

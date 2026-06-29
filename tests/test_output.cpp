@@ -285,6 +285,75 @@ TEST_F(OutputTest, PrintModuleList_Human)
     out.printModuleList(modules);
     std::string output = cap.str();
     EXPECT_FALSE(output.empty());
+    // Version is rendered with a leading "v".
+    EXPECT_NE(output.find("v0.1.0"), std::string::npos) << output;
+}
+
+// Regression for #59: a non-empty version must show in the human table, and a
+// name longer than the old fixed 12-char column must not collide with it
+// (the bug rendered "delivery_modulev" — name immediately followed by "v").
+TEST_F(OutputTest, PrintModuleList_Human_LongNameDoesNotCollideWithVersion)
+{
+    Output out(false);
+    out.setJsonMode(false);
+
+    CaptureStdout cap;
+    LogosList modules = nlohmann::json::array({
+        LogosMap{{"name", "capability_module"}, {"version", "1.0.0"}, {"status", "loaded"}}
+    });
+    out.printModuleList(modules);
+    std::string output = cap.str();
+
+    EXPECT_NE(output.find("capability_module"), std::string::npos) << output;
+    EXPECT_NE(output.find("v1.0.0"), std::string::npos) << output;
+    // The name and version must be separated by whitespace, never fused.
+    EXPECT_EQ(output.find("capability_modulev1.0.0"), std::string::npos)
+        << "name collided with version column:\n" << output;
+}
+
+// A module that declares no version renders "-", not a bare "v".
+TEST_F(OutputTest, PrintModuleList_Human_MissingVersionShowsDash)
+{
+    Output out(false);
+    out.setJsonMode(false);
+
+    CaptureStdout cap;
+    LogosList modules = nlohmann::json::array({
+        LogosMap{{"name", "no_version_module"}, {"status", "not_loaded"}}
+    });
+    out.printModuleList(modules);
+    std::string output = cap.str();
+
+    EXPECT_EQ(output.find("no_version_modulev"), std::string::npos)
+        << "empty version must not render as a bare 'v':\n" << output;
+    EXPECT_NE(output.find("-"), std::string::npos) << output;
+}
+
+// module-info human output shows the version with a "v" prefix when present.
+TEST_F(OutputTest, PrintModuleInfo_Human_RendersVersion)
+{
+    Output out(false);
+    out.setJsonMode(false);
+
+    CaptureStdout cap;
+    LogosMap info{{"name", "chat"}, {"version", "0.2.0"}, {"status", "loaded"}};
+    out.printModuleInfo(info);
+    std::string output = cap.str();
+    EXPECT_NE(output.find("Version:       v0.2.0"), std::string::npos) << output;
+}
+
+// module-info with no version shows "-" rather than a bare "v".
+TEST_F(OutputTest, PrintModuleInfo_Human_MissingVersionShowsDash)
+{
+    Output out(false);
+    out.setJsonMode(false);
+
+    CaptureStdout cap;
+    LogosMap info{{"name", "chat"}, {"status", "not_loaded"}};
+    out.printModuleInfo(info);
+    std::string output = cap.str();
+    EXPECT_NE(output.find("Version:       -"), std::string::npos) << output;
+    EXPECT_EQ(output.find("Version:       v"), std::string::npos) << output;
 }
 
 TEST_F(OutputTest, PrintReload_Json_Success)
