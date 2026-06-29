@@ -148,6 +148,10 @@ int main(int argc, char *argv[])
     bool jsonMode = false;
     app.add_flag("-j,--json", jsonMode, "Force JSON output");
 
+    bool humanMode = false;
+    app.add_flag("--no-json,--human", humanMode,
+                 "Force human-readable output even when piped");
+
     bool quiet = false;
     app.add_flag("-q,--quiet", quiet, "Suppress non-essential output");
 
@@ -776,6 +780,8 @@ int main(int argc, char *argv[])
         for (const auto& r : sub->remaining()) {
             if (r == "--json" || r == "-j") {
                 jsonMode = true;
+            } else if (r == "--no-json" || r == "--human") {
+                humanMode = true;
             } else if (r == "--quiet" || r == "-q") {
                 quiet = true;
             } else {
@@ -784,6 +790,8 @@ int main(int argc, char *argv[])
         }
 
         Output output(jsonMode);
+        if (humanMode)
+            output.setHumanMode(true);
         RpcClient rpcClient;
 
         auto cmd = createCommand(name, rpcClient, output);

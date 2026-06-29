@@ -41,6 +41,8 @@ bool Output::isTTY() const
 
 bool Output::isJsonMode() const
 {
+    if (m_forceHuman)
+        return false;
     if (m_forceJson)
         return true;
     return !isTTY();
@@ -49,6 +51,15 @@ bool Output::isJsonMode() const
 void Output::setJsonMode(bool json)
 {
     m_forceJson = json;
+    if (json)
+        m_forceHuman = false;
+}
+
+void Output::setHumanMode(bool human)
+{
+    m_forceHuman = human;
+    if (human)
+        m_forceJson = false;
 }
 
 std::string Output::formatUptime(int64_t seconds) const

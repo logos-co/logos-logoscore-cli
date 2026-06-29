@@ -103,18 +103,33 @@ sections:
         run: "cat logs.txt"
 
       - title: "Check daemon status"
-        text: "Verify the daemon is running and inspect its health:"
-        run: "./logos/bin/logoscore status"
-        code_block: "logoscore status"
+        text: |
+          Verify the daemon is running and inspect its health. Every client
+          command renders a human-readable form on a terminal and JSON when its
+          output is piped; `--human` and `--json` force either form explicitly:
+        run: |
+          ./logos/bin/logoscore status --human
+          echo '# --- JSON ---'
+          ./logos/bin/logoscore status --json
+        code_block: |
+          logoscore status            # human-readable (default on a TTY)
+          logoscore status --json     # JSON (default when piped)
 
       - title: "List discovered modules"
-        text: "List modules visible in the scan directory:"
-        run: "./logos/bin/logoscore list-modules"
-        code_block: "logoscore list-modules"
+        text: "List modules visible in the scan directory, in both forms:"
+        run: |
+          ./logos/bin/logoscore list-modules --human
+          echo '# --- JSON ---'
+          ./logos/bin/logoscore list-modules --json
+        code_block: |
+          logoscore list-modules            # human-readable table
+          logoscore list-modules --json     # JSON
         expect_contains:
           - "test_basic_module"
           # Version comes from each module's metadata.json, so it is present
-          # even before the module is loaded.
+          # even before the module is loaded — in the table and the JSON.
+          - "VERSION"
+          - "v1.0.0"
           - '"version":"1.0.0"'
 
       - title: "Load the module"
@@ -127,11 +142,17 @@ sections:
       - title: "Confirm the module is now loaded"
         text: |
           Re-run `status`. The module that was `not_loaded` before now reports
-          `loaded` (the client emits JSON when its output is piped, as it is here):
-        run: "./logos/bin/logoscore status"
-        code_block: "logoscore status"
+          `loaded`, and once loaded it carries an uptime (shown in both forms):
+        run: |
+          ./logos/bin/logoscore status --human
+          echo '# --- JSON ---'
+          ./logos/bin/logoscore status --json
+        code_block: |
+          logoscore status
+          logoscore status --json
         expect_contains:
           - "test_basic_module"
+          - "loaded"
           - '"status":"loaded"'
 
       - title: "Module subprocesses are isolated from the launcher's process group"
@@ -174,11 +195,17 @@ sections:
         text: |
           `module-info` shows a single module's status and the `Q_INVOKABLE`
           methods it exposes — the same methods you can `call`:
-        run: "./logos/bin/logoscore module-info test_basic_module"
-        code_block: "logoscore module-info test_basic_module"
+        run: |
+          ./logos/bin/logoscore module-info test_basic_module --human
+          echo '# --- JSON ---'
+          ./logos/bin/logoscore module-info test_basic_module --json
+        code_block: |
+          logoscore module-info test_basic_module
+          logoscore module-info test_basic_module --json
         expect_contains:
           - "test_basic_module"
           - '"status":"loaded"'
+          - "Version:       v1.0.0"
           - '"version":"1.0.0"'
           - "returnTrue"
           - "addInts"
@@ -187,15 +214,25 @@ sections:
         text: |
           `stats` reports per-module resource usage (process id, CPU, memory) for
           the modules the daemon is running:
-        run: "./logos/bin/logoscore stats"
-        code_block: "logoscore stats"
+        run: |
+          ./logos/bin/logoscore stats --human
+          echo '# --- JSON ---'
+          ./logos/bin/logoscore stats --json
+        code_block: |
+          logoscore stats
+          logoscore stats --json
         expect_contains:
           - "test_basic_module"
 
       - title: "Call methods"
-        text: "Invoke methods on the loaded module:"
-        run: "./logos/bin/logoscore call test_basic_module returnTrue"
-        code_block: "logoscore call test_basic_module returnTrue"
+        text: "Invoke methods on the loaded module, in both forms:"
+        run: |
+          ./logos/bin/logoscore call test_basic_module returnTrue --human
+          echo '# --- JSON ---'
+          ./logos/bin/logoscore call test_basic_module returnTrue --json
+        code_block: |
+          logoscore call test_basic_module returnTrue
+          logoscore call test_basic_module returnTrue --json
         expect_contains:
           - '"result":true'
 
