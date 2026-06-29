@@ -114,6 +114,29 @@ sections:
         code_block: |
           logoscore status            # human-readable (default on a TTY)
           logoscore status --json     # JSON (default when piped)
+        post_text: |
+          Human-readable form:
+
+          ```text
+          Logoscore Daemon
+            Status:       running
+            PID:          12345
+            Uptime:       6s
+            Version:      v0.2.0
+
+          Modules: 1 loaded, 0 crashed, 1 not loaded
+            test_basic_module  v1.0.0  not_loaded  -
+            capability_module  v1.0.0  loaded      6s
+          ```
+
+          JSON form:
+
+          ```json
+          {"daemon":{"status":"running","pid":12345,"uptime_seconds":6,"version":"0.2.0"},
+           "modules_summary":{"loaded":1,"crashed":0,"not_loaded":1},
+           "modules":[{"name":"capability_module","status":"loaded","uptime_seconds":6,"version":"1.0.0"},
+                      {"name":"test_basic_module","status":"not_loaded","version":"1.0.0"}]}
+          ```
 
       - title: "List discovered modules"
         text: "List modules visible in the scan directory, in both forms:"
@@ -131,6 +154,22 @@ sections:
           - "VERSION"
           - "v1.0.0"
           - '"version":"1.0.0"'
+        post_text: |
+          Human-readable table (the `NAME`/`VERSION` columns size to fit):
+
+          ```text
+          NAME               VERSION  STATUS      UPTIME
+          test_basic_module  v1.0.0   not_loaded  -
+          capability_module  v1.0.0   loaded      6s
+          ```
+
+          The same data as JSON — `version` is present even for `not_loaded`
+          modules (it comes from each module's metadata, not the running process):
+
+          ```json
+          [{"name":"test_basic_module","status":"not_loaded","version":"1.0.0"},
+           {"name":"capability_module","status":"loaded","uptime_seconds":6,"version":"1.0.0"}]
+          ```
 
       - title: "Load the module"
         text: "Load `test_basic_module` into the running daemon:"
@@ -209,6 +248,30 @@ sections:
           - '"version":"1.0.0"'
           - "returnTrue"
           - "addInts"
+        post_text: |
+          Human-readable form (methods list trimmed):
+
+          ```text
+          Name:          test_basic_module
+          Version:       v1.0.0
+          Status:        loaded
+          Uptime:        6s
+
+          Methods:
+            returnTrue() -> bool
+            addInts(a: int, b: int) -> int
+            ...
+          ```
+
+          JSON form — version, dependencies, dependents, uptime, and the full
+          method/event interface in one object:
+
+          ```json
+          {"name":"test_basic_module","version":"1.0.0","status":"loaded",
+           "uptime_seconds":6,"dependencies":[],"dependents":[],
+           "methods":[{"name":"returnTrue","returnType":"bool","signature":"returnTrue()"}, ...],
+           "events":[]}
+          ```
 
       - title: "Check resource usage with stats"
         text: |
@@ -223,6 +286,21 @@ sections:
           logoscore stats --json
         expect_contains:
           - "test_basic_module"
+        post_text: |
+          Human-readable table:
+
+          ```text
+          MODULE             PID     CPU%    MEMORY
+          test_basic_module  12350   0.0%    18.9 MB
+          capability_module  12340   4.6%    19.5 MB
+          ```
+
+          JSON form:
+
+          ```json
+          [{"name":"test_basic_module","cpu_percent":0.0,"cpu_time_seconds":1.02,"memory_mb":18.9},
+           {"name":"capability_module","cpu_percent":4.6,"cpu_time_seconds":1.10,"memory_mb":19.5}]
+          ```
 
       - title: "Call methods"
         text: "Invoke methods on the loaded module, in both forms:"
@@ -235,6 +313,18 @@ sections:
           logoscore call test_basic_module returnTrue --json
         expect_contains:
           - '"result":true'
+        post_text: |
+          The human-readable form prints just the return value:
+
+          ```text
+          true
+          ```
+
+          The JSON form wraps it with the call's metadata:
+
+          ```json
+          {"status":"ok","module":"test_basic_module","method":"returnTrue","result":true}
+          ```
 
       - run: "./logos/bin/logoscore call test_basic_module addInts 2 3"
         code_block: "logoscore call test_basic_module addInts 2 3"
