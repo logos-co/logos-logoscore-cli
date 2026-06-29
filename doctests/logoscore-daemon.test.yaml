@@ -113,6 +113,9 @@ sections:
         code_block: "logoscore list-modules"
         expect_contains:
           - "test_basic_module"
+          # Version comes from each module's metadata.json, so it is present
+          # even before the module is loaded.
+          - '"version":"1.0.0"'
 
       - title: "Load the module"
         text: "Load `test_basic_module` into the running daemon:"
@@ -176,6 +179,7 @@ sections:
         expect_contains:
           - "test_basic_module"
           - '"status":"loaded"'
+          - '"version":"1.0.0"'
           - "returnTrue"
           - "addInts"
 

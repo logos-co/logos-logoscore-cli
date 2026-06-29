@@ -62,6 +62,12 @@ private:
     // Helpers
     std::vector<std::string> getKnownModuleNames();
     std::vector<std::string> getLoadedModuleNames();
+    // All known modules' info (name, path, loaded, dependencies, dependents,
+    // metadata) as a JSON array, sourced from logos_core_get_modules_info.
+    nlohmann::json getModulesInfo();
+    // Version from a single module's embedded metadata, or "" if unknown or
+    // the plugin declares none.
+    std::string getModuleVersion(const std::string& name);
 };
 
 #endif // CORE_SERVICE_IMPL_H

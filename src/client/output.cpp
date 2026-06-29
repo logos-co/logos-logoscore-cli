@@ -1,6 +1,7 @@
 #include "output.h"
 #include "../string_utils.h"
 #include <fmt/format.h>
+#include <algorithm>
 #include <iostream>
 #include <cstdio>
 
@@ -11,6 +12,13 @@
 #else
 #include <unistd.h>
 #endif
+
+// Human-readable module version: "v1.2.3" when present, "-" when the module
+// declares none (modules aren't required to carry a version in metadata.json).
+static std::string formatVersion(const std::string& version)
+{
+    return version.empty() ? "-" : "v" + version;
+}
 
 Output::Output(bool forceJson)
     : m_forceJson(forceJson)
@@ -111,22 +119,35 @@ void Output::printModuleList(const LogosList& modules)
         return;
     }
 
-    std::cout << padRight("NAME", 12)
-              << padRight("VERSION", 10)
+    // Size the NAME/VERSION columns to their widest cell (real module names
+    // run well past a fixed 12 chars, e.g. "capability_module"), so the
+    // version never runs up against the name. +2 keeps a gap between columns.
+    size_t nameWidth    = std::string("NAME").size();
+    size_t versionWidth = std::string("VERSION").size();
+    for (const auto& v : modules) {
+        nameWidth    = std::max(nameWidth, v.value("name", std::string{}).size());
+        versionWidth = std::max(versionWidth,
+                                formatVersion(v.value("version", std::string{})).size());
+    }
+    nameWidth += 2;
+    versionWidth += 2;
+
+    std::cout << padRight("NAME", nameWidth)
+              << padRight("VERSION", versionWidth)
               << padRight("STATUS", 12)
               << "UPTIME" << std::endl;
 
     for (const auto& v : modules) {
         std::string name    = v.value("name", std::string{});
-        std::string version = "v" + v.value("version", std::string{});
+        std::string version = formatVersion(v.value("version", std::string{}));
         std::string status  = v.value("status", std::string{});
         std::string uptime  = "-";
 
         if (v.contains("uptime_seconds"))
             uptime = formatUptime(static_cast<int64_t>(v["uptime_seconds"].get<double>()));
 
-        std::cout << padRight(name, 12)
-                  << padRight(version, 10)
+        std::cout << padRight(name, nameWidth)
+                  << padRight(version, versionWidth)
                   << padRight(status, 12)
                   << uptime << std::endl;
     }
@@ -199,16 +220,26 @@ void Output::printStatus(const LogosMap& status)
               << notLoaded << " not loaded" << std::endl;
 
     LogosList modules = status.value("modules", LogosList::array());
+    // Size NAME/VERSION columns to their content (see printModuleList).
+    size_t nameWidth    = 0;
+    size_t versionWidth = 0;
+    for (const auto& m : modules) {
+        nameWidth    = std::max(nameWidth, m.value("name", std::string{}).size());
+        versionWidth = std::max(versionWidth,
+                                formatVersion(m.value("version", std::string{})).size());
+    }
+    nameWidth    += 2;
+    versionWidth += 2;
     for (const auto& m : modules) {
         std::string name = m.value("name", std::string{});
-        std::string ver  = "v" + m.value("version", std::string{});
+        std::string ver  = formatVersion(m.value("version", std::string{}));
         std::string st   = m.value("status", std::string{});
         std::string up   = "-";
         if (m.contains("uptime_seconds"))
             up = formatUptime(static_cast<int64_t>(m["uptime_seconds"].get<double>()));
 
-        std::cout << "  " << padRight(name, 12)
-                  << padRight(ver, 10)
+        std::cout << "  " << padRight(name, nameWidth)
+                  << padRight(ver, versionWidth)
                   << padRight(st, 12)
                   << up << std::endl;
     }
@@ -226,7 +257,7 @@ void Output::printModuleInfo(const LogosMap& info)
     std::string status  = info.value("status", std::string{});
 
     std::cout << "Name:          " << name    << std::endl;
-    std::cout << "Version:       v" << version << std::endl;
+    std::cout << "Version:       " << formatVersion(version) << std::endl;
     std::cout << "Status:        " << status  << std::endl;
 
     if (status == "loaded") {
@@ -380,10 +411,10 @@ void Output::printReload(const LogosMap& result)
     std::string module = result.value("module", std::string{});
 
     if (status == "loaded" || status == "ok") {
-        std::string version = result.value("version", std::string{});
+        std::string version = formatVersion(result.value("version", std::string{}));
         int64_t pid         = static_cast<int64_t>(result.value("pid", 0.0));
         std::cout << "Module \"" << module
-                  << "\" reloaded successfully (v" << version
+                  << "\" reloaded successfully (" << version
                   << ", pid " << pid << ")" << std::endl;
     } else if (status == "error") {
         std::cerr << "Error: "

@@ -97,6 +97,7 @@ The CLI uses these functions from liblogos (declared in `logos_core.h`):
 | `logos_core_unload_module(name, false)` | core_service |
 | `logos_core_get_known_modules()` | core_service |
 | `logos_core_get_loaded_modules()` | core_service |
+| `logos_core_get_modules_info()` | core_service |
 | `logos_core_get_module_stats()` | core_service |
 
 ---
@@ -312,9 +313,9 @@ private:
 | `loadModule(name)` | Calls `logos_core_load_module(name, true)`. Returns `{"status":"ok","module":"...","version":"...","dependencies_loaded":[...]}` |
 | `unloadModule(name)` | Calls `logos_core_unload_module(name, false)`. Returns `{"status":"ok","module":"..."}` |
 | `reloadModule(name)` | Checks if loaded/crashed → unload if needed → load. Returns result with `previous_status`. Non-destructive on failure: if the module was loaded before and the reload's load step fails, it attempts to restore the prior instance and reports `restored: true/false` plus an explanatory error rather than leaving the module down |
-| `listModules(filter)` | Calls `logos_core_get_known_modules()` + `logos_core_get_loaded_modules()`. Merges with crash metadata. Returns JSON array with status enum |
+| `listModules(filter)` | Calls `logos_core_get_modules_info()` (name + loaded flag + embedded metadata per module). Emits `version` from metadata + status enum. Returns JSON array |
 | `getStatus()` | Reads daemon state (PID, uptime, version) + calls `listModules("all")`. Returns `{"daemon":{...},"modules_summary":{...},"modules":[...]}` |
-| `getModuleInfo(name)` | Fetches metadata, methods (via SDK introspection), process info, crash history. Returns extended JSON |
+| `getModuleInfo(name)` | Pulls the module's entry from `logos_core_get_modules_info()` (version from embedded metadata, dependencies, dependents) and, for loaded modules, methods/events via SDK introspection over RPC. Returns extended JSON |
 | `getModuleStats()` | Calls `logos_core_get_module_stats()`. Returns CPU/memory per module |
 | `callModuleMethod(module, method, args)` | Uses `m_api->getClient(module)->invokeRemoteMethod()` to proxy the call to the target module. Returns the result. `LogosResult` return values are unpacked into `{success, value, error}` here so that the JSON shape is identical regardless of whether the daemon-module hop went over the local socket (QRO) or the plain-C++ transport (tcp / tcp_ssl). |
 | `watchModuleEvents(module, event)` | Registers an event listener on the target module via `m_api->getClient(module)->onEvent()`. Forwards received events by calling `emitEvent()` on core_service, which the CLI client receives over its own event subscription |
