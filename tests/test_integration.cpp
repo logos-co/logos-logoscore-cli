@@ -282,6 +282,9 @@ TEST_F(ErrorPathTest, ReportsModuleVersion) {
     // dependency graph is reported too (test_basic_module has no deps).
     EXPECT_NE(out.find("\"dependencies\""), std::string::npos)
         << "module-info must include the dependencies array.\n" << out;
+    // Uptime is loaded-only: an unloaded module reports no uptime_seconds.
+    EXPECT_EQ(out.find("uptime_seconds"), std::string::npos)
+        << "unloaded module-info must not report uptime_seconds.\n" << out;
 
     // Loading it returns the version too, and list-modules keeps reporting it.
     ASSERT_EQ(d.run("load-module test_basic_module", &out, kNegativeBudgetSecs), 0)
@@ -292,6 +295,11 @@ TEST_F(ErrorPathTest, ReportsModuleVersion) {
     ASSERT_EQ(d.run("list-modules", &out), 0) << out;
     EXPECT_NE(out.find(kVersion), std::string::npos)
         << "list-modules must still report the version once loaded.\n" << out;
+
+    // Once loaded, uptime is derived from the load timestamp and reported.
+    ASSERT_EQ(d.run("module-info test_basic_module", &out), 0) << out;
+    EXPECT_NE(out.find("uptime_seconds"), std::string::npos)
+        << "loaded module-info must report uptime_seconds.\n" << out;
 }
 
 TEST_F(ErrorPathTest, UnknownMethodOnLoadedModule) {

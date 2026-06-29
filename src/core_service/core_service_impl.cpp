@@ -53,6 +53,23 @@ static bool containsName(const std::vector<std::string>& v, const std::string& n
     return std::find(v.begin(), v.end(), name) != v.end();
 }
 
+// Uptime in seconds for a module entry from getModulesInfo(): now - loaded_at,
+// only meaningful for loaded modules. Returns -1 when the module isn't loaded
+// or carries no load timestamp, so callers can skip emitting uptime_seconds.
+// The daemon stamps loaded_at with the same wall clock, so this stays consistent.
+static int64_t uptimeSecondsFor(const nlohmann::json& entry)
+{
+    if (!entry.value("loaded", false))
+        return -1;
+    int64_t loadedAt = entry.value("loaded_at", int64_t{0});
+    if (loadedAt <= 0)
+        return -1;
+    int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    int64_t up = now - loadedAt;
+    return up < 0 ? 0 : up;
+}
+
 nlohmann::json CoreServiceImpl::getModulesInfo()
 {
     nlohmann::json info = nlohmann::json::array();
@@ -206,6 +223,11 @@ LogosList CoreServiceImpl::listModules(const std::string& filter)
         mod["version"] = meta.is_object() ? meta.value("version", std::string{})
                                           : std::string{};
 
+        // Uptime is only meaningful for loaded modules.
+        int64_t uptime = uptimeSecondsFor(entry);
+        if (uptime >= 0)
+            mod["uptime_seconds"] = uptime;
+
         modules.push_back(mod);
     }
 
@@ -267,6 +289,10 @@ LogosMap CoreServiceImpl::getModuleInfo(const std::string& name)
 
     if (entry.value("loaded", false)) {
         info["status"] = "loaded";
+
+        int64_t uptime = uptimeSecondsFor(entry);
+        if (uptime >= 0)
+            info["uptime_seconds"] = uptime;
 
         if (m_api) {
             // Use the nlohmann::json overload — no QJson types needed here
