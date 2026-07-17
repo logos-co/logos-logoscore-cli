@@ -175,6 +175,14 @@ int main(int argc, char *argv[])
         "Inter-module access policy: path to a JSON file, or inline JSON "
         "(mode + per-target caller allowlists)");
 
+    // --access-group: share the daemon with an OS group. Sockets become
+    // group-connectable (0660, chgrp'd) and the client artifacts group-readable,
+    // so a second OS user in the group can drive the daemon (docker.sock model).
+    std::string accessGroupArg;
+    auto* accessGroupOpt = app.add_option("--access-group", accessGroupArg,
+        "OS group to share the daemon with: makes the local sockets and client "
+        "config/token group-accessible so a member can run logoscore commands");
+
     // --persist-config: write the merged (defaults < config.json < CLI)
     // result to disk. Without it, CLI flags affect the running process
     // only; with it, the next no-flag launch reproduces the same
@@ -522,12 +530,14 @@ int main(int argc, char *argv[])
                              || (persistencePathOpt->count() > 0)
                              || (moduleTransportOpt->count() > 0)
                              || (insecureTcpOpt->count()     > 0)
-                             || (accessPolicyOpt->count()    > 0);
+                             || (accessPolicyOpt->count()    > 0)
+                             || (accessGroupOpt->count()     > 0);
         if (anyCliFlag) configSource = "cli";
 
         if (modulesDirOpt->count() > 0)      mergedCfg.modulesDirs     = modulesDirs;
         if (persistencePathOpt->count() > 0) mergedCfg.persistencePath = persistencePath;
         if (insecureTcpOpt->count() > 0)     mergedCfg.insecureTcp     = insecureTcp;
+        if (accessGroupOpt->count() > 0)     mergedCfg.accessGroup     = accessGroupArg;
         // Resolve --access-policy (file-or-inline); abort on bad input.
         if (accessPolicyOpt->count() > 0) {
             auto resolved = resolveAccessPolicy(accessPolicyArg);

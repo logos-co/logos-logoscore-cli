@@ -245,43 +245,43 @@ fs::path clientCfgPath()
     return fs::path(Config::clientConfigPath());
 }
 
-bool writeArtifacts(const std::string& instanceId, bool freshTokensFile)
+bool writeArtifacts(const std::string& instanceId,
+                    const std::string& accessGroup = {})
 {
     return DaemonRuntimeStateFile::writeLocalClientArtifacts(
-        instanceId, "raw-token", currentUtcIso8601(), freshTokensFile,
-        kLocalOnly, kLocalOnly);
+        instanceId, "raw-token", currentUtcIso8601(),
+        kLocalOnly, kLocalOnly, accessGroup);
 }
 
 } // namespace
 
-TEST_F(DaemonStateTest, ClientArtifacts_WritesConfigOnFreshBoot)
+TEST_F(DaemonStateTest, ClientArtifacts_WritesConfigWhenMissing)
 {
     ASSERT_FALSE(fs::exists(clientCfgPath()));
-    EXPECT_TRUE(writeArtifacts("inst-A", /*freshTokensFile=*/true));
+    // A missing config.json is always (re)generated — the client's only
+    // channel for the per-boot instance_id, so it must reappear whether this
+    // is a first boot or a persisted dir that lost the file.
+    EXPECT_TRUE(writeArtifacts("inst-A"));
     ASSERT_TRUE(fs::exists(clientCfgPath()));
     EXPECT_NE(slurp(clientCfgPath()).find("inst-A"), std::string::npos);
 }
 
-TEST_F(DaemonStateTest, ClientArtifacts_SkipsConfigWhenAbsentAndNotFresh)
-{
-    EXPECT_TRUE(writeArtifacts("inst-A", /*freshTokensFile=*/false));
-    EXPECT_FALSE(fs::exists(clientCfgPath()));
-}
-
-TEST_F(DaemonStateTest, ClientArtifacts_RefreshesStaleInstanceId)
+TEST_F(DaemonStateTest, ClientArtifacts_RefreshesStaleInstanceIdPreservingTokenFile)
 {
     fs::create_directories(clientCfgPath().parent_path());
+    // Operator repointed token_file away from auto.json, then the daemon was
+    // replaced (stale instance_id). The refresh must update instance_id but
+    // keep the operator's token_file.
     std::ofstream(clientCfgPath())
-        << R"({"version":2,"token_file":"auto.json","instance_id":"OLD","daemon":{}})"
+        << R"({"version":2,"token_file":"alice.json","instance_id":"OLD","daemon":{}})"
         << "\n";
 
-    // Persisted config dir, replaced daemon: the existing file points
-    // at a different instance, so even a non-fresh boot must refresh it.
-    EXPECT_TRUE(writeArtifacts("NEW", /*freshTokensFile=*/false));
+    EXPECT_TRUE(writeArtifacts("NEW"));
 
     const std::string body = slurp(clientCfgPath());
     EXPECT_NE(body.find("NEW"), std::string::npos);
     EXPECT_EQ(body.find("OLD"), std::string::npos);
+    EXPECT_NE(body.find("alice.json"), std::string::npos);
 }
 
 TEST_F(DaemonStateTest, ClientArtifacts_LeavesMatchingInstanceIdUntouched)
@@ -291,7 +291,7 @@ TEST_F(DaemonStateTest, ClientArtifacts_LeavesMatchingInstanceIdUntouched)
         << R"({"version":2,"token_file":"auto.json","instance_id":"SAME","custom":"keep"})"
         << "\n";
 
-    EXPECT_TRUE(writeArtifacts("SAME", /*freshTokensFile=*/true));
+    EXPECT_TRUE(writeArtifacts("SAME"));
 
     // Instance already matches: no rewrite, operator's field survives.
     EXPECT_NE(slurp(clientCfgPath()).find(R"("custom":"keep")"),
@@ -306,9 +306,37 @@ TEST_F(DaemonStateTest, ClientArtifacts_NeverClobbersOperatorRemoteConfig)
         << R"({"version":2,"token_file":"my.json","daemon":{"core_service":{"transport":"tcp","host":"10.0.0.5","port":6000}}})"
         << "\n";
 
-    EXPECT_TRUE(writeArtifacts("inst-Z", /*freshTokensFile=*/true));
+    EXPECT_TRUE(writeArtifacts("inst-Z"));
 
     const std::string body = slurp(clientCfgPath());
     EXPECT_NE(body.find("10.0.0.5"), std::string::npos);
     EXPECT_EQ(body.find("inst-Z"), std::string::npos);
+}
+
+TEST_F(DaemonStateTest, ClientArtifacts_OwnerOnlyByDefault)
+{
+    ASSERT_TRUE(writeArtifacts("inst-A"));
+    struct stat st;
+    ASSERT_EQ(::stat(Config::clientTokenPath("auto.json").c_str(), &st), 0);
+    // No --access-group: the raw token file stays 0600.
+    EXPECT_EQ(st.st_mode & 07777, 0600u);
+}
+
+TEST_F(DaemonStateTest, ClientArtifacts_GroupReadableWithAccessGroup)
+{
+    // Pass our own effective gid (as a numeric group spec) so the chgrp always
+    // succeeds in the sandbox. config.json + auto.json must become 0640 and
+    // owned by that group so a member can read them.
+    const std::string gid = std::to_string(::getegid());
+    ASSERT_TRUE(writeArtifacts("inst-A", gid));
+
+    struct stat cfgSt;
+    ASSERT_EQ(::stat(Config::clientConfigPath().c_str(), &cfgSt), 0);
+    EXPECT_EQ(cfgSt.st_mode & 07777, 0640u);
+    EXPECT_EQ(cfgSt.st_gid, ::getegid());
+
+    struct stat tokSt;
+    ASSERT_EQ(::stat(Config::clientTokenPath("auto.json").c_str(), &tokSt), 0);
+    EXPECT_EQ(tokSt.st_mode & 07777, 0640u);
+    EXPECT_EQ(tokSt.st_gid, ::getegid());
 }

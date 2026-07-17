@@ -261,11 +261,15 @@ logoscore list-tokens
 logoscore revoke-token alice
 ```
 
-After copying `daemon/tokens/alice.json` to the client host, the operator may
-delete the daemon-side raw file (`rm daemon/tokens/alice.json`); validation
-keeps working because the hash is what the daemon checks. Operator-issued
-tokens take effect on the next daemon restart (SIGHUP-driven reload is a
-follow-up).
+The raw value is written to `daemon/tokens/<name>.json` so the operator can hand
+it off to a client host.
+
+> **Current limitation:** named tokens are *stored* but not yet *enforced* — the
+> daemon only authorizes the per-boot `auto` token today (validation against
+> `daemon/tokens.json` is being wired up separately). To share a daemon with
+> another OS user right now, use `--access-group` (above), which shares that
+> `auto` token with the group. This note will be removed when named-token
+> validation lands.
 
 ##### Plaintext-TCP guard
 
@@ -304,6 +308,51 @@ logoscore --config-dir /tmp/ls-b stop
 ```
 
 Resolution order: `--config-dir` → `LOGOSCORE_CONFIG_DIR` env var → `~/.logoscore`. The flag also mirrors into `LOGOSCORE_CONFIG_DIR` so child processes inherit it.
+
+#### Running as a system service, shared with an OS group (`--access-group`)
+
+A common deployment runs the daemon as a dedicated service user (e.g. `logos`,
+with `--config-dir /var/lib/logos-node/.logoscore`) and lets a person's own OS
+account drive it. By default that fails: the daemon's local sockets are bound
+owner-only (connecting to a unix socket needs *write* permission on the socket
+file), and the client config/token it writes are `0600`.
+
+`--access-group <group>` shares the daemon with an OS group:
+
+- the module sockets are chgrp'd to the group and set to `0660`, so a member can
+  connect;
+- `client/config.json` and `client/auto.json` become `0640` + group-owned, and
+  the config dir is made group-traversable, so a member can read the dial spec
+  and the shared token (`daemon/` stays owner-only — private state is not
+  shared). This is the same trust model as `docker.sock`: **group membership
+  grants access.**
+
+```bash
+# As root / the service manager: create the group and add the human user.
+sudo groupadd --system logos
+sudo usermod -aG logos alice            # alice must re-login for this to apply
+
+# Daemon, running as the service user `logos`:
+logoscore -D -m /opt/logos/modules \
+  --config-dir /var/lib/logos-node/.logoscore \
+  --access-group logos
+
+# As alice (a member of group `logos`), pointing at the service's config dir:
+export LOGOSCORE_CONFIG_DIR=/var/lib/logos-node/.logoscore
+logoscore status
+logoscore list-modules
+logoscore call my_module.some_method arg
+```
+
+The client config is regenerated on every boot, so `alice` never has to re-copy
+it after a restart — the instance id changes, but the group-readable
+`client/config.json` always reflects the running daemon.
+
+> **systemd note:** do **not** set `PrivateTmp=yes` on the unit. It gives the
+> service a private `/tmp` namespace, so the `/tmp/logos_*` sockets are
+> *invisible* (not merely unreadable) to a client in another namespace and no
+> permission change can bridge that. If you need `/tmp` isolation, that is a
+> follow-up (relocating the sockets to a shared runtime dir).
 
 #### Transports
 

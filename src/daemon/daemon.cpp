@@ -180,6 +180,19 @@ int Daemon::start(int argc, char* argv[],
 
     setenv("LOGOS_INSTANCE_ID", instanceId.c_str(), 1);
 
+    // Share the node with an OS group if the operator asked (--access-group).
+    // Exported BEFORE logos_core_init so every module subprocess (logos_host)
+    // and its children inherit it: each applies the policy to the local socket
+    // it binds (see logos-protocol's applySocketPerms), making the socket
+    // group-connectable. 0660 grants a group member the write permission an
+    // AF_UNIX connect() requires. No-op when the flag is unset — the socket
+    // keeps its owner-only default. The client-side artifacts are widened
+    // separately in writeLocalClientArtifacts below.
+    if (!cfg.accessGroup.empty()) {
+        setenv("LOGOS_SOCKET_GROUP", cfg.accessGroup.c_str(), 1);
+        setenv("LOGOS_SOCKET_MODE", "0660", 1);
+    }
+
     // Refuse to start if a live daemon already owns this config-dir — two would
     // clobber the shared state.json and re-issue the auto-token. Checked before
     // logos_core_init so it fails fast. A stale file from a crashed daemon (pid
@@ -304,15 +317,6 @@ int Daemon::start(int argc, char* argv[],
     // leaked client/auto.json from being usable over TCP from a remote
     // host. Operator-issued tokens take effect only on the next daemon
     // restart (or future SIGHUP-driven reload).
-    // Capture the pre-issue tokens-file state to gate the local-client
-    // config auto-emit below. A daemon launching into an empty config
-    // dir gets a generated client/config.json + auto.json so `status`
-    // works out of the box; a returning daemon (tokens.json already
-    // had operator-issued entries) leaves client/config.json alone —
-    // the operator has shown they're managing the client side.
-    const bool tokensFileWasMissing =
-        !std::filesystem::exists(Config::daemonTokensPath());
-
     TokenStore tokenStore;
     const auto autoTokenOutcome = tokenStore.issueToken("auto",
                                                         /*expiresAt=*/{},
@@ -383,9 +387,10 @@ int Daemon::start(int argc, char* argv[],
     //     pointing at "auto.json" stays consistent with the freshly-issued
     //     auto token.
     if (!DaemonRuntimeStateFile::writeLocalClientArtifacts(
-            instanceId, autoTokenRaw, state.startedAt, tokensFileWasMissing,
+            instanceId, autoTokenRaw, state.startedAt,
             toAdvertised(coreTransports),
-            toAdvertised(capabilityTransports))) {
+            toAdvertised(capabilityTransports),
+            cfg.accessGroup)) {
         fprintf(stderr, "Warning: failed to write local client artifacts under %s\n",
                 Config::clientDir().c_str());
     }
