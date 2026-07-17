@@ -119,6 +119,7 @@ sections:
         expect_contains:
           - '"result":42'
           - '"result":7'
+          - '"result":3.5'
           - '"result":true'
           - "hello"
       - title: "Result return (success and error)"
@@ -126,8 +127,10 @@ sections:
           ./logos/bin/logoscore call test_fullapi_cpp makeResult true
           ./logos/bin/logoscore call test_fullapi_rust makeResult true
           ./logos/bin/logoscore call test_fullapi_cpp makeResult false
+          ./logos/bin/logoscore call test_fullapi_rust makeResult false
         expect_contains:
           - '"success":true'
+          - '"success":false'
           - "deliberate error for testing"
 
   - title: "The C++ proxy forwards to either provider"
@@ -203,6 +206,7 @@ sections:
         expect_contains:
           - "test_fullapi_cpp"
           - "test_fullapi_rust"
+          - '"result":2.5'
       - title: "Event round-trip through the Rust proxy"
         run: |
           ./logos/bin/logoscore call test_fullapi_proxy_rust useProvider test_fullapi_cpp
