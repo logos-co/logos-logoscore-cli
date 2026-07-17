@@ -150,6 +150,20 @@ sections:
           ./logos/bin/logoscore call test_fullapi_proxy whoAmI
         expect_contains:
           - "test_fullapi_rust"
+      - title: "Every array type round-trips through the bound provider"
+        text: |
+          logoscore can't pass a list literal on the command line, so the proxy's
+          `probeArrays` round-trips one array of every array type — `[int]`,
+          `[uint]`, `[float64]`, `[bool]`, `[tstr]`, `[any]` — through the bound
+          provider and reports the received sizes. Running it against both the C++
+          and the Rust provider proves each decodes every array type identically.
+        run: |
+          ./logos/bin/logoscore call test_fullapi_proxy useProvider test_fullapi_cpp
+          ./logos/bin/logoscore call test_fullapi_proxy probeArrays
+          ./logos/bin/logoscore call test_fullapi_proxy useProvider test_fullapi_rust
+          ./logos/bin/logoscore call test_fullapi_proxy probeArrays
+        expect_contains:
+          - "intList=3 uintList=2 doubleList=2 boolList=2 stringList=2 anyList=3"
       - title: "Event round-trip (subscribe is done at load; trigger -> read)"
         text: |
           The proxy subscribes to the bound provider's events and captures the
