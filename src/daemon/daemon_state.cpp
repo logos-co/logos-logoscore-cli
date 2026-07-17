@@ -8,6 +8,8 @@
 #include <unistd.h>     // getpid — for unique temp-file names
 
 #include <atomic>
+#include <cerrno>
+#include <limits>
 #include <vector>
 
 #include <chrono>
@@ -165,13 +167,14 @@ std::optional<DaemonConfig> daemonConfigFromJson(const json& obj)
 }
 
 // Atomic *replace* helper used for both config.json and state.json.
-// Writes to <path>.tmp, applies 0600, then renames into place. The
-// rename is the atomic step — readers either see the pre-write file
+// Writes to <path>.tmp, applies `mode` (default 0600), then renames into
+// place. The rename is the atomic step — readers either see the pre-write file
 // or the new one, never a half-written state. We do NOT fsync, so
 // this isn't durable across power loss (close() flushes only
 // userspace buffers; OS page cache is still in flight). Callers that
 // need durability would need an explicit fsync(fd) on the temp file
-// plus a dir fsync after rename. Returns false on any I/O step.
+// plus a dir fsync after rename. Returns false on any I/O step — including a
+// failed chmod, so a credential file is never published at the wrong mode.
 bool atomicWriteJson(const fs::path& path, const json& obj,
                      mode_t mode = S_IRUSR | S_IWUSR)
 {
@@ -196,8 +199,14 @@ bool atomicWriteJson(const fs::path& path, const json& obj,
     }
     // Apply the caller's mode to the temp file (default 0600). The rename
     // preserves it, so the destination lands at exactly `mode` regardless of
-    // any pre-existing file's perms or the process umask.
-    ::chmod(tmp.c_str(), mode);
+    // any pre-existing file's perms or the process umask. Fail (and drop the
+    // temp) if chmod fails, rather than publishing a credential file at the
+    // umask default.
+    if (::chmod(tmp.c_str(), mode) != 0) {
+        std::error_code ignored;
+        fs::remove(tmp, ignored);
+        return false;
+    }
     std::error_code rec;
     fs::rename(tmp, path, rec);
     if (rec) {
@@ -375,13 +384,22 @@ json toClientEntry(const TransportInfo& t)
     return entry;
 }
 
+}  // namespace
+
 // Resolve an OS group name-or-gid to a gid. Accepts an all-digits string as a
-// numeric gid, otherwise looks the name up in the group database.
-bool resolveGroupGid(const std::string& spec, gid_t& out)
+// numeric gid (with overflow/range validation), otherwise looks the name up in
+// the group database.
+bool resolveOsGroupGid(const std::string& spec, gid_t& out)
 {
     if (!spec.empty() &&
         spec.find_first_not_of("0123456789") == std::string::npos) {
-        out = static_cast<gid_t>(std::strtoul(spec.c_str(), nullptr, 10));
+        errno = 0;
+        char* end = nullptr;
+        const unsigned long v = std::strtoul(spec.c_str(), &end, 10);
+        if (errno != 0 || end == spec.c_str() || *end != '\0' ||
+            v > static_cast<unsigned long>(std::numeric_limits<gid_t>::max()))
+            return false;
+        out = static_cast<gid_t>(v);
         return true;
     }
     std::vector<char> buf(1024);
@@ -395,8 +413,6 @@ bool resolveGroupGid(const std::string& spec, gid_t& out)
         return true;
     }
 }
-
-}  // namespace
 
 bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
     const std::string& instanceId,
@@ -412,11 +428,12 @@ bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
 
     // Resolve the access group once. An unknown group name degrades to
     // owner-only (with a warning) rather than failing the whole boot — the
-    // daemon still comes up, just not shared.
+    // daemon still comes up, just not shared. (daemon.cpp validates the same
+    // way before exporting the socket-perm env vars, so both halves agree.)
     gid_t groupGid = 0;
     bool  shareWithGroup = false;
     if (!accessGroup.empty()) {
-        if (resolveGroupGid(accessGroup, groupGid)) {
+        if (resolveOsGroupGid(accessGroup, groupGid)) {
             shareWithGroup = true;
         } else {
             std::cerr << "writeLocalClientArtifacts: unknown --access-group '"
@@ -424,20 +441,36 @@ bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
                       << std::endl;
         }
     }
-    const mode_t fileMode = shareWithGroup ? static_cast<mode_t>(0640)
-                                           : static_cast<mode_t>(S_IRUSR | S_IWUSR);
 
     std::error_code ec;
     fs::create_directories(clientDir, ec);
     if (ec) return false;
 
     if (shareWithGroup) {
+        // Sharing widens the config dir to be group-traversable, which would
+        // also expose daemon/ (token + state filenames) unless we lock it down
+        // first. Do the lockdown BEFORE widening the parent, and if it fails,
+        // abandon sharing entirely (fall back to owner-only) rather than leave
+        // private state reachable. daemon/ may not exist yet in isolated unit
+        // tests — nothing to lock, nothing exposed.
+        const std::string daemonDir = Config::daemonDir();
+        if (fs::exists(daemonDir, ec) && ::chmod(daemonDir.c_str(), S_IRWXU) != 0) {
+            std::cerr << "writeLocalClientArtifacts: could not lock " << daemonDir
+                      << " to owner-only (" << std::strerror(errno)
+                      << ") — not sharing the config dir" << std::endl;
+            shareWithGroup = false;
+        }
+    }
+
+    const mode_t fileMode = shareWithGroup ? static_cast<mode_t>(0640)
+                                           : static_cast<mode_t>(S_IRUSR | S_IWUSR);
+
+    if (shareWithGroup) {
         // Grant the group access to just the client subtree:
         //   - client/ becomes group r-x + owned by the group;
         //   - the config dir gets group traverse (execute) so a member can
-        //     reach client/ without being able to list it;
-        //   - daemon/ is locked to owner-only so tokens/state stay private
-        //     even though the parent is now traversable.
+        //     reach client/ without being able to list it.
+        // daemon/ was locked to owner-only just above.
         ::chown(clientDir.c_str(), static_cast<uid_t>(-1), groupGid);
         ::chmod(clientDir.c_str(), 0750);
 
@@ -447,9 +480,6 @@ bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
             ::chown(configDir.c_str(), static_cast<uid_t>(-1), groupGid);
             ::chmod(configDir.c_str(), (cst.st_mode & 07777) | S_IXGRP);
         }
-        const std::string daemonDir = Config::daemonDir();
-        if (fs::exists(daemonDir, ec))
-            ::chmod(daemonDir.c_str(), S_IRWXU);  // 0700
     }
 
     // client/config.json — dial config matching what the daemon actually

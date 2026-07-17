@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <sys/types.h>   // gid_t
 
 // `daemon/config.json` (operator preferences) and `daemon/state.json`
 // (live runtime state). Both use the same v2 schema number — the
@@ -100,6 +101,12 @@ struct DaemonRuntimeState {
 // Exposed so daemon.cpp can stamp `started_at` without duplicating the
 // chrono boilerplate.
 std::string currentUtcIso8601();
+
+// Resolve an OS group name-or-numeric-gid to a gid. Returns false on an unknown
+// name or an out-of-range numeric value. Shared by the daemon (to validate
+// --access-group before exporting the socket-perm env vars) and the client
+// artifact writer, so both apply exactly the same policy.
+bool resolveOsGroupGid(const std::string& spec, gid_t& out);
 
 // daemon/config.json — operator preferences. read() returns nullopt
 // when the file is missing or its schema version doesn't match;
