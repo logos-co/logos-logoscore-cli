@@ -1,0 +1,205 @@
+name: "Exercising the full API surface across languages, proxies, and events"
+output: fullapi-chain.md
+release: ""
+
+intro: |
+  This doc-test exercises the **entire supported API surface** of a Logos module —
+  every method parameter/return type and every event parameter type — end to end
+  through `logoscore`, and proves it behaves identically across:
+
+  * two **providers** of the same contract, one written in **C++**
+    (`test_fullapi_cpp`) and one in **Rust** (`test_fullapi_rust`); and
+  * two **proxies** (`test_fullapi_proxy` in C++, `test_fullapi_proxy_rust` in
+    Rust) that consume the contract via an **interface dependency** and re-expose
+    it — forwarding every call and capturing every event.
+
+  Everything is built from `logos-test-modules` and the Nix binary cache: there
+  is **no network catalog download and no live peer connection**, so the check is
+  fully hermetic (unlike the cross-version chat check it replaces).
+
+what_you_learn:
+  - How to load a family of related modules into the logoscore daemon
+  - How the same contract, implemented in C++ and in Rust, answers identically
+  - How a consumer binds an interface dependency to a runtime-chosen provider
+  - How a proxy forwards calls and re-emits events across a language boundary
+  - How to drive an event round-trip (subscribe -> trigger -> read) via the daemon
+
+prerequisites:
+  - |
+    **Nix** with flakes enabled. Install from [nixos.org](https://nixos.org/download.html), then enable flakes:
+
+    ```bash
+    mkdir -p ~/.config/nix
+    echo 'experimental-features = nix-command flakes' >> ~/.config/nix/nix.conf
+    ```
+
+    Verify: `nix flake --help >/dev/null 2>&1 && echo "Flakes enabled"`
+  - |
+    **Network access** to fetch the flakes and Nix binary cache. Unlike the
+    cross-version checks, this doc-test never downloads a package catalog and
+    never opens a peer connection — once the modules are built it runs offline.
+
+sections:
+  - title: "Build logoscore"
+    step: true
+    text: |
+      Build the logoscore CLI from the published flake, symlinked to `./logos/`.
+    steps:
+      - title: "Build the CLI"
+        run: "nix build 'github:logos-co/logos-logoscore-cli{release}' --out-link ./logos"
+        check_file: "logos/bin/logoscore"
+
+  - title: "Install the full_api module family"
+    step: true
+    text: |
+      Build the two providers and two proxies from `logos-test-modules` and merge
+      them with the bundled `capability_module` (needed for auth) into `./modules/`.
+    steps:
+      - title: "Build and stage the modules"
+        run: |
+          SYSTEM=$(nix eval --impure --raw --expr 'builtins.currentSystem')
+          mkdir -p modules
+          cp -RL ./logos/modules/. ./modules/
+          for m in test_fullapi_cpp test_fullapi_rust test_fullapi_proxy test_fullapi_proxy_rust; do
+            nix build "github:logos-co/logos-test-modules#modules.$SYSTEM.$m.install" --out-link "./result-$m"
+            cp -RL "./result-$m/modules/." ./modules/
+          done
+          ls modules
+        expect_contains:
+          - "test_fullapi_cpp"
+          - "test_fullapi_rust"
+          - "test_fullapi_proxy"
+          - "test_fullapi_proxy_rust"
+
+  - title: "Start the daemon"
+    step: true
+    text: |
+      Start logoscore in daemon mode; it discovers every module under `./modules/`.
+    steps:
+      - title: "Start the daemon"
+        run: "sh -c './logos/bin/logoscore -D -m ./modules > logs.txt 2>&1 &'"
+        code_block: "logoscore -D -m ./modules > logs.txt &"
+      - run: "sleep 3"
+      - title: "Load the module family"
+        text: |
+          Loading a proxy auto-resolves its provider dependencies, but we load each
+          module explicitly so every one is present regardless.
+        run: |
+          for m in test_fullapi_cpp test_fullapi_rust test_fullapi_proxy test_fullapi_proxy_rust; do
+            ./logos/bin/logoscore load-module "$m"
+          done
+          ./logos/bin/logoscore list-modules
+        expect_contains:
+          - "test_fullapi_proxy"
+
+  - title: "Cross-language providers answer identically"
+    step: true
+    text: |
+      The C++ and Rust providers implement the same contract. Each echo returns
+      its input unchanged, so both answer identically; `whoAmI` is the one
+      intentional difference (it names the implementation).
+    steps:
+      - title: "Identity"
+        run: |
+          ./logos/bin/logoscore call test_fullapi_cpp whoAmI
+          ./logos/bin/logoscore call test_fullapi_rust whoAmI
+        expect_contains:
+          - "test_fullapi_cpp"
+          - "test_fullapi_rust"
+      - title: "Scalar echoes (int / uint / double / bool / string)"
+        run: |
+          for mod in test_fullapi_cpp test_fullapi_rust; do
+            echo "== $mod =="
+            ./logos/bin/logoscore call "$mod" echoInt 42
+            ./logos/bin/logoscore call "$mod" echoUint 7
+            ./logos/bin/logoscore call "$mod" echoDouble 3.5
+            ./logos/bin/logoscore call "$mod" echoBool true
+            ./logos/bin/logoscore call "$mod" echoString hello
+          done
+        expect_contains:
+          - '"result":42'
+          - '"result":7'
+          - '"result":true'
+          - "hello"
+      - title: "Result return (success and error)"
+        run: |
+          ./logos/bin/logoscore call test_fullapi_cpp makeResult true
+          ./logos/bin/logoscore call test_fullapi_rust makeResult true
+          ./logos/bin/logoscore call test_fullapi_cpp makeResult false
+        expect_contains:
+          - '"success":true'
+          - "deliberate error for testing"
+
+  - title: "The C++ proxy forwards to either provider"
+    step: true
+    text: |
+      `test_fullapi_proxy` binds the `full_api` interface to a runtime-chosen
+      module. `whoAmI` proves which provider a call resolved to.
+    steps:
+      - title: "Bind to the C++ provider"
+        run: |
+          ./logos/bin/logoscore call test_fullapi_proxy useProvider test_fullapi_cpp
+          ./logos/bin/logoscore call test_fullapi_proxy whoAmI
+          ./logos/bin/logoscore call test_fullapi_proxy echoInt 99
+        expect_contains:
+          - "test_fullapi_cpp"
+          - '"result":99'
+      - title: "Re-bind to the Rust provider"
+        run: |
+          ./logos/bin/logoscore call test_fullapi_proxy useProvider test_fullapi_rust
+          ./logos/bin/logoscore call test_fullapi_proxy whoAmI
+        expect_contains:
+          - "test_fullapi_rust"
+      - title: "Event round-trip (subscribe is done at load; trigger -> read)"
+        text: |
+          The proxy subscribes to the bound provider's events and captures the
+          latest. Triggering an event, then reading it back, exercises the whole
+          provider -> proxy event path. The daemon's event loop pumps the delivery
+          between the two client calls.
+        run: |
+          ./logos/bin/logoscore call test_fullapi_proxy useProvider test_fullapi_cpp
+          ./logos/bin/logoscore call test_fullapi_proxy fireStringEvent hello
+          sleep 1
+          ./logos/bin/logoscore call test_fullapi_proxy getLastEvent
+        expect_contains:
+          - "stringEvent:hello"
+      - title: "Cross-language event round-trip"
+        run: |
+          ./logos/bin/logoscore call test_fullapi_proxy useProvider test_fullapi_rust
+          ./logos/bin/logoscore call test_fullapi_proxy fireIntEvent 7
+          sleep 1
+          ./logos/bin/logoscore call test_fullapi_proxy getLastEvent
+        expect_contains:
+          - "intEvent:7"
+
+  - title: "The Rust proxy does the same, in Rust"
+    step: true
+    text: |
+      `test_fullapi_proxy_rust` is the Rust mirror: it consumes `full_api` via the
+      same interface dependency (a generated `FullApiClient::bind`) and re-exposes
+      it. It forwards to and captures events from both providers too.
+    steps:
+      - title: "Forward to both providers"
+        run: |
+          ./logos/bin/logoscore call test_fullapi_proxy_rust useProvider test_fullapi_cpp
+          ./logos/bin/logoscore call test_fullapi_proxy_rust whoAmI
+          ./logos/bin/logoscore call test_fullapi_proxy_rust echoDouble 2.5
+          ./logos/bin/logoscore call test_fullapi_proxy_rust useProvider test_fullapi_rust
+          ./logos/bin/logoscore call test_fullapi_proxy_rust whoAmI
+        expect_contains:
+          - "test_fullapi_cpp"
+          - "test_fullapi_rust"
+      - title: "Event round-trip through the Rust proxy"
+        run: |
+          ./logos/bin/logoscore call test_fullapi_proxy_rust useProvider test_fullapi_cpp
+          ./logos/bin/logoscore call test_fullapi_proxy_rust fireStringEvent hi
+          sleep 1
+          ./logos/bin/logoscore call test_fullapi_proxy_rust getLastEvent
+        expect_contains:
+          - "stringEvent:hi"
+
+  - title: "Shut down"
+    step: true
+    steps:
+      - title: "Stop the daemon"
+        run: "./logos/bin/logoscore stop"
