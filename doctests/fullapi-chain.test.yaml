@@ -143,6 +143,16 @@ sections:
           - '"result":["a","b"]'
           - '"k":"v"'
           - '"result":"json:literal"'
+      - title: "Binary (bstr) argument via the _bytes encoding"
+        text: |
+          JSON has no byte type, so a `bstr` argument uses the canonical tagged
+          encoding `{"_bytes":"<base64url>"}`. Passed with `json:` it decodes to
+          the provider's bytes parameter — here `aGVsbG8` is base64url of `hello`,
+          which `echoBytes` returns unchanged.
+        run: |
+          ./logos/bin/logoscore call test_fullapi_cpp echoBytes 'json:{"_bytes":"aGVsbG8"}'
+        expect_contains:
+          - "hello"
       - title: "Result return (success and error)"
         run: |
           ./logos/bin/logoscore call test_fullapi_cpp makeResult true

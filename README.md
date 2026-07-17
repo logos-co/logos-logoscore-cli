@@ -200,6 +200,16 @@ guesses a container, `json:` opts into parsing, and `str:` forces a literal
 string for any value the default rules would otherwise reinterpret (a
 number-like string, or one that itself starts with `json:` / `str:` / `@`).
 
+**Binary (`bstr`) arguments.** JSON has no native byte type, so bytes use the
+canonical tagged encoding — a JSON object `{"_bytes": "<base64url, unpadded>"}`.
+Pass it like any other JSON value with `json:`:
+
+```bash
+# base64url("hello") == "aGVsbG8"
+logoscore call blobstore put 'json:{"_bytes":"aGVsbG8"}'
+logoscore call blobstore put 'json:@blob.json'   # {"_bytes":"..."} from a file
+```
+
 #### Exit Codes
 
 | Code | Meaning |
