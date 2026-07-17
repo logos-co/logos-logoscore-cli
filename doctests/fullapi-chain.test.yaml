@@ -122,6 +122,27 @@ sections:
           - '"result":3.5'
           - '"result":true'
           - "hello"
+      - title: "List / map / literal args (json: and str: prefixes)"
+        text: |
+          Positional args are scalars by default; the `json:` prefix parses the
+          argument as JSON (a list, a map, or any nested value) and `str:` forces
+          a literal string. Both providers echo every container back unchanged,
+          proving each decodes the CLI-supplied lists and maps identically — the
+          same coverage the proxy's `probeArrays` gives, driven straight from the
+          command line.
+        run: |
+          for mod in test_fullapi_cpp test_fullapi_rust; do
+            echo "== $mod =="
+            ./logos/bin/logoscore call "$mod" echoIntList 'json:[1,2,3]'
+            ./logos/bin/logoscore call "$mod" echoStringList 'json:["a","b"]'
+            ./logos/bin/logoscore call "$mod" echoMap 'json:{"k":"v"}'
+            ./logos/bin/logoscore call "$mod" echoString 'str:json:literal'
+          done
+        expect_contains:
+          - '"result":[1,2,3]'
+          - '"result":["a","b"]'
+          - '"k":"v"'
+          - '"result":"json:literal"'
       - title: "Result return (success and error)"
         run: |
           ./logos/bin/logoscore call test_fullapi_cpp makeResult true
@@ -155,11 +176,13 @@ sections:
           - "test_fullapi_rust"
       - title: "Every array type round-trips through the bound provider"
         text: |
-          logoscore can't pass a list literal on the command line, so the proxy's
-          `probeArrays` round-trips one array of every array type — `[int]`,
-          `[uint]`, `[float64]`, `[bool]`, `[tstr]`, `[any]` — through the bound
-          provider and reports the received sizes. Running it against both the C++
-          and the Rust provider proves each decodes every array type identically.
+          Beyond passing arrays straight from the CLI (see the `json:` step
+          above), the proxy's `probeArrays` round-trips one array of every array
+          type — `[int]`, `[uint]`, `[float64]`, `[bool]`, `[tstr]`, `[any]` —
+          through the bound provider and reports the received sizes. This
+          exercises the proxy's *own* forwarding path (proxy → provider), so
+          running it against both the C++ and the Rust provider proves each
+          decodes every array type identically across that hop too.
         run: |
           ./logos/bin/logoscore call test_fullapi_proxy useProvider test_fullapi_cpp
           ./logos/bin/logoscore call test_fullapi_proxy probeArrays

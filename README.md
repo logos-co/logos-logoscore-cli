@@ -161,6 +161,11 @@ logoscore info chat                # alias
 logoscore call chat send_message "hello world"
 logoscore call storage load_config @config.json   # @file reads from file
 
+# Pass a list / map / nested value with the json: prefix (see "Argument typing")
+logoscore call greeter greetMany 'json:["ada","alan"]'
+logoscore call config    apply    'json:{"retries":3,"debug":true}'
+logoscore call greeter greet     'str:json:literal'   # str: forces a literal string
+
 # Alternative verbose call syntax
 logoscore module chat method send_message "hello"
 
@@ -171,6 +176,29 @@ logoscore watch chat --json        # NDJSON output
 # Show resource usage for loaded modules
 logoscore stats
 ```
+
+#### Argument typing
+
+Each positional argument to `call` is turned into a JSON value using the first
+rule that matches, so scalars stay ergonomic while lists, maps, and literal
+strings are all expressible:
+
+| Argument form | Becomes | Example |
+|---------------|---------|---------|
+| `json:<value>` | the value parsed as JSON (list / map / number / any nested value) | `json:[1,2,3]`, `json:{"k":"v"}` |
+| `json:@<file>` | the file's contents parsed as JSON | `json:@payload.json` |
+| `str:<text>` | `<text>` verbatim as a string — no parsing, no coercion | `str:json:x` → `"json:x"`, `str:42` → `"42"` |
+| `@<file>` | the file's raw contents as a string | `@config.json` |
+| `true` / `false` | a boolean | `true` |
+| a whole number | an integer | `42` |
+| a decimal number | a double | `3.14` |
+| anything else | a string | `hello` |
+
+`json:` and `str:` are the two explicit escapes, mirroring the convention used
+by `jq` (`--arg` / `--argjson`) and HTTPie (`=` / `:=`): the default path never
+guesses a container, `json:` opts into parsing, and `str:` forces a literal
+string for any value the default rules would otherwise reinterpret (a
+number-like string, or one that itself starts with `json:` / `str:` / `@`).
 
 #### Exit Codes
 
@@ -573,10 +601,12 @@ logoscore -D -m ./modules
 logoscore load-module waku
 logoscore load-module chat
 
-# Call methods (positional args; @file reads a parameter from a file)
+# Call methods (positional args — see "Argument typing" below)
 logoscore call chat send_message hello
 logoscore call storage init config 42 true
-logoscore call storage loadConfig @config.json
+logoscore call storage loadConfig @config.json           # @file → raw file contents
+logoscore call storage setTags 'json:["a","b"]'          # json: → parsed list/map/value
+logoscore call storage setLabel 'str:42'                 # str: → literal string "42"
 
 # Multiple module directories + a custom persistence path
 logoscore -D -m ./core-modules -m ./extra-modules --persistence-path /tmp/test-data
