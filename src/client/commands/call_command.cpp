@@ -4,19 +4,19 @@
 #include <fstream>
 #include <sstream>
 
-std::string CallCommand::resolveFileParam(const std::string& param)
+std::optional<std::string> CallCommand::resolveFileParam(const std::string& param)
 {
     if (!strutil::starts_with(param, '@'))
-        return param;
+        return param;   // not a file reference — the literal value
 
     std::string filePath = param.substr(1);
     std::ifstream file(filePath);
     if (!file.is_open())
-        return {};
+        return std::nullopt;   // couldn't open the file
 
     std::ostringstream ss;
     ss << file.rdbuf();
-    return ss.str();
+    return ss.str();   // may be "" for a genuinely empty (but readable) file
 }
 
 int CallCommand::execute(const std::vector<std::string>& args)
@@ -71,14 +71,14 @@ int CallCommand::execute(const std::vector<std::string>& args)
         // and `str:` (below) forces a literal string.
         if (strutil::starts_with(arg, "json:")) {
             const std::string body = arg.substr(5);
-            const std::string text = resolveFileParam(body);  // json:@file → contents; else the inline text
-            if (strutil::starts_with(body, '@') && text.empty()) {
+            const std::optional<std::string> text = resolveFileParam(body);  // json:@file → contents; else the inline text
+            if (!text) {  // json:@file whose file couldn't be opened
                 output().printError("INVALID_ARGS",
                                     fmt::format("Failed to read file: {}", body.substr(1)));
                 return 1;
             }
             try {
-                resolvedArgs.push_back(LogosList::parse(text));
+                resolvedArgs.push_back(LogosList::parse(*text));
             } catch (const std::exception& e) {
                 output().printError("INVALID_ARGS",
                                     fmt::format("Invalid JSON in argument '{}': {}", arg, e.what()));
@@ -98,12 +98,13 @@ int CallCommand::execute(const std::vector<std::string>& args)
             continue;
         }
 
-        std::string resolved = resolveFileParam(arg);
-        if (strutil::starts_with(arg, '@') && resolved.empty()) {
+        const std::optional<std::string> resolvedOpt = resolveFileParam(arg);
+        if (!resolvedOpt) {  // @file whose file couldn't be opened
             output().printError("INVALID_ARGS",
                                 fmt::format("Failed to read file: {}", arg.substr(1)));
             return 1;
         }
+        const std::string& resolved = *resolvedOpt;  // may be "" (empty @file)
 
         if (resolved == "true") {
             resolvedArgs.push_back(true);
