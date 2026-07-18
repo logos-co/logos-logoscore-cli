@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include <logos_json.h>
 #include <algorithm>
+#include <cstdio>
+#include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -509,6 +511,159 @@ TEST_F(CommandTest, Call_TrimsWhitespaceForNumericCoercion)
     EXPECT_EQ(mockClient.lastCallArgs[0].get<int>(), 123);
     EXPECT_TRUE(mockClient.lastCallArgs[1].is_number_float());
     EXPECT_DOUBLE_EQ(mockClient.lastCallArgs[1].get<double>(), 1.5);
+}
+
+// ── call: json: / str: argument prefixes ─────────────────────────────────────
+// Scalar coercion can only produce bool/int/double/string, so `json:<value>`
+// opts into JSON parsing (list / map / nested), `json:@file` parses file
+// contents, and `str:<text>` forces a literal string past all coercion. These
+// are the two explicit escapes that make containers and every literal string
+// expressible from the command line.
+
+TEST_F(CommandTest, Call_JsonPrefixParsesList)
+{
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}};
+    auto cmd = createCommand("call", mockClient, output);
+    captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"m", "echoList", "json:[1,2,3]"}), 0);
+    });
+    ASSERT_EQ(mockClient.lastCallArgs.size(), 1u);
+    ASSERT_TRUE(mockClient.lastCallArgs[0].is_array());
+    EXPECT_EQ(mockClient.lastCallArgs[0], (LogosList{1, 2, 3}));
+    // Integers inside the list must stay integers, not degrade to double.
+    EXPECT_TRUE(mockClient.lastCallArgs[0][0].is_number_integer());
+}
+
+TEST_F(CommandTest, Call_JsonPrefixParsesMap)
+{
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}};
+    auto cmd = createCommand("call", mockClient, output);
+    captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"m", "echoMap", R"(json:{"k":"v","n":42})"}), 0);
+    });
+    ASSERT_EQ(mockClient.lastCallArgs.size(), 1u);
+    ASSERT_TRUE(mockClient.lastCallArgs[0].is_object());
+    EXPECT_EQ(mockClient.lastCallArgs[0].value("k", std::string{}), "v");
+    EXPECT_EQ(mockClient.lastCallArgs[0].value("n", 0), 42);
+}
+
+TEST_F(CommandTest, Call_JsonPrefixParsesNestedAndScalars)
+{
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}};
+    auto cmd = createCommand("call", mockClient, output);
+    captureOutput([&]() {
+        // json: also expresses a bare scalar unambiguously (a real int/bool),
+        // and a nested value the default path could never produce.
+        EXPECT_EQ(cmd->execute({"m", "f", "json:42", "json:true",
+                                R"(json:{"a":[1,{"b":2}]})"}), 0);
+    });
+    ASSERT_EQ(mockClient.lastCallArgs.size(), 3u);
+    EXPECT_TRUE(mockClient.lastCallArgs[0].is_number_integer());
+    EXPECT_EQ(mockClient.lastCallArgs[0].get<int>(), 42);
+    EXPECT_TRUE(mockClient.lastCallArgs[1].is_boolean());
+    EXPECT_TRUE(mockClient.lastCallArgs[1].get<bool>());
+    EXPECT_EQ(mockClient.lastCallArgs[2]["a"][1]["b"].get<int>(), 2);
+}
+
+TEST_F(CommandTest, Call_JsonPrefixFromFile)
+{
+    const std::string path = testing::TempDir() + "logoscore_call_json_arg.json";
+    { std::ofstream f(path); f << "[10, 20, 30]"; }
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}};
+    auto cmd = createCommand("call", mockClient, output);
+    captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"m", "echoList", "json:@" + path}), 0);
+    });
+    std::remove(path.c_str());
+    ASSERT_EQ(mockClient.lastCallArgs.size(), 1u);
+    ASSERT_TRUE(mockClient.lastCallArgs[0].is_array());
+    EXPECT_EQ(mockClient.lastCallArgs[0], (LogosList{10, 20, 30}));
+}
+
+TEST_F(CommandTest, Call_JsonPrefixMalformedErrors)
+{
+    auto cmd = createCommand("call", mockClient, output);
+    int exitCode = 0;
+    captureOutput([&]() {
+        exitCode = cmd->execute({"m", "f", "json:hello"});
+    });
+    EXPECT_EQ(exitCode, 1);
+    // Rejected before the RPC — the method was never dialed.
+    EXPECT_NE(mockClient.lastCallMethod, "f");
+}
+
+TEST_F(CommandTest, Call_JsonPrefixMissingFileErrors)
+{
+    auto cmd = createCommand("call", mockClient, output);
+    int exitCode = 0;
+    captureOutput([&]() {
+        exitCode = cmd->execute({"m", "f", "json:@/no/such/logoscore/file.json"});
+    });
+    EXPECT_EQ(exitCode, 1);
+    EXPECT_NE(mockClient.lastCallMethod, "f");
+}
+
+TEST_F(CommandTest, Call_StrPrefixForcesLiteralString)
+{
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}};
+    auto cmd = createCommand("call", mockClient, output);
+    captureOutput([&]() {
+        // Every value the default path would otherwise reinterpret — a
+        // json:-looking string, a number, a bool, an @file reference — stays a
+        // literal string under str:, with the prefix stripped.
+        EXPECT_EQ(cmd->execute({"m", "f", "str:json:x", "str:42",
+                                "str:true", "str:@config.json"}), 0);
+    });
+    ASSERT_EQ(mockClient.lastCallArgs.size(), 4u);
+    for (const auto& a : mockClient.lastCallArgs)
+        EXPECT_TRUE(a.is_string());
+    EXPECT_EQ(mockClient.lastCallArgs[0].get<std::string>(), "json:x");
+    EXPECT_EQ(mockClient.lastCallArgs[1].get<std::string>(), "42");
+    EXPECT_EQ(mockClient.lastCallArgs[2].get<std::string>(), "true");
+    EXPECT_EQ(mockClient.lastCallArgs[3].get<std::string>(), "@config.json");
+}
+
+TEST_F(CommandTest, Call_StrPrefixExpressesEmptyString)
+{
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}};
+    auto cmd = createCommand("call", mockClient, output);
+    captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"m", "f", "str:"}), 0);
+    });
+    ASSERT_EQ(mockClient.lastCallArgs.size(), 1u);
+    ASSERT_TRUE(mockClient.lastCallArgs[0].is_string());
+    EXPECT_EQ(mockClient.lastCallArgs[0].get<std::string>(), "");
+}
+
+TEST_F(CommandTest, Call_EmptyFileYieldsEmptyStringNotError)
+{
+    // A readable-but-empty @file is a successful read of "", distinct from an
+    // unreadable file (which errors). Regression guard for resolveFileParam's
+    // couldn't-open vs read-but-empty distinction.
+    const std::string path = testing::TempDir() + "logoscore_call_empty_arg";
+    { std::ofstream f(path); }  // create empty
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}};
+    auto cmd = createCommand("call", mockClient, output);
+    int exitCode = 1;
+    captureOutput([&]() {
+        exitCode = cmd->execute({"m", "f", "@" + path});
+    });
+    std::remove(path.c_str());
+    EXPECT_EQ(exitCode, 0);
+    ASSERT_EQ(mockClient.lastCallArgs.size(), 1u);
+    ASSERT_TRUE(mockClient.lastCallArgs[0].is_string());
+    EXPECT_EQ(mockClient.lastCallArgs[0].get<std::string>(), "");
+}
+
+TEST_F(CommandTest, Call_MissingFileErrors)
+{
+    auto cmd = createCommand("call", mockClient, output);
+    int exitCode = 0;
+    captureOutput([&]() {
+        exitCode = cmd->execute({"m", "f", "@/no/such/logoscore/file.txt"});
+    });
+    EXPECT_EQ(exitCode, 1);
+    EXPECT_NE(mockClient.lastCallMethod, "f");
 }
 
 // ── stats ────────────────────────────────────────────────────────────────────

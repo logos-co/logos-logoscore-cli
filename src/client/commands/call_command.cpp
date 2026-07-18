@@ -4,19 +4,19 @@
 #include <fstream>
 #include <sstream>
 
-std::string CallCommand::resolveFileParam(const std::string& param)
+std::optional<std::string> CallCommand::resolveFileParam(const std::string& param)
 {
     if (!strutil::starts_with(param, '@'))
-        return param;
+        return param;   // not a file reference — the literal value
 
     std::string filePath = param.substr(1);
     std::ifstream file(filePath);
     if (!file.is_open())
-        return {};
+        return std::nullopt;   // couldn't open the file
 
     std::ostringstream ss;
     ss << file.rdbuf();
-    return ss.str();
+    return ss.str();   // may be "" for a genuinely empty (but readable) file
 }
 
 int CallCommand::execute(const std::vector<std::string>& args)
@@ -61,12 +61,50 @@ int CallCommand::execute(const std::vector<std::string>& args)
     // Resolve @file parameters and coerce types to native JSON values
     LogosList resolvedArgs = LogosList::array();
     for (const std::string& arg : methodArgs) {
-        std::string resolved = resolveFileParam(arg);
-        if (strutil::starts_with(arg, '@') && resolved.empty()) {
+        // Explicit JSON argument: `json:<inline>` or `json:@<file>`. The scalar
+        // coercion below can only produce bool/int/double/string, so this is the
+        // way to pass a list ([T]) or map ({K:V}) — or any nested JSON value —
+        // e.g. `json:[1,2,3]`, `json:{"k":"v"}`, `json:@payload.json`. This
+        // mirrors the two-form convention used by jq (--arg / --argjson) and
+        // HTTPie (= / :=): the default is a plain value, `json:` opts into
+        // parsing. A bare `@file` (no prefix) keeps its raw-string behaviour,
+        // and `str:` (below) forces a literal string.
+        if (strutil::starts_with(arg, "json:")) {
+            const std::string body = arg.substr(5);
+            const std::optional<std::string> text = resolveFileParam(body);  // json:@file → contents; else the inline text
+            if (!text) {  // json:@file whose file couldn't be opened
+                output().printError("INVALID_ARGS",
+                                    fmt::format("Failed to read file: {}", body.substr(1)));
+                return 1;
+            }
+            try {
+                resolvedArgs.push_back(LogosList::parse(*text));
+            } catch (const std::exception& e) {
+                output().printError("INVALID_ARGS",
+                                    fmt::format("Invalid JSON in argument '{}': {}", arg, e.what()));
+                return 1;
+            }
+            continue;
+        }
+
+        // Explicit literal string: `str:<text>` passes <text> verbatim, with no
+        // JSON parsing, no `@file` read, and no scalar coercion. It is the
+        // symmetric escape for the `json:` opt-in (mirroring jq's --arg and
+        // HTTPie's `=`): it makes *every* string value expressible, including
+        // ones the default path would otherwise reinterpret — `str:json:hi`
+        // → the string "json:hi", `str:42` → "42", `str:@x` → "@x".
+        if (strutil::starts_with(arg, "str:")) {
+            resolvedArgs.push_back(arg.substr(4));
+            continue;
+        }
+
+        const std::optional<std::string> resolvedOpt = resolveFileParam(arg);
+        if (!resolvedOpt) {  // @file whose file couldn't be opened
             output().printError("INVALID_ARGS",
                                 fmt::format("Failed to read file: {}", arg.substr(1)));
             return 1;
         }
+        const std::string& resolved = *resolvedOpt;  // may be "" (empty @file)
 
         if (resolved == "true") {
             resolvedArgs.push_back(true);
