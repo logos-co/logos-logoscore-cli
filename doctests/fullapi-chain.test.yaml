@@ -22,6 +22,7 @@ what_you_learn:
   - How the same contract, implemented in C++ and in Rust, answers identically
   - How a consumer binds an interface dependency to a runtime-chosen provider
   - How a proxy forwards calls and re-emits events across a language boundary
+  - How a proxy forwards calls through the non-blocking async client wrappers
   - How to drive an event round-trip (subscribe -> trigger -> read) via the daemon
 
 prerequisites:
@@ -147,12 +148,14 @@ sections:
         text: |
           JSON has no byte type, so a `bstr` argument uses the canonical tagged
           encoding `{"_bytes":"<base64url>"}`. Passed with `json:` it decodes to
-          the provider's bytes parameter — here `aGVsbG8` is base64url of `hello`,
-          which `echoBytes` returns unchanged.
+          the provider's bytes parameter, and a `bstr` return comes back in the
+          same canonical form — here `aGVsbG8` is base64url of `hello`, which
+          `echoBytes` returns unchanged (bytes are NOT auto-decoded to a string,
+          so the response carries the `_bytes` tag, not the literal text).
         run: |
           ./logos/bin/logoscore call test_fullapi_cpp echoBytes 'json:{"_bytes":"aGVsbG8"}'
         expect_contains:
-          - "hello"
+          - '"_bytes":"aGVsbG8"'
       - title: "Result return (success and error)"
         run: |
           ./logos/bin/logoscore call test_fullapi_cpp makeResult true
@@ -200,6 +203,29 @@ sections:
           ./logos/bin/logoscore call test_fullapi_proxy probeArrays
         expect_contains:
           - "intList=3 uintList=2 doubleList=2 boolList=2 stringList=2 anyList=3"
+      - title: "Async forwarding of the FULL surface through the proxy (start -> read)"
+        text: |
+          The proxy also forwards through the **asynchronous** client wrappers (the
+          generated `<method>Async` twins). `probeAsync` fires EVERY method of the
+          full_api surface — scalars, bstr, any, every array type, map and result —
+          asynchronously and returns immediately; the completions land out-of-band
+          on the transport's delivery thread. A moment later `getAsyncProbe` reads
+          the verified tally back as a single `ALL_OK_ASYNC:<provider>` token,
+          proving the proxy -> provider **async** path for the whole surface,
+          against both the C++ and the Rust provider. (This is the same non-blocking
+          path the UI exercises in the Basecamp full-API check.)
+        run: |
+          ./logos/bin/logoscore call test_fullapi_proxy useProvider test_fullapi_cpp
+          ./logos/bin/logoscore call test_fullapi_proxy probeAsync
+          sleep 2
+          ./logos/bin/logoscore call test_fullapi_proxy getAsyncProbe
+          ./logos/bin/logoscore call test_fullapi_proxy useProvider test_fullapi_rust
+          ./logos/bin/logoscore call test_fullapi_proxy probeAsync
+          sleep 2
+          ./logos/bin/logoscore call test_fullapi_proxy getAsyncProbe
+        expect_contains:
+          - "ALL_OK_ASYNC:test_fullapi_cpp"
+          - "ALL_OK_ASYNC:test_fullapi_rust"
       - title: "Event round-trip (subscribe is done at load; trigger -> read)"
         text: |
           The proxy subscribes to the bound provider's events and captures the
@@ -240,6 +266,26 @@ sections:
           - "test_fullapi_cpp"
           - "test_fullapi_rust"
           - '"result":2.5'
+      - title: "Async forwarding of the FULL surface through the Rust proxy (start -> read)"
+        text: |
+          The Rust proxy forwards the whole surface asynchronously too, through the
+          generated `<method>_async` client wrappers. As with the C++ proxy,
+          `probeAsync` fires every method without blocking and `getAsyncProbe` reads
+          the verified tally back as `ALL_OK_ASYNC:<provider>` — so the full async
+          path is exercised through both a C++ AND a Rust consumer, against both
+          providers (2x2 with the sync matrix).
+        run: |
+          ./logos/bin/logoscore call test_fullapi_proxy_rust useProvider test_fullapi_cpp
+          ./logos/bin/logoscore call test_fullapi_proxy_rust probeAsync
+          sleep 2
+          ./logos/bin/logoscore call test_fullapi_proxy_rust getAsyncProbe
+          ./logos/bin/logoscore call test_fullapi_proxy_rust useProvider test_fullapi_rust
+          ./logos/bin/logoscore call test_fullapi_proxy_rust probeAsync
+          sleep 2
+          ./logos/bin/logoscore call test_fullapi_proxy_rust getAsyncProbe
+        expect_contains:
+          - "ALL_OK_ASYNC:test_fullapi_cpp"
+          - "ALL_OK_ASYNC:test_fullapi_rust"
       - title: "Event round-trip through the Rust proxy"
         run: |
           ./logos/bin/logoscore call test_fullapi_proxy_rust useProvider test_fullapi_cpp
