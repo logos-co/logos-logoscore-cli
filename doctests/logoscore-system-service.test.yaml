@@ -1,0 +1,450 @@
+name: "Running logoscore as a System Service, Shared with an OS Group (Linux)"
+output: logoscore-system-service.md
+release: ""
+
+intro: |
+  Everything else in this doc-test suite runs the daemon as *you*, in your own
+  `~/.logoscore`. A real deployment usually doesn't look like that: the node is
+  a **systemd service running as its own unprivileged user**, and the humans who
+  drive it log in as themselves. That arrangement has three moving parts that
+  have to line up, and if any one of them is wrong the symptom is the same —
+  `logoscore status` reports the daemon, and every other command fails.
+
+  1. **The Unix sockets must be connectable by the other user.** `bind()`
+     creates them `0755`, and connecting to an `AF_UNIX` socket requires
+     **write** permission on the socket file, so by default nobody but the
+     service user can reach a module.
+  2. **The client artifacts must be readable by the other user.** A client
+     discovers the daemon through `client/config.json`, which the daemon
+     rewrites on every boot (the instance id changes each time).
+  3. **The credential must be one the daemon accepts.**
+
+  `--access-group <group>` lines all three up at once: the daemon binds its
+  sockets `0660` and chgrps them to that group, and writes its client artifacts
+  `0640` in a `0750` directory owned by it. Any member of the group can then
+  drive the node — the same model as `docker.sock`.
+
+  > ⚠️ **The group is the trust boundary.** Everyone in it can read the daemon's
+  > own token and has full control of the node. Operator-issued tokens
+  > (`issue-token`) add per-user *accounting*, *expiry* and *revocation* within
+  > that group; they are not isolation from it. Put only trusted operators in
+  > the group.
+
+  > This walkthrough needs Linux, systemd and passwordless `sudo`, so every step
+  > below **skips itself** on macOS and anywhere those are missing. On such a
+  > host you will see `SKIP:` lines instead of output — that is the spec
+  > reporting honestly, not a silent pass of the real assertions.
+
+what_you_learn:
+  - Why a second user can run `status` but nothing else, and which of the three causes is biting you
+  - How to write a systemd unit for `logoscore` that runs as its own service user
+  - What `--access-group` changes about socket permissions and client-artifact permissions
+  - Why `PrivateTmp=yes` breaks a shared node no matter how the permissions are set
+  - How a group member drives the node with no configuration of their own
+  - How to issue a per-user token, use it, and revoke it while the node keeps running
+  - That a non-member is refused, at both the file layer and the socket layer
+  - That stopping the service leaves no socket files behind
+
+prerequisites:
+  - |
+    **Linux with systemd**, and passwordless `sudo`. The steps create OS users
+    and install a unit file, so they cannot run unprivileged. Every step
+    self-skips where these are unavailable.
+
+    Verify: `test -d /run/systemd/system && sudo -n true && echo "ready"`
+  - |
+    **Nix** with flakes enabled. Install from [nixos.org](https://nixos.org/download.html), then enable flakes:
+
+    ```bash
+    mkdir -p ~/.config/nix
+    echo 'experimental-features = nix-command flakes' >> ~/.config/nix/nix.conf
+    ```
+
+    Verify: `nix flake --help >/dev/null 2>&1 && echo "Flakes enabled"`
+
+sections:
+  - title: "Build the node and stage it where a service can reach it"
+    step: true
+    text: |
+      A systemd unit runs with a minimal environment and no access to your
+      working directory, so the binary and the modules both have to live
+      somewhere the service user can read. Nix store paths are world-readable,
+      which makes them a natural `ExecStart=`; the modules we copy to
+      `/var/lib/logos-node/modules`.
+    steps:
+      - title: "Build the CLI"
+        text: |
+          Build `logoscore` and record its resolved store path — the unit file
+          needs an absolute path, because `sudo`'s `secure_path` drops Nix from
+          `PATH`.
+        run: |
+          { [ "$(uname -s)" = Linux ] && [ -d /run/systemd/system ] && sudo -n true 2>/dev/null; } || { echo "SKIP: needs Linux + systemd + passwordless sudo"; exit 0; }
+          nix build 'github:logos-co/logos-logoscore-cli{release}' --out-link ./logos
+          readlink -f ./logos/bin/logoscore > ./ls-path
+          test -x "$(cat ./ls-path)" || { echo "logoscore not executable"; exit 1; }
+          echo "logoscore: $(cat ./ls-path)"
+        code_block: |
+          nix build 'github:logos-co/logos-logoscore-cli' --out-link ./logos
+          readlink -f ./logos/bin/logoscore    # absolute path for ExecStart=
+
+      - title: "Assemble the modules directory"
+        text: |
+          The daemon needs the bundled `capability_module` (it brokers the
+          client handshake) plus something to call — `test_basic_module`.
+        run: |
+          { [ "$(uname -s)" = Linux ] && [ -d /run/systemd/system ] && sudo -n true 2>/dev/null; } || { echo "SKIP: needs Linux + systemd + passwordless sudo"; exit 0; }
+          SYSTEM=$(nix eval --impure --raw --expr 'builtins.currentSystem')
+          nix build "github:logos-co/logos-test-modules#modules.$SYSTEM.test_basic_module.install" --out-link ./result-module
+          mkdir -p modules
+          chmod -R u+w ./modules 2>/dev/null || true
+          cp -RL ./logos/modules/. ./modules/
+          chmod -R u+w ./modules 2>/dev/null || true
+          cp -RL ./result-module/modules/. ./modules/
+          test -f modules/test_basic_module/manifest.json || { echo "module staging failed"; exit 1; }
+          ls modules
+        code_block: |
+          nix build "github:logos-co/logos-test-modules#modules.$SYSTEM.test_basic_module.install" \
+              --out-link ./result-module
+          mkdir -p modules
+          cp -RL ./logos/modules/. ./modules/
+          cp -RL ./result-module/modules/. ./modules/
+
+  - title: "Create the service user, the shared group, and two humans"
+    step: true
+    text: |
+      Four identities make the point:
+
+      | identity | role |
+      |---|---|
+      | group `logos` | the shared-access group |
+      | user `logos` | the unprivileged account the service runs as |
+      | user `alice` | an operator, **in** the group |
+      | user `mallory` | another account, **not** in the group |
+
+      `alice` and `mallory` differ in exactly one respect — group membership —
+      so anything that works for one and not the other is attributable to it.
+    steps:
+      - title: "Create identities and the node directory"
+        run: |
+          { [ "$(uname -s)" = Linux ] && [ -d /run/systemd/system ] && sudo -n true 2>/dev/null; } || { echo "SKIP: needs Linux + systemd + passwordless sudo"; exit 0; }
+          sudo groupadd -f logos
+          id -u logos   >/dev/null 2>&1 || sudo useradd --system --gid logos --home-dir /var/lib/logos-node --shell /usr/sbin/nologin logos
+          id -u alice   >/dev/null 2>&1 || sudo useradd -m -G logos alice
+          id -u mallory >/dev/null 2>&1 || sudo useradd -m mallory
+          sudo usermod -aG logos alice
+
+          # The node's state directory. 0750 root-of-the-group: the service user
+          # owns it, group members may traverse and read, everyone else cannot.
+          sudo install -d -o logos -g logos -m 0750 /var/lib/logos-node
+          sudo rm -rf /var/lib/logos-node/modules
+          sudo cp -RL ./modules /var/lib/logos-node/modules
+          sudo chown -R logos:logos /var/lib/logos-node/modules
+          sudo chmod -R a+rX /var/lib/logos-node/modules
+
+          # Assert the two humans differ only in group membership.
+          if ! id -nG alice | tr ' ' '\n' | grep -qx logos; then echo "alice must be in group logos"; exit 1; fi
+          if id -nG mallory | tr ' ' '\n' | grep -qx logos; then echo "mallory must NOT be in group logos"; exit 1; fi
+          echo "alice groups:   $(id -nG alice)"
+          echo "mallory groups: $(id -nG mallory)"
+        code_block: |
+          sudo groupadd -f logos
+          sudo useradd --system --gid logos --home-dir /var/lib/logos-node \
+                       --shell /usr/sbin/nologin logos
+          sudo useradd -m -G logos alice      # operator, in the group
+          sudo useradd -m mallory             # not in the group
+
+          sudo install -d -o logos -g logos -m 0750 /var/lib/logos-node
+          sudo cp -RL ./modules /var/lib/logos-node/modules
+
+  - title: "Install and start the systemd unit"
+    step: true
+    text: |
+      The unit runs the daemon as `logos:logos` with an explicit `--config-dir`
+      so its state lives under `/var/lib/logos-node` rather than a home
+      directory, and `--access-group logos` to make the sockets and client
+      artifacts group-accessible.
+
+      One setting deserves a warning of its own: **`PrivateTmp=yes` silently
+      breaks a shared node.** It gives the service its own `/tmp` namespace, so
+      the module sockets are created somewhere no other user can even *see* —
+      clients outside the unit get `ENOENT`, and no permission change can repair
+      it. Leave it off, or relocate the sockets deliberately by setting `TMPDIR`
+      for both the service and its clients.
+    steps:
+      - title: "Write the unit and start it"
+        run: |
+          { [ "$(uname -s)" = Linux ] && [ -d /run/systemd/system ] && sudo -n true 2>/dev/null; } || { echo "SKIP: needs Linux + systemd + passwordless sudo"; exit 0; }
+          LS=$(cat ./ls-path)
+          sudo tee /etc/systemd/system/logos-node.service >/dev/null <<UNIT
+          [Unit]
+          Description=Logos node (logoscore)
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=logos
+          Group=logos
+          ExecStart=$LS daemon --config-dir /var/lib/logos-node/.logoscore -m /var/lib/logos-node/modules --access-group logos
+          Restart=no
+          # PrivateTmp=yes would hide the module sockets from every other user.
+          PrivateTmp=no
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+          sudo systemctl daemon-reload
+          sudo systemctl start logos-node.service
+          echo "unit started"
+        code_block: |
+          sudo tee /etc/systemd/system/logos-node.service <<'UNIT'
+          [Unit]
+          Description=Logos node (logoscore)
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=logos
+          Group=logos
+          ExecStart=/nix/store/.../bin/logoscore daemon \
+              --config-dir /var/lib/logos-node/.logoscore \
+              -m /var/lib/logos-node/modules \
+              --access-group logos
+          Restart=no
+          PrivateTmp=no
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+          sudo systemctl daemon-reload
+          sudo systemctl start logos-node.service
+
+      - title: "Wait for the node to answer"
+        text: |
+          Poll as the service user until `core_service` responds. If it never
+          does, the journal is dumped so the failure is diagnosable rather than
+          just a timeout.
+        run: |
+          { [ "$(uname -s)" = Linux ] && [ -d /run/systemd/system ] && sudo -n true 2>/dev/null; } || { echo "SKIP: needs Linux + systemd + passwordless sudo"; exit 0; }
+          LS=$(cat ./ls-path)
+          ok=""
+          for i in $(seq 1 90); do
+            if sudo -u logos env HOME=/var/lib/logos-node "$LS" --config-dir /var/lib/logos-node/.logoscore status --json 2>/dev/null | grep -q '"status":"running"'; then
+              ok=1; break
+            fi
+            sleep 1
+          done
+          if [ -z "$ok" ]; then
+            echo "--- systemctl status ---"; sudo systemctl status logos-node.service --no-pager -l || true
+            echo "--- journal ---";          sudo journalctl -u logos-node.service --no-pager -n 120 || true
+            echo "daemon never became ready"; exit 1
+          fi
+          echo "node is running"
+        code_block: |
+          sudo -u logos logoscore --config-dir /var/lib/logos-node/.logoscore status
+
+      - title: "Inspect what --access-group actually changed"
+        text: |
+          Two things, both visible on disk. The module sockets are now `0660`
+          and owned by the group — `rw` for the group is precisely what an
+          `AF_UNIX` `connect()` needs. And the client artifacts are group
+          readable, so a member can discover the daemon without copying
+          anything.
+        run: |
+          { [ "$(uname -s)" = Linux ] && [ -d /run/systemd/system ] && sudo -n true 2>/dev/null; } || { echo "SKIP: needs Linux + systemd + passwordless sudo"; exit 0; }
+          INST=$(sudo cat /var/lib/logos-node/.logoscore/daemon/state.json | python3 -c 'import json,sys;print(json.load(sys.stdin)["instance_id"])')
+          echo "$INST" > ./instance-id
+          echo "instance: $INST"
+          echo "--- module sockets ---"
+          ls -l /tmp/logos_*"$INST"*
+          SOCK=$(ls /tmp/logos_core_service_"$INST" 2>/dev/null | head -1)
+          if [ -z "$SOCK" ]; then echo "core_service socket not found"; exit 1; fi
+          MODE_OWNER=$(stat -c '%A %U %G' "$SOCK")
+          echo "core_service socket: $MODE_OWNER"
+          case "$MODE_OWNER" in
+            srw-rw----*" logos") : ;;
+            *) echo "expected a 0660 socket owned by group logos, got: $MODE_OWNER"; exit 1 ;;
+          esac
+          echo "--- client artifacts ---"
+          sudo ls -l /var/lib/logos-node/.logoscore/client/
+        code_block: |
+          ls -l /tmp/logos_*
+          # srw-rw---- logos logos  logos_core_service_<instance>
+          #    ^^ group write == connectable by the group
+
+  - title: "Drive the node from another user account"
+    step: true
+    text: |
+      This is the part that fails without `--access-group`. `alice` has no
+      configuration of her own: she points `LOGOSCORE_CONFIG_DIR` at the
+      daemon's directory and everything resolves from there — the dial spec,
+      the instance id, and the credential. Nothing needs re-copying when the
+      node restarts, because she is reading the daemon's live files rather than
+      a stale snapshot of them.
+    steps:
+      - title: "alice: status, load, call"
+        run: |
+          { [ "$(uname -s)" = Linux ] && [ -d /run/systemd/system ] && sudo -n true 2>/dev/null; } || { echo "SKIP: needs Linux + systemd + passwordless sudo"; exit 0; }
+          LS=$(cat ./ls-path)
+          CFG=/var/lib/logos-node/.logoscore
+          # cd somewhere alice can traverse: the doc-test working directory is
+          # created 0700 by mkdtemp, so sudo would warn about an inaccessible cwd.
+          cd /tmp
+
+          OUT=$(sudo -u alice env HOME=/home/alice LOGOSCORE_CONFIG_DIR=$CFG "$LS" status --json)
+          echo "status:  $OUT"
+          case "$OUT" in *'"status":"running"'*) : ;; *) echo "alice could not reach the node"; exit 1 ;; esac
+
+          OUT=$(sudo -u alice env HOME=/home/alice LOGOSCORE_CONFIG_DIR=$CFG "$LS" load-module test_basic_module --json)
+          echo "load:    $OUT"
+          case "$OUT" in *'"status":"ok"'*) : ;; *) echo "alice could not load a module"; exit 1 ;; esac
+
+          OUT=$(sudo -u alice env HOME=/home/alice LOGOSCORE_CONFIG_DIR=$CFG "$LS" call test_basic_module addInts 2 3 --json)
+          echo "call:    $OUT"
+          case "$OUT" in *'"result":5'*) : ;; *) echo "alice could not call a method"; exit 1 ;; esac
+          echo "alice drove the node end-to-end"
+        code_block: |
+          export LOGOSCORE_CONFIG_DIR=/var/lib/logos-node/.logoscore
+          logoscore status
+          logoscore load-module test_basic_module
+          logoscore call test_basic_module addInts 2 3
+
+  - title: "Give alice a token of her own"
+    step: true
+    text: |
+      Reading the daemon's directory means alice is using the node's own boot
+      credential. An operator-issued token replaces that with something
+      attributable: it is recorded under a name, it can carry an expiry, and it
+      can be revoked while the node keeps running — no restart, no disruption to
+      anyone else.
+
+      She presents it with `LOGOSCORE_TOKEN`, which overrides whatever the
+      config directory would have supplied.
+    steps:
+      - title: "Issue it, use it, revoke it"
+        run: |
+          { [ "$(uname -s)" = Linux ] && [ -d /run/systemd/system ] && sudo -n true 2>/dev/null; } || { echo "SKIP: needs Linux + systemd + passwordless sudo"; exit 0; }
+          LS=$(cat ./ls-path)
+          CFG=/var/lib/logos-node/.logoscore
+          cd /tmp
+
+          ISSUED=$(sudo -u logos env HOME=/var/lib/logos-node "$LS" --config-dir $CFG issue-token --name alice --json)
+          echo "issued:  $ISSUED"
+          TOK=$(printf '%s' "$ISSUED" | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
+          if [ -z "$TOK" ]; then echo "no token issued"; exit 1; fi
+
+          OUT=$(sudo -u alice env HOME=/home/alice LOGOSCORE_CONFIG_DIR=$CFG LOGOSCORE_TOKEN="$TOK" "$LS" list-modules --json)
+          echo "with her token: $OUT"
+          case "$OUT" in *test_basic_module*) : ;; *) echo "alice's own token was not accepted"; exit 1 ;; esac
+
+          # Revoke, then present the very same token again. A rejected token
+          # yields an empty module list rather than an error exit.
+          sudo -u logos env HOME=/var/lib/logos-node "$LS" --config-dir $CFG revoke-token alice --json
+          OUT=$(sudo -u alice env HOME=/home/alice LOGOSCORE_CONFIG_DIR=$CFG LOGOSCORE_TOKEN="$TOK" "$LS" list-modules --json)
+          echo "after revoke:   $OUT"
+          case "$OUT" in *test_basic_module*) echo "revoked token still authorizes"; exit 1 ;; *) : ;; esac
+          echo "revocation took effect immediately, with the node still running"
+        code_block: |
+          # as the operator
+          sudo -u logos logoscore --config-dir /var/lib/logos-node/.logoscore \
+              issue-token --name alice          # --expires 30d, --local-only also available
+
+          # as alice
+          LOGOSCORE_TOKEN=<her token> logoscore list-modules
+
+          # revoke without restarting the node
+          sudo -u logos logoscore --config-dir /var/lib/logos-node/.logoscore \
+              revoke-token alice
+        post_text: |
+          `issue-token` also accepts `--expires 30d` and `--local-only` (refuse
+          the token over `tcp` / `tcp_ssl`, accept it only on the local socket).
+          `list-tokens` shows what is outstanding.
+
+  - title: "A non-member is refused"
+    step: true
+    text: |
+      `mallory` differs from `alice` in exactly one way, and is stopped twice
+      over: she cannot traverse the `0750` state directory to read the dial
+      spec, and even with a copy of it she has no write permission on the
+      `0660` sockets, which is what `connect()` requires.
+    steps:
+      - title: "mallory gets nothing"
+        run: |
+          { [ "$(uname -s)" = Linux ] && [ -d /run/systemd/system ] && sudo -n true 2>/dev/null; } || { echo "SKIP: needs Linux + systemd + passwordless sudo"; exit 0; }
+          LS=$(cat ./ls-path)
+          CFG=/var/lib/logos-node/.logoscore
+          INST=$(cat ./instance-id)
+          cd /tmp
+
+          # 1. The file layer: she cannot even read the dial spec.
+          if sudo -u mallory cat $CFG/client/config.json >/dev/null 2>&1; then
+            echo "mallory should not be able to read the client config"; exit 1
+          fi
+          echo "config.json: unreadable by mallory (as intended)"
+
+          # 2. The socket layer: no write permission means no connect().
+          if sudo -u mallory test -w /tmp/logos_core_service_"$INST"; then
+            echo "mallory should not have write access to the socket"; exit 1
+          fi
+          echo "socket:      not writable by mallory (connect would be EACCES)"
+
+          # 3. End to end: the command must not succeed in listing modules.
+          OUT=$(sudo -u mallory env HOME=/home/mallory LOGOSCORE_CONFIG_DIR=$CFG "$LS" list-modules --json 2>&1 || true)
+          echo "mallory list-modules: $OUT"
+          case "$OUT" in *test_basic_module*) echo "mallory reached the node"; exit 1 ;; *) : ;; esac
+          echo "mallory is refused"
+        code_block: |
+          sudo -u mallory logoscore list-modules   # refused: not in the group
+
+  - title: "Stop the service and confirm nothing is left behind"
+    step: true
+    text: |
+      A node that leaks its socket files accumulates one per module per boot,
+      forever. Stopping the unit sends `SIGTERM`, the daemon and each module
+      host unwind their event loops, and Qt's `QLocalServer` destructor unlinks
+      each socket on the way out.
+
+      We assert against **this instance's** socket names specifically, so the
+      check says something precise about this node rather than about whatever
+      else happens to be in `/tmp`.
+    steps:
+      - title: "systemctl stop, then look"
+        run: |
+          { [ "$(uname -s)" = Linux ] && [ -d /run/systemd/system ] && sudo -n true 2>/dev/null; } || { echo "SKIP: needs Linux + systemd + passwordless sudo"; exit 0; }
+          INST=$(cat ./instance-id)
+          echo "sockets before stop:"
+          ls -l /tmp/logos_*"$INST"* 2>/dev/null || true
+          BEFORE=$(ls /tmp/logos_*"$INST"* 2>/dev/null | wc -l)
+          if [ "$BEFORE" -eq 0 ]; then echo "no sockets to begin with - the check would be vacuous"; exit 1; fi
+          echo "count before: $BEFORE"
+
+          sudo systemctl stop logos-node.service
+          for i in $(seq 1 30); do
+            n=$(ls /tmp/logos_*"$INST"* 2>/dev/null | wc -l)
+            [ "$n" -eq 0 ] && break
+            sleep 1
+          done
+          AFTER=$(ls /tmp/logos_*"$INST"* 2>/dev/null | wc -l)
+          echo "count after:  $AFTER"
+          if [ "$AFTER" -ne 0 ]; then
+            echo "sockets survived the stop:"; ls -l /tmp/logos_*"$INST"* 2>/dev/null || true
+            exit 1
+          fi
+          echo "every socket for instance $INST was unlinked"
+        code_block: |
+          sudo systemctl stop logos-node.service
+          ls /tmp/logos_*        # nothing left from this node
+
+      - title: "Clean up"
+        text: |
+          Remove the unit so the host is left as we found it. The users and the
+          group are left in place — removing accounts is more disruptive than
+          leaving two unprivileged ones behind.
+        run: |
+          { [ "$(uname -s)" = Linux ] && [ -d /run/systemd/system ] && sudo -n true 2>/dev/null; } || { echo "SKIP: needs Linux + systemd + passwordless sudo"; exit 0; }
+          sudo systemctl disable logos-node.service >/dev/null 2>&1 || true
+          sudo rm -f /etc/systemd/system/logos-node.service
+          sudo systemctl daemon-reload
+          echo "unit removed"
+        code_block: |
+          sudo systemctl disable --now logos-node.service
+          sudo rm /etc/systemd/system/logos-node.service
