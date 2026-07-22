@@ -34,6 +34,7 @@
 
 #include <logos_json.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
@@ -46,6 +47,9 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -106,6 +110,7 @@ public:
         daemonLog = base / "daemon.log";
         fs::create_directories(configDir);
         fs::create_directories(homeDir);
+        if (!socketDir.empty()) fs::create_directories(socketDir);
         pid = spawnBg({"daemon", "-m", modulesDir.string()}, daemonLog);
     }
 
@@ -120,6 +125,12 @@ public:
             setsid();
             setenv("LOGOSCORE_CONFIG_DIR", configDir.c_str(), 1);
             setenv("HOME", homeDir.c_str(), 1);
+            // QLocalServer resolves a bare server name against QDir::tempPath(),
+            // which honours $TMPDIR — so this decides where the node's sockets
+            // land. Tests that assert on socket files set it to get a private
+            // directory instead of sharing the machine-wide temp dir (where a
+            // dev box's leftovers would swamp the assertions).
+            if (!socketDir.empty()) setenv("TMPDIR", socketDir.c_str(), 1);
             FILE* lf = std::fopen(logFile.c_str(), "w");
             if (lf) { dup2(fileno(lf), STDOUT_FILENO); dup2(fileno(lf), STDERR_FILENO); }
             int dn = open("/dev/null", O_RDONLY);
@@ -157,6 +168,9 @@ public:
         std::string cmd =
             "LOGOSCORE_CONFIG_DIR='" + configDir.string() + "' " +
             "HOME='" + homeDir.string() + "' ";
+        // The client dials the same bare socket name, so it must resolve
+        // QDir::tempPath() to the same place the daemon bound in.
+        if (!socketDir.empty()) cmd += "TMPDIR='" + socketDir.string() + "' ";
         if (timeoutSecs > 0) cmd += "timeout " + std::to_string(timeoutSecs) + " ";
         cmd += "'" + binary.string() + "' " + args + " --json 2>&1";
         FILE* pipe = popen(cmd.c_str(), "r");
@@ -190,8 +204,74 @@ public:
     }
 
     fs::path binary, modulesDir, base, configDir, homeDir, daemonLog;
+    // Optional private socket directory ($TMPDIR for the node). Empty ⇒
+    // inherit the ambient temp dir, which is what every non-socket test wants.
+    fs::path socketDir;
     pid_t    pid = -1;
 };
+
+// ── socket-file helpers (shared by the socket-lifecycle tests) ─────────────
+
+// Unix socket paths are hard-capped by sockaddr_un::sun_path — 104 bytes on
+// macOS, 108 on Linux — and the node appends "/logos_<module>_<12 hex>" to
+// $TMPDIR. The longest name in play is "logos_capability_module_" + 12 hex
+// = 36 chars, so the directory itself has to stay well under the cap or every
+// listen() fails with HostNotFoundError.
+//
+// macOS's default temp dir (/var/folders/<18 chars>/<18 chars>/T) is already
+// ~50 chars, and a per-test subdirectory under it overflows — so prefer the
+// ambient temp dir only while it fits, and fall back to a short /tmp path.
+// Returns an empty path when neither fits, which the fixture turns into a skip
+// rather than a confusing bind failure.
+constexpr std::size_t kSunPathCap  = 104;  // the stricter of the two platforms
+constexpr std::size_t kLongestName = 40;   // "/logos_capability_module_<12hex>" + slack
+
+fs::path shortSocketDir(const std::string& tag)
+{
+    const std::string leaf = "lsit_" + std::to_string(getpid()) + "_" + tag;
+    for (const fs::path& parent : {fs::temp_directory_path(), fs::path("/tmp")}) {
+        const fs::path cand = parent / leaf;
+        if (cand.string().size() + kLongestName < kSunPathCap) return cand;
+    }
+    return {};
+}
+
+// Names of the unix-socket files in `dir` starting with "logos_".
+// Only S_ISSOCK entries count, so a regular file sharing the prefix is
+// excluded from the tally the assertions are written against.
+std::vector<std::string> socketNames(const fs::path& dir)
+{
+    std::vector<std::string> out;
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+        const std::string name = e.path().filename().string();
+        if (name.rfind("logos_", 0) != 0) continue;
+        struct stat st{};
+        if (::lstat(e.path().c_str(), &st) != 0) continue;
+        if (S_ISSOCK(st.st_mode)) out.push_back(name);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// Bind a unix socket at `p` and listen. Returns the fd (>=0) or -1.
+int bindListen(const fs::path& p)
+{
+    int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    const std::string s = p.string();
+    if (s.size() >= sizeof(addr.sun_path)) { ::close(fd); return -1; }
+    std::snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", s.c_str());
+    ::unlink(s.c_str());
+    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0
+        || ::listen(fd, 1) != 0) {
+        ::close(fd);
+        return -1;
+    }
+    return fd;
+}
 
 // Reap a spawned subprocess (e.g. `watch`) on every exit path —
 // including a fatal gtest assertion that `return`s out of the test —
@@ -771,4 +851,123 @@ TEST_F(LoadedModuleTest, ConcurrentMixedMethodsFromManyClients) {
 
     for (int i = 0; i < N; ++i)
         EXPECT_EQ(ok[i], 1) << "client " << i << ": " << detail[i];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Socket lifecycle — the node must not leave unix-socket files behind
+//
+// The reported symptom was dozens of stale /tmp/logos_* files: the module
+// host died instantly on SIGTERM, so QCoreApplication::exec() never returned
+// and QLocalServer's destructor — the only thing that unlinks the socket —
+// never ran. Every clean shutdown leaked one file per module.
+//
+// Two halves, because they fail independently:
+//   * a graceful stop unlinks everything it bound (the shutdown handler);
+//   * whatever a *hard* kill leaves behind is reaped at the next boot (the
+//     reaper), which is the only path available for SIGKILL / crashes.
+//
+// Both run in a private $TMPDIR so the assertions describe this node's
+// sockets and not a developer box's accumulated leftovers.
+// ═══════════════════════════════════════════════════════════════════════════
+
+class SocketLifecycleTest : public ::testing::Test {
+protected:
+    LogoscoreDaemon d;
+
+    void SetUp() override {
+        std::string why;
+        if (!d.envReady(why)) GTEST_SKIP() << why;
+        d.socketDir = shortSocketDir(
+            ::testing::UnitTest::GetInstance()->current_test_info()->name());
+        if (d.socketDir.empty())
+            GTEST_SKIP() << "no temp directory short enough for AF_UNIX sun_path";
+        std::error_code ec;
+        fs::remove_all(d.socketDir, ec);
+        fs::create_directories(d.socketDir, ec);
+        if (ec) GTEST_SKIP() << "cannot create " << d.socketDir << ": " << ec.message();
+    }
+
+    void TearDown() override {
+        d.shutdown();
+        std::error_code ec;
+        fs::remove_all(d.socketDir, ec);
+    }
+};
+
+TEST_F(SocketLifecycleTest, NoSocketsSurviveGracefulStop)
+{
+    d.start("sockets_stop");
+    ASSERT_TRUE(d.waitReady()) << slurp(d.daemonLog);
+
+    // Load a module so the tally covers a logos_host child socket too — that
+    // subprocess is a separate binary with its own shutdown path, and it is
+    // where the bulk of the reported leak came from.
+    std::string out;
+    ASSERT_EQ(d.run("load-module test_basic_module", &out), 0) << out;
+
+    const auto live = socketNames(d.socketDir);
+    // core_service + capability_module + test_basic_module.
+    ASSERT_GE(live.size(), 2u)
+        << "expected the running node to have bound sockets in " << d.socketDir
+        << "; found " << live.size() << ". Without this the test would pass "
+        << "vacuously.\n" << slurp(d.daemonLog);
+
+    ASSERT_EQ(d.run("stop", &out), 0) << out;
+
+    // The daemon acks `stop` before its children have finished unwinding, so
+    // give the module hosts a bounded moment to run their destructors.
+    std::vector<std::string> remaining;
+    for (int i = 0; i < 100; ++i) {
+        remaining = socketNames(d.socketDir);
+        if (remaining.empty()) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    std::string leaked;
+    for (const auto& n : remaining) leaked += "\n  " + n;
+    EXPECT_TRUE(remaining.empty())
+        << "sockets survived a graceful stop:" << leaked << "\n"
+        << slurp(d.daemonLog);
+}
+
+TEST_F(SocketLifecycleTest, BootReapsStaleSocketsButSparesLiveOnesAndFiles)
+{
+    fs::create_directories(d.socketDir);
+
+    // A *stale* socket: bound, then the listener closed. The path stays on
+    // disk and connect() is refused — exactly what a SIGKILLed node leaves.
+    const fs::path stale = d.socketDir / "logos_stale_aaaaaaaaaaaa";
+    const int staleFd = bindListen(stale);
+    ASSERT_GE(staleFd, 0) << "could not bind " << stale;
+    ::close(staleFd);
+    ASSERT_TRUE(fs::exists(stale));
+
+    // A *live* socket owned by this test process, held open for the duration.
+    // Reaping it would mean the reaper can kill a co-resident node's endpoints.
+    const fs::path live = d.socketDir / "logos_live_bbbbbbbbbbbb";
+    const int liveFd = bindListen(live);
+    ASSERT_GE(liveFd, 0) << "could not bind " << live;
+
+    // A regular file that merely shares the prefix. A glob-based cleanup would
+    // delete it; the real one only ever unlinks S_ISSOCK inodes. (Not
+    // hypothetical: a multi-hundred-MB logos_*.lgx sits in the temp dir on a
+    // dev box.)
+    const fs::path plain = d.socketDir / "logos_execution_zone-1.0.0.lgx";
+    { std::ofstream f(plain); f << "not a socket"; }
+    ASSERT_TRUE(fs::exists(plain));
+
+    d.start("sockets_reap");
+    const bool ready = d.waitReady();
+    ::close(liveFd);
+    ASSERT_TRUE(ready) << slurp(d.daemonLog);
+
+    EXPECT_FALSE(fs::exists(stale))
+        << "a stale socket survived the boot reaper: " << stale << "\n"
+        << slurp(d.daemonLog);
+    EXPECT_TRUE(fs::exists(live))
+        << "the reaper unlinked a LIVE socket — a co-resident node would lose "
+        << "its endpoint: " << live;
+    ASSERT_TRUE(fs::exists(plain))
+        << "the reaper deleted a regular file sharing the prefix: " << plain;
+    EXPECT_EQ(slurp(plain), "not a socket") << "regular file was modified";
 }
