@@ -8,12 +8,14 @@
 
 #include <logos_api.h>
 #include <logos_api_provider.h>
+#include <logos_socket_paths.h>
 #include <logos_transport_config.h>
 #include <logos_transport_config_json.h>
 #include <token_manager.h>
 #include "../core_service/core_service_impl.h"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QSocketNotifier>
 
 #include <uuid.h>
@@ -222,6 +224,34 @@ int Daemon::start(int argc, char* argv[],
                     existing.instanceId.c_str());
             return 1;
         }
+    }
+
+    // Reap the socket files left behind by a previous node that died without
+    // running its destructors. A graceful stop unlinks its own sockets (Qt's
+    // QLocalServer destructor does it once QCoreApplication::exec() returns —
+    // which is what the SIGTERM handler above enables), so this is purely for
+    // the paths that cannot unwind: SIGKILL, a module crash, and the
+    // PR_SET_PDEATHSIG kill that reaps orphaned logos_host children. Without
+    // it those files accumulate in the temp dir forever, one per module per
+    // boot.
+    //
+    // Deliberately placed AFTER the already-running check and BEFORE
+    // logos_core_init: at this point no socket of ours exists yet, so the
+    // reaper cannot race its own endpoints. A *co-resident* node's sockets are
+    // live, and logos::isSocketDead fails closed — it unlinks only an S_ISSOCK
+    // inode that we own and whose connect() is refused — so a second daemon
+    // sharing the temp dir keeps its sockets, and a regular file that merely
+    // shares the prefix (e.g. a logos_*.lgx build artefact) is never touched.
+    //
+    // QDir::tempPath() is the authoritative directory: QLocalServer resolves a
+    // bare server name against it, so it is exactly where the sockets land, and
+    // it honours $TMPDIR on both Linux and macOS.
+    {
+        const std::size_t reaped =
+            logos::reapStaleSockets(QDir::tempPath().toStdString(), "logos_");
+        if (reaped > 0 && verbose)
+            fprintf(stderr, "Reaped %zu stale socket file(s) from %s\n",
+                    reaped, QDir::tempPath().toStdString().c_str());
     }
 
     // 2. Initialize logos core
