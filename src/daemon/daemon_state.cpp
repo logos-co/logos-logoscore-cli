@@ -3,10 +3,14 @@
 
 #include <nlohmann/json.hpp>
 
+#include <grp.h>        // getgrnam_r — resolve --access-group to a gid
 #include <sys/stat.h>
 #include <unistd.h>     // getpid — for unique temp-file names
 
 #include <atomic>
+#include <cerrno>
+#include <limits>
+#include <vector>
 
 #include <chrono>
 #include <ctime>
@@ -105,6 +109,7 @@ json daemonConfigToJson(const DaemonConfig& cfg)
 
     obj["insecure_tcp"] = cfg.insecureTcp;
     if (!cfg.accessPolicy.empty()) obj["access_policy"] = cfg.accessPolicy;
+    if (!cfg.accessGroup.empty())  obj["access_group"]  = cfg.accessGroup;
     return obj;
 }
 
@@ -157,18 +162,21 @@ std::optional<DaemonConfig> daemonConfigFromJson(const json& obj)
 
     cfg.insecureTcp = obj.value("insecure_tcp", false);
     cfg.accessPolicy = obj.value("access_policy", std::string{});
+    cfg.accessGroup = obj.value("access_group", std::string{});
     return cfg;
 }
 
 // Atomic *replace* helper used for both config.json and state.json.
-// Writes to <path>.tmp, applies 0600, then renames into place. The
-// rename is the atomic step — readers either see the pre-write file
+// Writes to <path>.tmp, applies `mode` (default 0600), then renames into
+// place. The rename is the atomic step — readers either see the pre-write file
 // or the new one, never a half-written state. We do NOT fsync, so
 // this isn't durable across power loss (close() flushes only
 // userspace buffers; OS page cache is still in flight). Callers that
 // need durability would need an explicit fsync(fd) on the temp file
-// plus a dir fsync after rename. Returns false on any I/O step.
-bool atomicWriteJson(const fs::path& path, const json& obj)
+// plus a dir fsync after rename. Returns false on any I/O step — including a
+// failed chmod, so a credential file is never published at the wrong mode.
+bool atomicWriteJson(const fs::path& path, const json& obj,
+                     mode_t mode = S_IRUSR | S_IWUSR)
 {
     std::error_code ec;
     fs::create_directories(path.parent_path(), ec);
@@ -189,7 +197,16 @@ bool atomicWriteJson(const fs::path& path, const json& obj)
         ofs.close();
         if (!ofs) return false;
     }
-    ::chmod(tmp.c_str(), S_IRUSR | S_IWUSR);
+    // Apply the caller's mode to the temp file (default 0600). The rename
+    // preserves it, so the destination lands at exactly `mode` regardless of
+    // any pre-existing file's perms or the process umask. Fail (and drop the
+    // temp) if chmod fails, rather than publishing a credential file at the
+    // umask default.
+    if (::chmod(tmp.c_str(), mode) != 0) {
+        std::error_code ignored;
+        fs::remove(tmp, ignored);
+        return false;
+    }
     std::error_code rec;
     fs::rename(tmp, path, rec);
     if (rec) {
@@ -369,49 +386,121 @@ json toClientEntry(const TransportInfo& t)
 
 }  // namespace
 
+// Resolve an OS group name-or-gid to a gid. Accepts an all-digits string as a
+// numeric gid (with overflow/range validation), otherwise looks the name up in
+// the group database.
+bool resolveOsGroupGid(const std::string& spec, gid_t& out)
+{
+    if (!spec.empty() &&
+        spec.find_first_not_of("0123456789") == std::string::npos) {
+        errno = 0;
+        char* end = nullptr;
+        const unsigned long v = std::strtoul(spec.c_str(), &end, 10);
+        if (errno != 0 || end == spec.c_str() || *end != '\0' ||
+            v > static_cast<unsigned long>(std::numeric_limits<gid_t>::max()))
+            return false;
+        out = static_cast<gid_t>(v);
+        return true;
+    }
+    std::vector<char> buf(1024);
+    struct group grp;
+    struct group* result = nullptr;
+    for (;;) {
+        int rc = ::getgrnam_r(spec.c_str(), &grp, buf.data(), buf.size(), &result);
+        if (rc == ERANGE && buf.size() < (1u << 20)) { buf.resize(buf.size() * 2); continue; }
+        if (rc != 0 || result == nullptr) return false;
+        out = grp.gr_gid;
+        return true;
+    }
+}
+
 bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
     const std::string& instanceId,
     const std::string& autoTokenRaw,
     const std::string& issuedAt,
-    bool               freshTokensFile,
     const std::vector<TransportInfo>& coreServiceTransports,
-    const std::vector<TransportInfo>& capabilityModuleTransports)
+    const std::vector<TransportInfo>& capabilityModuleTransports,
+    const std::string& accessGroup)
 {
     const std::string clientDir      = Config::clientDir();
     const std::string clientCfgPath  = Config::clientConfigPath();
     const std::string autoTokenPath  = Config::clientTokenPath("auto.json");
 
+    // Resolve the access group once. An unknown group name degrades to
+    // owner-only (with a warning) rather than failing the whole boot — the
+    // daemon still comes up, just not shared. (daemon.cpp validates the same
+    // way before exporting the socket-perm env vars, so both halves agree.)
+    gid_t groupGid = 0;
+    bool  shareWithGroup = false;
+    if (!accessGroup.empty()) {
+        if (resolveOsGroupGid(accessGroup, groupGid)) {
+            shareWithGroup = true;
+        } else {
+            std::cerr << "writeLocalClientArtifacts: unknown --access-group '"
+                      << accessGroup << "' — client artifacts stay owner-only"
+                      << std::endl;
+        }
+    }
+
     std::error_code ec;
     fs::create_directories(clientDir, ec);
     if (ec) return false;
 
-    // client/config.json — dial config matching what the daemon
-    // actually bound. Earlier this hardcoded both modules to
-    // `transport: local`, which silently made `logoscore status`
-    // hang on a TCP-only daemon: the client connected to a
-    // LocalSocket the modules never bound and timed out reading
-    // an object that wasn't there. Now we mirror the resolved
-    // transports so a co-resident client just works.
+    if (shareWithGroup) {
+        // Sharing widens the config dir to be group-traversable, which would
+        // also expose daemon/ (token + state filenames) unless we lock it down
+        // first. Do the lockdown BEFORE widening the parent, and if it fails,
+        // abandon sharing entirely (fall back to owner-only) rather than leave
+        // private state reachable. daemon/ may not exist yet in isolated unit
+        // tests — nothing to lock, nothing exposed.
+        const std::string daemonDir = Config::daemonDir();
+        if (fs::exists(daemonDir, ec) && ::chmod(daemonDir.c_str(), S_IRWXU) != 0) {
+            std::cerr << "writeLocalClientArtifacts: could not lock " << daemonDir
+                      << " to owner-only (" << std::strerror(errno)
+                      << ") — not sharing the config dir" << std::endl;
+            shareWithGroup = false;
+        }
+    }
+
+    const mode_t fileMode = shareWithGroup ? static_cast<mode_t>(0640)
+                                           : static_cast<mode_t>(S_IRUSR | S_IWUSR);
+
+    if (shareWithGroup) {
+        // Grant the group access to just the client subtree:
+        //   - client/ becomes group r-x + owned by the group;
+        //   - the config dir gets group traverse (execute) so a member can
+        //     reach client/ without being able to list it.
+        // daemon/ was locked to owner-only just above.
+        ::chown(clientDir.c_str(), static_cast<uid_t>(-1), groupGid);
+        ::chmod(clientDir.c_str(), 0750);
+
+        const std::string configDir = Config::configDir();
+        struct stat cst;
+        if (::stat(configDir.c_str(), &cst) == 0) {
+            ::chown(configDir.c_str(), static_cast<uid_t>(-1), groupGid);
+            ::chmod(configDir.c_str(), (cst.st_mode & 07777) | S_IXGRP);
+        }
+    }
+
+    // client/config.json — dial config matching what the daemon actually
+    // bound (mirrors the resolved transports so a co-resident client just
+    // works; a hardcoded `local` used to hang against a TCP-only daemon).
     //
-    // Decide whether to (re)write client/config.json.
-    //
-    //   - No file yet: emit it only on a "fresh" boot (daemon/tokens.json
-    //     didn't exist beforehand) — keeps the daemon out of the way
-    //     once the operator has started managing tokens.
-    //
-    //   - File already exists: normally left alone so a hand-written
-    //     remote-client config is never clobbered. The one exception is
-    //     a file that is provably a *stale copy of our own* generated
-    //     artifact: it carries an `instance_id` that doesn't match this
-    //     daemon. That happens when ~/.logoscore lives on a persisted
-    //     volume (e.g. a restarting container): every boot mints a new
-    //     instance_id while the old client/config.json lingers, leaving
-    //     co-resident clients dialing a dead instance forever. Such a
-    //     file is ours to refresh. An operator-authored remote config
-    //     has no `instance_id` field, so it never matches here.
+    // Decide whether to (re)write it:
+    //   - Absent: always (re)generate. The instance_id changes every boot and
+    //     this file is the client's only channel for it, so a persisted config
+    //     dir that lost the file — or a second OS user who never had one — must
+    //     get a current one back. (This is the pain a service operator hit:
+    //     re-copying config.json by hand after every restart.)
+    //   - Present with an instance_id that doesn't match this daemon: a stale
+    //     copy of our own artifact (persisted dir, replaced daemon) — refresh
+    //     it in place, preserving its token_file.
+    //   - Present, matching (or operator-authored, no instance_id): left
+    //     untouched so a hand-written remote config is never clobbered.
     bool writeClientCfg = false;
+    std::string tokenFileName = "auto.json";
     if (!fs::exists(clientCfgPath, ec)) {
-        writeClientCfg = freshTokensFile;
+        writeClientCfg = true;
     } else {
         std::ifstream ifs(clientCfgPath);
         if (ifs) {
@@ -420,8 +509,12 @@ bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
             catch (...) { existing = json::object(); }
             const std::string existingInstance =
                 existing.value("instance_id", std::string{});
-            if (!existingInstance.empty() && existingInstance != instanceId)
+            if (!existingInstance.empty() && existingInstance != instanceId) {
                 writeClientCfg = true;
+                // Keep whatever token file the existing config referenced —
+                // an operator may have repointed it away from auto.json.
+                tokenFileName = existing.value("token_file", std::string{"auto.json"});
+            }
         }
     }
 
@@ -439,11 +532,15 @@ bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
 
         json client;
         client["version"]     = 2;
-        client["token_file"]  = "auto.json";
+        client["token_file"]  = tokenFileName;
         client["instance_id"] = instanceId;
         client["daemon"]      = std::move(daemonBlock);
 
-        if (!atomicWriteJson(fs::path(clientCfgPath), client)) return false;
+        // config.json carries no secret (the token lives in a separate file),
+        // so it is safe to make group-readable when sharing.
+        if (!atomicWriteJson(fs::path(clientCfgPath), client, fileMode)) return false;
+        if (shareWithGroup)
+            ::chown(clientCfgPath.c_str(), static_cast<uid_t>(-1), groupGid);
     }
 
     // client/auto.json — same shape as daemon/tokens/<name>.json.
@@ -455,12 +552,12 @@ bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
     tokenFile["token"]     = autoTokenRaw;
     tokenFile["issued_at"] = issuedAt;
 
-    if (!atomicWriteJson(fs::path(autoTokenPath), tokenFile)) return false;
-
-    // Lock down the raw-token file (0600). atomicWriteJson already
-    // applies it but be explicit at the destination too — the rename
-    // preserves the temp file's mode, but a future code path that
-    // skips atomicWriteJson should still land on 0600.
-    ::chmod(autoTokenPath.c_str(), S_IRUSR | S_IWUSR);
+    // The raw auto token is a credential. Owner-only by default; when sharing
+    // with a group it is 0640 + chgrp so a group member can authenticate —
+    // this is the whole point of --access-group (the docker.sock trust model:
+    // group membership grants access).
+    if (!atomicWriteJson(fs::path(autoTokenPath), tokenFile, fileMode)) return false;
+    if (shareWithGroup)
+        ::chown(autoTokenPath.c_str(), static_cast<uid_t>(-1), groupGid);
     return true;
 }

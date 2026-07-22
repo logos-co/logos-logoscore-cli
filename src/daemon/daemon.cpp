@@ -180,6 +180,32 @@ int Daemon::start(int argc, char* argv[],
 
     setenv("LOGOS_INSTANCE_ID", instanceId.c_str(), 1);
 
+    // Share the node with an OS group if the operator asked (--access-group).
+    // Validate the group ONCE here, up front, so the socket policy and the
+    // client-artifact policy agree: a typo'd group name is rejected in both
+    // places (rather than exporting env vars for a group that
+    // writeLocalClientArtifacts would then decline). When known-good, export
+    // LOGOS_SOCKET_GROUP + LOGOS_SOCKET_MODE=0660 BEFORE logos_core_init so
+    // every module subprocess (logos_host) and its children inherit it and
+    // apply the policy to the local socket they bind (see logos-protocol's
+    // applySocketPerms) — 0660 grants the write permission an AF_UNIX connect()
+    // requires. `effectiveAccessGroup` (empty when unset or invalid) is what
+    // gets handed to writeLocalClientArtifacts below.
+    std::string effectiveAccessGroup = cfg.accessGroup;
+    if (!effectiveAccessGroup.empty()) {
+        gid_t gid = 0;
+        if (!resolveOsGroupGid(effectiveAccessGroup, gid)) {
+            fprintf(stderr,
+                    "Warning: --access-group '%s' is not a known group; the "
+                    "daemon will not be shared.\n",
+                    effectiveAccessGroup.c_str());
+            effectiveAccessGroup.clear();
+        } else {
+            setenv("LOGOS_SOCKET_GROUP", effectiveAccessGroup.c_str(), 1);
+            setenv("LOGOS_SOCKET_MODE", "0660", 1);
+        }
+    }
+
     // Refuse to start if a live daemon already owns this config-dir — two would
     // clobber the shared state.json and re-issue the auto-token. Checked before
     // logos_core_init so it fails fast. A stale file from a crashed daemon (pid
@@ -304,15 +330,6 @@ int Daemon::start(int argc, char* argv[],
     // leaked client/auto.json from being usable over TCP from a remote
     // host. Operator-issued tokens take effect only on the next daemon
     // restart (or future SIGHUP-driven reload).
-    // Capture the pre-issue tokens-file state to gate the local-client
-    // config auto-emit below. A daemon launching into an empty config
-    // dir gets a generated client/config.json + auto.json so `status`
-    // works out of the box; a returning daemon (tokens.json already
-    // had operator-issued entries) leaves client/config.json alone —
-    // the operator has shown they're managing the client side.
-    const bool tokensFileWasMissing =
-        !std::filesystem::exists(Config::daemonTokensPath());
-
     TokenStore tokenStore;
     const auto autoTokenOutcome = tokenStore.issueToken("auto",
                                                         /*expiresAt=*/{},
@@ -383,9 +400,10 @@ int Daemon::start(int argc, char* argv[],
     //     pointing at "auto.json" stays consistent with the freshly-issued
     //     auto token.
     if (!DaemonRuntimeStateFile::writeLocalClientArtifacts(
-            instanceId, autoTokenRaw, state.startedAt, tokensFileWasMissing,
+            instanceId, autoTokenRaw, state.startedAt,
             toAdvertised(coreTransports),
-            toAdvertised(capabilityTransports))) {
+            toAdvertised(capabilityTransports),
+            effectiveAccessGroup)) {
         fprintf(stderr, "Warning: failed to write local client artifacts under %s\n",
                 Config::clientDir().c_str());
     }

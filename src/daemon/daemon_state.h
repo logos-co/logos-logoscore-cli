@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <sys/types.h>   // gid_t
 
 // `daemon/config.json` (operator preferences) and `daemon/state.json`
 // (live runtime state). Both use the same v2 schema number — the
@@ -63,6 +64,14 @@ struct DaemonConfig {
     // Inter-module access policy: resolved JSON text (from --access-policy
     // file or inline). Empty means none. Persisted across launches.
     std::string accessPolicy;
+    // OS group to share the daemon with (from --access-group). When set, the
+    // daemon (1) exports LOGOS_SOCKET_GROUP + LOGOS_SOCKET_MODE=0660 so every
+    // module/host process chgrp's + widens its local socket for the group, and
+    // (2) makes the client artifacts (client/, client/config.json,
+    // client/auto.json) group-readable and chgrp's them, so a second OS user in
+    // the group can drive the daemon. Empty means owner-only (the default).
+    // Persisted across launches.
+    std::string accessGroup;
 };
 
 // Live-instance runtime state. Written to daemon/state.json on every
@@ -92,6 +101,12 @@ struct DaemonRuntimeState {
 // Exposed so daemon.cpp can stamp `started_at` without duplicating the
 // chrono boilerplate.
 std::string currentUtcIso8601();
+
+// Resolve an OS group name-or-numeric-gid to a gid. Returns false on an unknown
+// name or an out-of-range numeric value. Shared by the daemon (to validate
+// --access-group before exporting the socket-perm env vars) and the client
+// artifact writer, so both apply exactly the same policy.
+bool resolveOsGroupGid(const std::string& spec, gid_t& out);
 
 // daemon/config.json — operator preferences. read() returns nullopt
 // when the file is missing or its schema version doesn't match;
@@ -142,12 +157,13 @@ public:
     //     reference auto.json from a hand-written client/config.json
     //     deserve to keep working.
     //
-    //   - When client/config.json is absent it is written **only** if
-    //     `freshTokensFile` is true (daemon/tokens.json was created
-    //     during this very boot). That keeps the daemon out of the
-    //     operator's way once they've started managing tokens — a
-    //     returning operator who deleted client/config.json gets to
-    //     write their own instead of having a default reappear.
+    //   - When client/config.json is absent it is (re)generated so a
+    //     co-resident client always has a working, current dial spec —
+    //     the instance_id changes every boot and this file is the client's
+    //     only channel for it, so a persisted config dir that lost the file
+    //     (or a second OS user who never had one) must get one back. A
+    //     hand-written remote config lives at a path the operator controls;
+    //     this only ever (re)creates the daemon's own local dial spec.
     //
     //   - When client/config.json is present it is left untouched so a
     //     hand-written remote-client config is never clobbered — with
@@ -166,12 +182,17 @@ public:
     // `autoTokenRaw` is the raw token returned from
     // TokenStore::issueToken — written verbatim into client/auto.json
     // so a `cp` operation could replicate it cleanly.
+    //
+    // When `accessGroup` is non-empty the emitted client dir + files are made
+    // group-readable (client/ 0750, config.json / auto.json 0640) and chgrp'd
+    // to that group, and the config dir is made group-traversable, so a second
+    // OS user in the group can read them. Empty keeps the owner-only default.
     static bool writeLocalClientArtifacts(const std::string& instanceId,
                                           const std::string& autoTokenRaw,
                                           const std::string& issuedAt,
-                                          bool               freshTokensFile,
                                           const std::vector<TransportInfo>& coreServiceTransports,
-                                          const std::vector<TransportInfo>& capabilityModuleTransports);
+                                          const std::vector<TransportInfo>& capabilityModuleTransports,
+                                          const std::string& accessGroup = {});
 };
 
 #endif // DAEMON_STATE_H
