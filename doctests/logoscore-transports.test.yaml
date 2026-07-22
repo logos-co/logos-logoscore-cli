@@ -23,11 +23,17 @@ intro: |
 
   > ⚠️ **Remote operation is under active development.** The transport flags,
   > the `client/config.json` schema, and the auth model may change between
-  > releases. Local same-host use is the stable path. In particular, this
-  > walkthrough authenticates the network client with the daemon's
-  > **auto-emitted token** (`client/auto.json`), which is the credential the
-  > daemon registers for itself at boot — operator-issued `issue-token`
-  > credentials are not yet honored for `core_service` calls over the network.
+  > releases. Local same-host use is the stable path. This walkthrough
+  > authenticates the network client with the daemon's **auto-emitted token**
+  > (`client/auto.json`), which is the credential the daemon registers for
+  > itself at boot.
+  >
+  > Operator-issued tokens (`logoscore issue-token --name alice`) are also
+  > honored for `core_service` calls over every transport, and are the better
+  > choice for a real remote client: they are named, can carry an `--expires`
+  > deadline, and can be revoked while the node keeps running. A token issued
+  > `--local-only` is deliberately refused over `tcp` / `tcp_ssl` and accepted
+  > only on the local socket.
 
 what_you_learn:
   - How the daemon's per-module transports work and why `local` is always present
