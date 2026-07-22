@@ -264,12 +264,14 @@ logoscore revoke-token alice
 The raw value is written to `daemon/tokens/<name>.json` so the operator can hand
 it off to a client host.
 
-> **Current limitation:** named tokens are *stored* but not yet *enforced* — the
-> daemon only authorizes the per-boot `auto` token today (validation against
-> `daemon/tokens.json` is being wired up separately). To share a daemon with
-> another OS user right now, use `--access-group` (above), which shares that
-> `auto` token with the group. This note will be removed when named-token
-> validation lands.
+Operator-issued tokens authorize immediately — the daemon validates every RPC
+against `daemon/tokens.json` on the call path (a fresh hash lookup per call), so
+`issue-token` grants access, `revoke-token` removes it, and `--expires` and
+`--local-only` are enforced without a restart. A `--local-only` token is
+accepted only over the local socket; presented over TCP/TLS it is rejected, so a
+leaked local token can't be replayed across the network. (The raw
+`daemon/tokens/<name>.json` file may be deleted after handoff — validation uses
+the hash in `daemon/tokens.json`.)
 
 ##### Plaintext-TCP guard
 

@@ -315,6 +315,24 @@ int Daemon::start(int argc, char* argv[],
 
     coreServiceImpl->init(coreServiceApi);
     auto* provider = coreServiceApi->getProvider();
+
+    // Make operator-issued tokens (`logoscore issue-token --name alice`) actually
+    // authorize core_service calls. The built-in ModuleProxy scan only knows the
+    // boot `auto` token and capability-minted tokens; this validator adds the
+    // persisted token store, so a named token in daemon/tokens.json is accepted —
+    // with its expiry and local_only flag enforced against the call's transport.
+    // A fresh TokenStore per call reads tokens.json on demand, so revocation
+    // (revoke-token) and expiry take effect immediately, without a restart.
+    // Installed before registerObject so the proxy is validated from its first
+    // published call.
+    provider->setTokenValidator(
+        [](const QString& token, const QString& transportProtocol) {
+            TokenStore tokenStore;
+            return tokenStore
+                .lookupByToken(token.toStdString(), transportProtocol.toStdString())
+                .has_value();
+        });
+
     provider->registerObject("core_service", static_cast<LogosProviderObject*>(coreServiceImpl));
 
     // 8. Auto-issue a fresh `auto` token for this boot.
