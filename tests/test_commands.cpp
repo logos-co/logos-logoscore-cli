@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <logos_json.h>
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -477,6 +478,63 @@ TEST_F(CommandTest, Call_CoercesIntegerArgsToInt)
     EXPECT_EQ(mockClient.lastCallArgs[0].get<int>(), 3);
     EXPECT_TRUE(mockClient.lastCallArgs[1].is_number_integer());
     EXPECT_EQ(mockClient.lastCallArgs[1].get<int>(), -4);
+}
+
+// LIDL `int`/`uint` are 64-bit, so an argument has to survive the full range.
+// This used std::stoi (32 bits): every integer outside int32 threw out_of_range,
+// was swallowed, and came back out of std::stod as a DOUBLE. Under 2^53 that is
+// exact and looks correct, which is why it went unnoticed — above it the value
+// is silently rounded. Found by probing a live provider:
+//   echoUint 9007199254740993 -> 9007199254740992
+TEST_F(CommandTest, Call_KeepsSixtyFourBitIntegerArgsExact)
+{
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}};
+    auto cmd = createCommand("call", mockClient, output);
+    captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"m", "f",
+                                "4294967296",            // > int32max
+                                "9007199254740993",      // > 2^53: double rounds it
+                                "9223372036854775807",   // int64max
+                                "-9223372036854775808"}), // int64min
+                  0);
+    });
+    ASSERT_EQ(mockClient.lastCallArgs.size(), 4u);
+    for (const auto& a : mockClient.lastCallArgs)
+        EXPECT_TRUE(a.is_number_integer()) << "arg reached the daemon as " << a.dump();
+    EXPECT_EQ(mockClient.lastCallArgs[0].get<int64_t>(), 4294967296LL);
+    EXPECT_EQ(mockClient.lastCallArgs[1].get<int64_t>(), 9007199254740993LL);
+    EXPECT_EQ(mockClient.lastCallArgs[2].get<int64_t>(), 9223372036854775807LL);
+    EXPECT_EQ(mockClient.lastCallArgs[3].get<int64_t>(), INT64_MIN);
+}
+
+// The band above int64max is still a valid `uint`. stoull is tried only for a
+// non-negative literal — stoull("-1") wraps to uint64max rather than failing.
+TEST_F(CommandTest, Call_CoercesAboveInt64MaxToUnsigned)
+{
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}};
+    auto cmd = createCommand("call", mockClient, output);
+    captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"m", "f", "18446744073709551615", "-1"}), 0);
+    });
+    ASSERT_EQ(mockClient.lastCallArgs.size(), 2u);
+    EXPECT_TRUE(mockClient.lastCallArgs[0].is_number_unsigned());
+    EXPECT_EQ(mockClient.lastCallArgs[0].get<uint64_t>(), 18446744073709551615ULL);
+    // Still signed, NOT wrapped.
+    EXPECT_TRUE(mockClient.lastCallArgs[1].is_number_integer());
+    EXPECT_EQ(mockClient.lastCallArgs[1].get<int64_t>(), -1);
+}
+
+// Beyond uint64 there is no integer type left; a numeric literal that fits
+// neither still goes as a double rather than a string.
+TEST_F(CommandTest, Call_FallsBackToDoubleBeyondUint64)
+{
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}};
+    auto cmd = createCommand("call", mockClient, output);
+    captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"m", "f", "99999999999999999999999"}), 0);
+    });
+    ASSERT_EQ(mockClient.lastCallArgs.size(), 1u);
+    EXPECT_TRUE(mockClient.lastCallArgs[0].is_number_float());
 }
 
 TEST_F(CommandTest, Call_CoercesMixedArgTypes)

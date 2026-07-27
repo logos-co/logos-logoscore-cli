@@ -111,23 +111,45 @@ int CallCommand::execute(const std::vector<std::string>& args)
         } else if (resolved == "false") {
             resolvedArgs.push_back(false);
         } else {
-            // std::stoi/std::stod parse a leading prefix and ignore the rest,
+            // std::stoll/std::stod parse a leading prefix and ignore the rest,
             // so "1.25" would parse as int 1. Require the whole string to be
             // consumed (matching the old QString::toInt(&ok) semantics) before
             // accepting it as that type. Trim first so numeric @file params that
             // end in a newline (e.g. "123\n") still coerce to a number, while
             // partial parses like "1.25" are still rejected as int.
+            //
+            // 64-BIT, in both signednesses. LIDL `int`/`uint` are int64_t /
+            // uint64_t everywhere, so an argument must survive the full range.
+            // This used std::stoi — 32 bits — and every integer outside int32
+            // threw out_of_range, got swallowed, and was re-parsed by std::stod
+            // as a DOUBLE. Under 2^53 that is exact and looks fine; above it the
+            // value is silently rounded (echoUint 9007199254740993 came back
+            // 9007199254740992). stoull covers the band above int64max; it is
+            // only tried for a non-negative literal because stoull("-1") happily
+            // wraps to 18446744073709551615.
             const std::string num = strutil::trim(resolved);
             bool isInt = false;
-            int intVal = 0;
+            long long intVal = 0;
             try {
                 size_t pos = 0;
-                intVal = std::stoi(num, &pos);
+                intVal = std::stoll(num, &pos);
                 isInt = (pos == num.size());
             } catch (...) {}
 
+            bool isUint = false;
+            unsigned long long uintVal = 0;
+            if (!isInt && !num.empty() && num.front() != '-') {
+                try {
+                    size_t pos = 0;
+                    uintVal = std::stoull(num, &pos);
+                    isUint = (pos == num.size());
+                } catch (...) {}
+            }
+
             if (isInt) {
                 resolvedArgs.push_back(intVal);
+            } else if (isUint) {
+                resolvedArgs.push_back(uintVal);
             } else {
                 bool isDouble = false;
                 double dblVal = 0.0;
@@ -170,6 +192,11 @@ int CallCommand::execute(const std::vector<std::string>& args)
                 output().printRaw(fmt::format("{}", static_cast<int64_t>(d)));
             else
                 output().printRaw(fmt::format("{}", d));
+        } else if (resultValue.is_number_unsigned()) {
+            // A `uint` return above int64max is stored unsigned; reading it as
+            // int64_t wraps (uint64max printed as -1). JSON mode was always
+            // right — it dumps the raw number — so this only bit human mode.
+            output().printRaw(fmt::format("{}", resultValue.get<uint64_t>()));
         } else if (resultValue.is_number_integer()) {
             output().printRaw(fmt::format("{}", resultValue.get<int64_t>()));
         } else if (resultValue.is_boolean()) {
