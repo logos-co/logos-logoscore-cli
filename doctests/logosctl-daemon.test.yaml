@@ -42,7 +42,8 @@ sections:
       `./logos/` for easy reference in the steps below.
     steps:
       - title: "Build the CLI"
-        run: "nix build 'github:logos-co/logos-logoscore-cli{release}' --out-link ./logos"
+        run: 'nix build "github:logos-co/logos-logoscore-cli{release}#ctl" --out-link ./logos'
+        code_block: "nix build 'github:logos-co/logos-logoscore-cli#ctl' --out-link ./logos"
         check_file: "logos/bin/logosctl"
         post_text: |
           The build produces `logos/bin/logosctl` plus bundled runtime libraries and

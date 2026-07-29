@@ -202,8 +202,15 @@
           };
 
           # Package the logosctl binary with its runtime deps
-          bin = pkgs.stdenvNoCC.mkDerivation {
-            pname = "${pname}-bin";
+          # One package per binary. `logoscore` and `logosctl` compile together
+          # (they share everything but main.cpp) but ship separately, so
+          # `.#cli` still means exactly what it means today and nobody picks up
+          # the new tool by accident.
+          #
+          # withPkgModules: only logosctl scans modules-pkg/, so only its
+          # package carries it.
+          mkBin = { binName, withPkgModules }: pkgs.stdenvNoCC.mkDerivation {
+            pname = "${pname}-${binName}";
             inherit version meta;
 
             dontUnpack = true;
@@ -226,9 +233,9 @@
             installPhase = ''
               runHook preInstall
 
-              mkdir -p $out/bin $out/lib $out/modules $out/modules-pkg
+              mkdir -p $out/bin $out/lib $out/modules
 
-              cp -r ${build}/bin/* $out/bin/
+              cp ${build}/bin/${binName} $out/bin/
               chmod -R +w $out/bin
 
               # Copy liblogos_core so logosctl can link at runtime
@@ -240,9 +247,12 @@
               if [ -d ${modules}/modules ]; then
                 cp -r ${modules}/modules/* $out/modules/
               fi
-              if [ -d ${modules}/modules-pkg ]; then
-                cp -r ${modules}/modules-pkg/* $out/modules-pkg/
-              fi
+              ${pkgs.lib.optionalString withPkgModules ''
+                mkdir -p $out/modules-pkg
+                if [ -d ${modules}/modules-pkg ]; then
+                  cp -r ${modules}/modules-pkg/* $out/modules-pkg/
+                fi
+              ''}
 
               ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
                 for binary in $out/bin/*; do
@@ -409,8 +419,8 @@
           };
 
           # Portable bin package — nix-bundle-dir handles library bundling and patching
-          binPortable = pkgs.stdenvNoCC.mkDerivation {
-            pname = "${pname}-bin-portable";
+          mkBinPortable = { binName, withPkgModules }: pkgs.stdenvNoCC.mkDerivation {
+            pname = "${pname}-${binName}-portable";
             inherit version meta;
 
             dontUnpack = true;
@@ -425,7 +435,9 @@
               pkgs.qt6.qtremoteobjects
             ];
 
-            passthru = { extraDirs = [ "modules" "modules-pkg" ]; };
+            passthru = {
+              extraDirs = [ "modules" ] ++ pkgs.lib.optional withPkgModules "modules-pkg";
+            };
 
             qtWrapperArgs = [
               "--unset LD_LIBRARY_PATH"
@@ -434,10 +446,10 @@
             installPhase = ''
               runHook preInstall
 
-              mkdir -p $out/bin $out/lib $out/modules $out/modules-pkg
+              mkdir -p $out/bin $out/lib $out/modules
 
-              # Binaries from portable build
-              cp -r ${buildPortable}/bin/* $out/bin/
+              # The one binary this package ships, from the portable build
+              cp ${buildPortable}/bin/${binName} $out/bin/
               cp -L ${liblogosPortable}/bin/logos_host $out/bin/ 2>/dev/null || true
 
               # Libraries — nix-bundle-dir will resolve and bundle all dependencies
@@ -446,29 +458,50 @@
 
               # Portable modules
               cp -r ${modulesPortable}/modules/* $out/modules/ 2>/dev/null || true
-              cp -r ${modulesPortable}/modules-pkg/* $out/modules-pkg/ 2>/dev/null || true
+              ${pkgs.lib.optionalString withPkgModules ''
+                mkdir -p $out/modules-pkg
+                cp -r ${modulesPortable}/modules-pkg/* $out/modules-pkg/ 2>/dev/null || true
+              ''}
 
               runHook postInstall
             '';
           };
 
-          logosctlCli = pkgs.symlinkJoin {
-            name = pname;
-            paths = [ bin ];
-          };
+          binLegacy      = mkBin         { binName = "logoscore"; withPkgModules = false; };
+          binCtl         = mkBin         { binName = "logosctl";  withPkgModules = true;  };
+          binLegacyPort  = mkBinPortable { binName = "logoscore"; withPkgModules = false; };
+          binCtlPort     = mkBinPortable { binName = "logosctl";  withPkgModules = true;  };
+
+          logoscoreCli = pkgs.symlinkJoin { name = pname;            paths = [ binLegacy ]; };
+          logosctlCli  = pkgs.symlinkJoin { name = "${pname}-ctl";   paths = [ binCtl ];    };
         in
         {
-          cli = logosctlCli;
+          # `cli` / `cli-*` stay logoscore, so existing consumers -- including
+          # every doc-test that does `nix build github:...logos-logoscore-cli`
+          # -- get exactly the tool they get today. logosctl is opt-in under
+          # its own `ctl` outputs while it is being validated.
+          cli = logoscoreCli;
           tests = tests;
-          cli-bundle-dir = dirBundler binPortable;
+          cli-bundle-dir = dirBundler binLegacyPort;
           cli-appimage = appBundler {
-            drv = binPortable;
+            drv = binLegacyPort;
+            name = "logoscore";
+            bundle = dirBundler binLegacyPort;
+            desktopFile = ./assets/logoscore.desktop;
+            icon = ./assets/logoscore.png;
+          };
+
+          ctl = logosctlCli;
+          ctl-bundle-dir = dirBundler binCtlPort;
+          ctl-appimage = appBundler {
+            drv = binCtlPort;
             name = "logosctl";
-            bundle = dirBundler binPortable;
+            bundle = dirBundler binCtlPort;
             desktopFile = ./assets/logosctl.desktop;
             icon = ./assets/logosctl.png;
           };
-          default = logosctlCli;
+
+          default = logoscoreCli;
         }
       );
 

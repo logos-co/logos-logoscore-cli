@@ -56,8 +56,8 @@ sections:
       released package — that mismatch is a feature, not a failure.
     steps:
       - title: "Build the bundle"
-        run: 'nix build "github:logos-co/logos-logoscore-cli{release}#cli-bundle-dir" -o result-portable'
-        code_block: "nix build 'github:logos-co/logos-logoscore-cli#cli-bundle-dir' -o result-portable"
+        run: 'nix build "github:logos-co/logos-logoscore-cli{release}#ctl-bundle-dir" -o result-portable'
+        code_block: "nix build 'github:logos-co/logos-logoscore-cli#ctl-bundle-dir' -o result-portable"
         check_file: "result-portable/bin/logosctl"
 
   - title: "Start a session"

@@ -25,16 +25,34 @@
 
 ### Using Nix (Recommended)
 
-`logosctl` comes in two flavors: a **dev** build for local iteration and a **portable** build for distribution. The dev build links against dev `logos-liblogos` and works with **dev** modules; the portable build is self-contained and works with **portable** modules. `nix build` (no target) produces the dev binary at `result/bin/logosctl`.
+**The two binaries have separate flake outputs.** `cli` is `logoscore`, `ctl`
+is `logosctl`, and each ships only its own binary — so `nix build` with no
+target, and anything already pointing at `.#cli`, still gets `logoscore`
+exactly as before.
+
+| Output | Binary | |
+|---|---|---|
+| `.#cli` *(default)* | `logoscore` | dev build |
+| `.#cli-bundle-dir` | `logoscore` | portable, self-contained directory |
+| `.#cli-appimage` | `logoscore` | portable, single-file AppImage (Linux) |
+| `.#ctl` | `logosctl` | dev build |
+| `.#ctl-bundle-dir` | `logosctl` | portable, self-contained directory |
+| `.#ctl-appimage` | `logosctl` | portable, single-file AppImage (Linux) |
+
+Both come in two flavors: a **dev** build for local iteration and a
+**portable** build for distribution. The dev build links against dev
+`logos-liblogos` and works with **dev** modules; the portable build is
+self-contained and works with **portable** modules — which is what the public
+catalog ships, so `logosctl`'s package commands need the portable bundle.
 
 #### Dev Build
 
 A standard Nix derivation whose dependencies live in `/nix/store`. It is the fastest way to iterate during development but is **not portable** — it only runs on the machine that built it. It works with **dev** modules: those produced by a local module `nix build`, or installed by the [package manager](https://github.com/logos-co/logos-package-manager)'s dev build.
 
 ```bash
-nix build                        # logosctl binary (dev) — same as '.#cli'
-nix build '.#cli'
-./result/bin/logosctl --help
+nix build                        # logoscore (dev) — same as '.#cli'
+nix build '.#ctl'                # logosctl (dev)
+./result/bin/logoscore --help
 ```
 
 #### Portable Builds
@@ -43,18 +61,18 @@ Portable builds are **fully self-contained** — no `/nix/store` references at r
 
 | Output | Platform | Format |
 |---|---|---|
-| `cli-bundle-dir` | Linux, macOS | Self-contained flat directory with `bin/`, `lib/`, and `modules/` |
-| `cli-appimage` | Linux | Single-file `.AppImage` executable |
+| `cli-bundle-dir` / `ctl-bundle-dir` | Linux, macOS | Self-contained flat directory with `bin/`, `lib/`, and `modules/` |
+| `cli-appimage` / `ctl-appimage` | Linux | Single-file `.AppImage` executable |
 
 ##### Self-contained directory bundle (all platforms)
 ```bash
 nix build '.#cli-bundle-dir'
-./result/bin/logosctl --help
+./result/bin/logoscore --help
 ```
 
 ##### Linux AppImage (Linux only)
 ```bash
-nix build '.#cli-appimage'
+nix build '.#ctl-appimage'
 ./result/logosctl.AppImage --help
 ```
 
