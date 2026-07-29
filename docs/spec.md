@@ -1,8 +1,8 @@
-# Logoscore CLI Specification
+# Logosctl CLI Specification
 
 ## Overview
 
-The logoscore CLI is the primary interface for operating the Logos Core runtime. It manages the lifecycle of a daemon process that hosts independently developed modules (plugins), and provides commands to load modules, call methods, watch events, and inspect runtime state.
+The logosctl CLI is the primary interface for operating the Logos Core runtime. It manages the lifecycle of a daemon process that hosts independently developed modules (plugins), and provides commands to load modules, call methods, watch events, and inspect runtime state.
 
 The CLI follows a daemon + client architecture. A long-running daemon process hosts the module runtime, and short-lived client commands connect to it to perform operations.
 
@@ -19,7 +19,7 @@ The CLI follows a daemon + client architecture. A long-running daemon process ho
 
 ```
                     ┌──────────────────────────┐
-                    │     logoscore daemon     │
+                    │     logosctl daemon     │
                     │                          │
                     │  ┌────────────────────┐  │
                     │  │    core_service    │  │
@@ -33,23 +33,23 @@ The CLI follows a daemon + client architecture. A long-running daemon process ho
               ┌────────────────┼────────────────┐
               │                │                │
      ┌────────▼──────┐ ┌──────▼───────┐ ┌──────▼───────┐
-     │ logoscore     │ │ logoscore    │ │ logoscore    │
+     │ logosctl     │ │ logosctl    │ │ logosctl    │
      │ load-module   │ │ call chat   │ │ watch chat   │
      │ waku          │ │ send "hi"   │ │ --event msg  │
      └───────────────┘ └──────────────┘ └──────────────┘
          (exits)          (exits)        (streams)
 ```
 
-**Daemon** (`logoscore -D`):
+**Daemon** (`logosctl daemon start`):
 - Starts the Logos Core runtime and Qt event loop.
 - Discovers modules in configured directories.
-- Writes `~/.logoscore/daemon/state.json` (live runtime state — instance_id, pid, started_at, resolved transports) on startup, removed on clean shutdown.
-- Maintains `~/.logoscore/daemon/tokens.json` (hashed-at-rest accepted-token list — survives restarts).
-- Persists `~/.logoscore/daemon/config.json` (operator preferences) only when the operator passed `--persist-config`.
-- Auto-issues an `auto` token for the local same-host client and emits `~/.logoscore/client/config.json` + `~/.logoscore/client/auto.json` on the first boot into an empty config dir.
+- Writes `~/.logosctl/daemon/state.json` (live runtime state — instance_id, pid, started_at, resolved transports) on startup, removed on clean shutdown.
+- Maintains `~/.logosctl/daemon/tokens.json` (hashed-at-rest accepted-token list — survives restarts).
+- Persists `~/.logosctl/daemon/config.json` (operator preferences) only when the operator passed `--persist-config`.
+- Auto-issues an `auto` token for the local same-host client and emits `~/.logosctl/client/config.json` + `~/.logosctl/client/auto.json` on the first boot into an empty config dir.
 
 **Client commands** (all other subcommands):
-- Read `~/.logoscore/client/config.json` to learn how to dial the daemon and which token file to load.
+- Read `~/.logosctl/client/config.json` to learn how to dial the daemon and which token file to load.
 - Connect to the daemon's `core_service` module via RPC using the token.
 - Execute the requested operation, print the result, and exit.
 - If no daemon is running, exit with code 2 and a clear error message.
@@ -59,7 +59,7 @@ The CLI follows a daemon + client architecture. A long-running daemon process ho
 ## Command Structure
 
 ```
-logoscore [global-flags] <command> [command-flags] [args...]
+logosctl [global-flags] <command> [command-flags] [args...]
 ```
 
 ### Global Flags
@@ -68,7 +68,7 @@ logoscore [global-flags] <command> [command-flags] [args...]
 |------|-------|-------------|
 | `--json` | `-j` | Output as JSON. Default when stdout is not a TTY. |
 | `--modules-dir <path>` | `-m` | Module search directory (daemon mode only, repeatable). |
-| `--config-dir <path>` | | Override the config directory (default: `~/.logoscore`; also `LOGOSCORE_CONFIG_DIR`). Client commands must pass the same value as the daemon they target. The directory contains the `daemon/` and `client/` subtrees (see [Authentication](#authentication)). |
+| `--config-dir <path>` | | Override the config directory (default: `~/.logosctl`; also `LOGOSCTL_CONFIG_DIR`). Client commands must pass the same value as the daemon they target. The directory contains the `daemon/` and `client/` subtrees (see [Authentication](#authentication)). |
 | `--quiet` | `-q` | Suppress non-essential output. |
 | `--verbose` | `-v` | Show debug/info/warning logs (suppressed by default). |
 | `--help` | `-h` | Show help. |
@@ -161,11 +161,11 @@ reference a `token_file` whose contents was copied from a
 Start the daemon process.
 
 ```
-logoscore -D [--modules-dir <path>]...
-logoscore daemon [--modules-dir <path>]...
+logosctl daemon start [--modules-dir <path>]...
+logosctl daemon [--modules-dir <path>]...
 ```
 
-Starts the Logos Core runtime in the foreground. Startup and shutdown messages go to stdout (so `> logs.txt` captures them); debug/info/warning logs go to stderr and are suppressed unless `--verbose` is passed. Writes `~/.logoscore/daemon/state.json` on startup (and on the first fresh boot also emits `~/.logoscore/client/config.json` + `~/.logoscore/client/auto.json` for the local client), removes `state.json` on clean shutdown.
+Starts the Logos Core runtime in the foreground. Startup and shutdown messages go to stdout (so `> logs.txt` captures them); debug/info/warning logs go to stderr and are suppressed unless `--verbose` is passed. Writes `~/.logosctl/daemon/state.json` on startup (and on the first fresh boot also emits `~/.logosctl/client/config.json` + `~/.logosctl/client/auto.json` for the local client), removes `state.json` on clean shutdown.
 
 The daemon scans the configured module directories for available plugins and makes them available for loading via client commands.
 
@@ -174,7 +174,7 @@ The daemon scans the configured module directories for available plugins and mak
 Load a module into the running daemon.
 
 ```
-logoscore load-module <name>
+logosctl module load <name>
 ```
 
 Resolves and loads the named module and all its dependencies. The module must be discoverable in one of the directories configured when the daemon was started.
@@ -184,7 +184,7 @@ Resolves and loads the named module and all its dependencies. The module must be
 Unload a module from the running daemon.
 
 ```
-logoscore unload-module <name>
+logosctl module unload <name>
 ```
 
 ### `list-modules`
@@ -192,7 +192,7 @@ logoscore unload-module <name>
 List available or loaded modules.
 
 ```
-logoscore list-modules [--loaded]
+logosctl module ls [--loaded]
 ```
 
 Without flags, lists all known (discovered) modules. With `--loaded`, lists only currently loaded modules.
@@ -204,7 +204,7 @@ Each module has a status: `loaded`, `not_loaded`, `crashed`, or `loading`. When 
 Show overall daemon and module health.
 
 ```
-logoscore status
+logosctl daemon status
 ```
 
 Displays daemon state (PID, uptime, version, instance ID, configured listeners) and a summary of all modules with their status. This is the single "dashboard" command — it shows everything at a glance so agents don't need to chain multiple commands.
@@ -216,7 +216,7 @@ When the daemon is not running, exits with code 2 and suggests how to start it.
 Unload and re-load a module.
 
 ```
-logoscore reload-module <name>
+logosctl module reload <name>
 ```
 
 Performs an unload followed by a load in a single operation. Useful for recovering crashed modules or picking up configuration changes. If the module is not currently loaded, it falls back to a plain load (rather than erroring), reducing edge cases for agents that just want a module running.
@@ -226,7 +226,7 @@ Performs an unload followed by a load in a single operation. Useful for recoveri
 Show detailed information about a specific module.
 
 ```
-logoscore module-info <name>
+logosctl module show <name>
 ```
 
 Displays extended metadata: version, status, dependencies, available methods, emitted events, process info (PID, uptime), and crash details if applicable. Methods and events each carry their `description` (from the module's header doc comments) when documented. This is the deep-inspection counterpart to `list-modules`.
@@ -236,7 +236,7 @@ Displays extended metadata: version, status, dependencies, available methods, em
 Call a method on a loaded module.
 
 ```
-logoscore call <module> <method> [args...]
+logosctl call <module> <method> [args...]
 ```
 
 Invokes the named method on the specified module. Arguments are positional. Use the `@file` prefix to read a parameter value from a file.
@@ -244,17 +244,17 @@ Invokes the named method on the specified module. Arguments are positional. Use 
 Arguments are automatically type-coerced: numeric strings become integers or doubles, `"true"`/`"false"` become booleans, and everything else remains a string. This allows method signatures with typed parameters to match correctly.
 
 ```bash
-logoscore call chat send_message "hello"
-logoscore call storage load_config @config.json
-logoscore call math twoArgs "hello" 2          # "hello" as string, 2 as integer
-logoscore call config setBool "flag" true       # "flag" as string, true as boolean
+logosctl call chat send_message "hello"
+logosctl call storage load_config @config.json
+logosctl call math twoArgs "hello" 2          # "hello" as string, 2 as integer
+logosctl call config setBool "flag" true       # "flag" as string, true as boolean
 ```
 
 **Alternative syntax** (explicit form for readability):
 
 ```bash
-logoscore module <name> method <method> [args...]
-logoscore module chat method send_message "hello"
+logosctl module <name> method <method> [args...]
+logosctl module chat method send_message "hello"
 ```
 
 Both forms are equivalent. `call` is the short form; `module ... method ...` is the verbose form.
@@ -264,15 +264,15 @@ Both forms are equivalent. `call` is the short form; `module ... method ...` is 
 Watch events from a loaded module.
 
 ```
-logoscore watch <module> [--event <name>]
+logosctl watch <module> [--event <name>]
 ```
 
 Streams events to stdout as they arrive. Without `--event`, streams all events from the module. Runs until interrupted (SIGINT / SIGTERM).
 
 ```bash
-logoscore watch chat --event chat-message
-logoscore watch chat --event chat-message >> events.log &
-logoscore watch chat --event chat-message --json | jq .
+logosctl watch chat --event chat-message
+logosctl watch chat --event chat-message >> events.log &
+logosctl watch chat --event chat-message --json | jq .
 ```
 
 ### `stats`
@@ -280,7 +280,7 @@ logoscore watch chat --event chat-message --json | jq .
 Show resource usage for loaded modules.
 
 ```
-logoscore stats
+logosctl stats
 ```
 
 Displays CPU and memory usage for each loaded module process.
@@ -290,7 +290,7 @@ Displays CPU and memory usage for each loaded module process.
 Stop the running daemon.
 
 ```
-logoscore stop
+logosctl daemon stop
 ```
 
 Sends a shutdown request to the daemon via `core_service`. The daemon performs a clean shutdown: unloads all modules, removes `daemon/state.json`, and exits. The client prints a confirmation message and exits.
@@ -299,13 +299,13 @@ If the daemon exits before the RPC response arrives (expected behavior), the cli
 
 **Human:**
 ```
-$ logoscore stop
+$ logosctl daemon stop
 Daemon stopped.
 ```
 
 **JSON:**
 ```json
-$ logoscore stop --json
+$ logosctl daemon stop --json
 {"status":"ok","message":"Daemon shutting down."}
 ```
 
@@ -314,7 +314,7 @@ $ logoscore stop --json
 Alias for `module-info <module>`. See `module-info` above for full details.
 
 ```
-logoscore info <module>
+logosctl module show <module>
 ```
 
 Displays version, dependencies, available methods, and crash details (if applicable) for the named module.
@@ -324,7 +324,7 @@ Displays version, dependencies, available methods, and crash details (if applica
 Issue a new named token and write it to `<configDir>/daemon/tokens/<name>.json`.
 
 ```
-logoscore issue-token --name <name> [--replace] [--expires <dur>] [--local-only]
+logosctl token issue --name <name> [--replace] [--expires <dur>] [--local-only]
 ```
 
 Appends an entry to `<configDir>/daemon/tokens.json["tokens"]` (a
@@ -353,7 +353,7 @@ restart (SIGHUP-driven reload is a follow-up).
 Remove a named token from `<configDir>/daemon/tokens.json["tokens"]`.
 
 ```
-logoscore revoke-token <name>
+logosctl token revoke <name>
 ```
 
 After this returns, any RPC presenting the revoked token is rejected by the
@@ -366,7 +366,7 @@ it can't mistake it for valid.
 List all tokens currently issued against this config dir.
 
 ```
-logoscore list-tokens
+logosctl token ls
 ```
 
 Shows token name, issued-at timestamp, expires-at, and the local-only flag —
@@ -388,22 +388,22 @@ The CLI needs a token to authenticate with the daemon's `core_service`. This tok
 
 ```
 1. DAEMON STARTS
-   logoscore -D -m ./modules
+   logosctl daemon start --detach
    → Daemon mints an "auto" token (local_only=true) for the local client
-   → Hash + metadata persisted into ~/.logoscore/daemon/tokens.json["tokens"]
-   → Raw value emitted to ~/.logoscore/client/auto.json
-   → ~/.logoscore/client/config.json written so local clients dial correctly
+   → Hash + metadata persisted into ~/.logosctl/daemon/tokens.json["tokens"]
+   → Raw value emitted to ~/.logosctl/client/auto.json
+   → ~/.logosctl/client/config.json written so local clients dial correctly
 
 2. CLIENT CONNECTS
-   logoscore load-module waku
-   → Reads ~/.logoscore/client/config.json (dial spec + token_file)
+   logosctl module load waku
+   → Reads ~/.logosctl/client/config.json (dial spec + token_file)
    → Loads the raw token from the file token_file points at
    → Sends token with RPC request to `core_service`
    → `core_service` validates the token's hash against tokens.json["tokens"]
    → Request authorized, module loads
 
 3. REMOTE / PROGRAMMATIC ACCESS
-   LOGOSCORE_TOKEN=<token> logoscore load-module waku
+   LOGOSCTL_TOKEN=<token> logosctl module load waku
    → Token from env var overrides the one in client/config.json's token_file
    → Useful when client/ isn't writable (remote, containers, CI)
 ```
@@ -414,10 +414,10 @@ When a client command runs, the token is resolved in this order (first match win
 
 | Priority | Source | Example |
 |----------|--------|---------|
-| 1 | `LOGOSCORE_TOKEN` env var | `LOGOSCORE_TOKEN=abc123 logoscore list-modules` |
+| 1 | `LOGOSCTL_TOKEN` env var | `LOGOSCTL_TOKEN=abc123 logosctl module ls` |
 | 2 | `<configDir>/client/<token_file>` | the path is whatever `client/config.json` says (defaults to `auto.json`) |
 
-A named token issued by `logoscore issue-token --name alice` produces
+A named token issued by `logosctl token issue --name alice` produces
 `<configDir>/daemon/tokens/alice.json` on the daemon host. To use it as a
 client on a different machine, copy the file into the client host's
 `<configDir>/client/` and reference it via `token_file` in `client/config.json`.
@@ -437,24 +437,24 @@ move it to the client host:
 
 ```bash
 # On the machine running the daemon:
-logoscore issue-token --name alice
-cat ~/.logoscore/daemon/tokens/alice.json
+logosctl token issue --name alice
+cat ~/.logosctl/daemon/tokens/alice.json
 # Output: 550e8400-e29b-41d4-a716-446655440000
 
 # On the remote machine or in a script:
-export LOGOSCORE_TOKEN=550e8400-e29b-41d4-a716-446655440000
-logoscore list-modules --json
+export LOGOSCTL_TOKEN=550e8400-e29b-41d4-a716-446655440000
+logosctl module ls --json
 
 # Or persist by copying the file alongside a hand-written client/config.json:
-mkdir -p ~/.logoscore/client
-scp daemon-host:~/.logoscore/daemon/tokens/alice.json ~/.logoscore/client/alice.json
-# then edit ~/.logoscore/client/config.json so token_file = "alice.json"
+mkdir -p ~/.logosctl/client
+scp daemon-host:~/.logosctl/daemon/tokens/alice.json ~/.logosctl/client/alice.json
+# then edit ~/.logosctl/client/config.json so token_file = "alice.json"
 ```
 
 **CI / containers:** Pass the token as an environment variable at runtime:
 
 ```bash
-docker run -e LOGOSCORE_TOKEN=$TOKEN myimage logoscore list-modules --json
+docker run -e LOGOSCTL_TOKEN=$TOKEN myimage logosctl module ls --json
 ```
 
 ### Daemon files (config / state / tokens)
@@ -479,14 +479,14 @@ The daemon dir splits by lifetime into three files:
   "config_source": "cli",
   "resolved": {
     "modules_dirs": ["/path/to/modules"],
-    "persistence_path": "/var/lib/logoscore",
+    "persistence_path": "/var/lib/logosctl",
     "modules": {
       "core_service": {
         "transports": [
           { "protocol": "local" },
           { "protocol": "tcp",     "host": "0.0.0.0", "port": 6000, "codec": "json" },
           { "protocol": "tcp_ssl", "host": "0.0.0.0", "port": 6443,
-            "codec": "cbor", "ca_file": "/etc/logoscore/ca.pem",
+            "codec": "cbor", "ca_file": "/etc/logosctl/ca.pem",
             "verify_peer": true }
         ]
       },
@@ -556,28 +556,28 @@ Every command produces output in one of two modes: human (default when stdout is
 
 **Human:**
 ```
-$ logoscore load-module waku
+$ logosctl module load waku
 Loaded module: waku (v0.1.0)
   Dependencies loaded: store
 ```
 
 **JSON:**
 ```
-$ logoscore load-module waku --json
+$ logosctl module load waku --json
 {"status":"ok","module":"waku","version":"0.1.0","dependencies_loaded":["store"]}
 ```
 
 **Error (human):**
 ```
-$ logoscore load-module nonexistent
+$ logosctl module load nonexistent
 Error: Module 'nonexistent' not found.
   Known modules: waku, chat, delivery, store
-  Scan additional directories with: logoscore -D -m /path/to/modules
+  Scan additional directories with: logosctl daemon start -m /path/to/modules
 ```
 
 **Error (JSON):**
 ```
-$ logoscore load-module nonexistent --json
+$ logosctl module load nonexistent --json
 {"status":"error","code":"MODULE_NOT_FOUND","message":"Module 'nonexistent' not found.","known_modules":["waku","chat","delivery","store"]}
 ```
 
@@ -585,13 +585,13 @@ $ logoscore load-module nonexistent --json
 
 **Human:**
 ```
-$ logoscore unload-module waku
+$ logosctl module unload waku
 Unloaded module: waku
 ```
 
 **JSON:**
 ```
-$ logoscore unload-module waku --json
+$ logosctl module unload waku --json
 {"status":"ok","module":"waku"}
 ```
 
@@ -599,14 +599,14 @@ $ logoscore unload-module waku --json
 
 **Human:**
 ```
-$ logoscore list-modules
+$ logosctl module ls
 NAME        VERSION   STATUS      UPTIME
 waku        v0.1.0    loaded      2h 14m
 chat        v0.2.0    crashed     -
 delivery    v0.1.0    not loaded  -
 store       v0.3.0    loaded      2h 14m
 
-$ logoscore list-modules --loaded
+$ logosctl module ls --loaded
 NAME        VERSION   STATUS    UPTIME
 waku        v0.1.0    loaded    2h 14m
 store       v0.3.0    loaded    2h 14m
@@ -614,7 +614,7 @@ store       v0.3.0    loaded    2h 14m
 
 **JSON:**
 ```json
-$ logoscore list-modules --json
+$ logosctl module ls --json
 [
   {"name":"waku","version":"0.1.0","status":"loaded","uptime_seconds":8040},
   {"name":"chat","version":"0.2.0","status":"crashed","exit_code":139,"crashed_at":"2026-03-23T14:22:01Z","crash_reason":"SIGSEGV"},
@@ -629,14 +629,14 @@ Note: the `status` field is an enum of `loaded | not_loaded | crashed | loading`
 
 **Human:**
 ```
-$ logoscore status
-Logoscore Daemon
+$ logosctl daemon status
+Logosctl Daemon
   Status:       running
   PID:          12847
   Uptime:       4h 32m
   Version:      v0.5.0
   Instance ID:  a3f1...c8d2
-  State file:   /Users/iuri/.logoscore/daemon/state.json
+  State file:   /Users/iuri/.logosctl/daemon/state.json
 
 Modules: 3 loaded, 1 crashed, 1 not loaded
   waku        v0.1.0    loaded      2h 14m
@@ -648,7 +648,7 @@ Modules: 3 loaded, 1 crashed, 1 not loaded
 
 **JSON:**
 ```json
-$ logoscore status --json
+$ logosctl daemon status --json
 {
   "daemon": {
     "status": "running",
@@ -672,19 +672,19 @@ $ logoscore status --json
 
 **When daemon is not running:**
 ```
-$ logoscore status
-Logoscore Daemon
+$ logosctl daemon status
+Logosctl Daemon
   Status:       not running
 
-No daemon state file at /Users/iuri/.logoscore/daemon/state.json
-Run "logoscore -D" to start the daemon.
+No daemon state file at /Users/iuri/.logosctl/daemon/state.json
+Run "logosctl daemon start" to start the daemon.
 
 $ echo $?
 1
 ```
 
 ```json
-$ logoscore status --json
+$ logosctl daemon status --json
 {
   "daemon": {
     "status": "not_running"
@@ -698,7 +698,7 @@ $ echo $?
 
 **Human:**
 ```
-$ logoscore reload-module chat
+$ logosctl module reload chat
 Unloading chat...  done
 Loading chat...    done
 Module "chat" reloaded successfully (v0.2.0, pid 51203)
@@ -706,7 +706,7 @@ Module "chat" reloaded successfully (v0.2.0, pid 51203)
 
 **JSON:**
 ```json
-$ logoscore reload-module chat --json
+$ logosctl module reload chat --json
 {
   "action": "reload",
   "module": "chat",
@@ -720,28 +720,28 @@ $ logoscore reload-module chat --json
 
 **When reload fails:**
 ```
-$ logoscore reload-module chat
+$ logosctl module reload chat
 Unloading chat...  done
 Loading chat...    failed
 
 Error: module "chat" failed to start (exit code 1)
-  Last log: "Config file not found: /etc/logoscore/chat.toml"
+  Last log: "Config file not found: /etc/logosctl/chat.toml"
 
-Run "logoscore module-logs chat --tail 20" for details.
+Run "logosctl module-logs chat --tail 20" for details.
 
 $ echo $?
 3
 ```
 
 ```json
-$ logoscore reload-module chat --json
+$ logosctl module reload chat --json
 {
   "action": "reload",
   "module": "chat",
   "status": "error",
   "error": "module failed to start",
   "exit_code": 1,
-  "last_log_line": "Config file not found: /etc/logoscore/chat.toml"
+  "last_log_line": "Config file not found: /etc/logosctl/chat.toml"
 }
 $ echo $?
 3
@@ -749,7 +749,7 @@ $ echo $?
 
 **Reload a module that isn't loaded (behaves like load):**
 ```
-$ logoscore reload-module delivery
+$ logosctl module reload delivery
 Module "delivery" is not loaded. Loading...
 Loading delivery...  done
 Module "delivery" loaded successfully (v0.1.0, pid 51210)
@@ -759,7 +759,7 @@ Module "delivery" loaded successfully (v0.1.0, pid 51210)
 
 **Human:**
 ```
-$ logoscore module-info chat
+$ logosctl module show chat
 Name:          chat
 Version:       v0.2.0
 Status:        loaded
@@ -796,7 +796,7 @@ methods. The section is omitted when the module declares no events.
 
 **Crashed module:**
 ```
-$ logoscore module-info chat
+$ logosctl module show chat
 Name:          chat
 Version:       v0.2.0
 Status:        crashed
@@ -808,7 +808,7 @@ Last Log:      "Segmentation fault in message_handler.cpp:142"
 
 **JSON:**
 ```json
-$ logoscore module-info chat --json
+$ logosctl module show chat --json
 {
   "name": "chat",
   "version": "0.2.0",
@@ -842,7 +842,7 @@ events are void. Modules with no declared events report an empty array (legacy
 
 **Crashed module (JSON):**
 ```json
-$ logoscore module-info chat --json
+$ logosctl module show chat --json
 {
   "name": "chat",
   "version": "0.2.0",
@@ -860,10 +860,10 @@ $ logoscore module-info chat --json
 
 **Human:**
 ```
-$ logoscore call chat send_message "hello world"
+$ logosctl call chat send_message "hello world"
 message sent (id: msg_4a7b2c)
 
-$ logoscore call math add 2 3
+$ logosctl call math add 2 3
 5
 ```
 
@@ -871,13 +871,13 @@ In human mode, scalar results (strings, numbers, booleans) are printed as plain 
 
 **JSON:**
 ```
-$ logoscore call chat send_message "hello world" --json
+$ logosctl call chat send_message "hello world" --json
 {"status":"ok","module":"chat","method":"send_message","result":"message sent (id: msg_4a7b2c)"}
 ```
 
 When the method returns structured data:
 ```
-$ logoscore call chat get_history --json
+$ logosctl call chat get_history --json
 {"status":"ok","module":"chat","method":"get_history","result":[{"id":"msg_4a7b2c","from":"alice","text":"hello","timestamp":"2026-03-23T14:30:01Z"},{"id":"msg_5d8e3f","from":"bob","text":"hi there","timestamp":"2026-03-23T14:30:05Z"}]}
 ```
 
@@ -896,31 +896,31 @@ whether the daemon-module hop went over the local socket (QRO), TCP, or
 TCP+SSL — pick the transport you like, assertions stay identical.
 
 ```
-$ logoscore call account create_account --json
+$ logosctl call account create_account --json
 {"status":"ok","module":"account","method":"create_account",
  "result":{"success":true,"value":{"id":"42","name":"alice"},"error":null}}
 
-$ logoscore call account create_account --json    # duplicate name
+$ logosctl call account create_account --json    # duplicate name
 {"status":"ok","module":"account","method":"create_account",
  "result":{"success":false,"value":null,"error":"name already taken"}}
 ```
 
 **Error (human):**
 ```
-$ logoscore call chat nonexistent_method
+$ logosctl call chat nonexistent_method
 Error: Method 'nonexistent_method' not found on module 'chat'.
   Available methods: send_message, get_history, set_nickname, get_status
 ```
 
 **Error (JSON):**
 ```
-$ logoscore call chat nonexistent_method --json
+$ logosctl call chat nonexistent_method --json
 {"status":"error","code":"METHOD_NOT_FOUND","message":"Method 'nonexistent_method' not found on module 'chat'.","available_methods":["send_message","get_history","set_nickname","get_status"]}
 ```
 
 **Timeout error (JSON):**
 ```
-$ logoscore call chat slow_operation --json
+$ logosctl call chat slow_operation --json
 {"status":"error","code":"TIMEOUT","message":"Call to chat.slow_operation timed out after 30s."}
 ```
 
@@ -930,7 +930,7 @@ Streams continuously until interrupted. Each event is printed as it arrives.
 
 **Human:**
 ```
-$ logoscore watch chat --event chat-message
+$ logosctl watch chat --event chat-message
 [14:30:01] chat :: chat-message
   from: alice
   text: hello world
@@ -947,7 +947,7 @@ $ logoscore watch chat --event chat-message
 
 **JSON (NDJSON — one self-contained JSON object per line):**
 ```
-$ logoscore watch chat --event chat-message --json
+$ logosctl watch chat --event chat-message --json
 {"timestamp":"2026-03-23T14:30:01Z","module":"chat","event":"chat-message","data":{"from":"alice","text":"hello world"}}
 {"timestamp":"2026-03-23T14:30:05Z","module":"chat","event":"chat-message","data":{"from":"bob","text":"hi there"}}
 {"timestamp":"2026-03-23T14:31:12Z","module":"chat","event":"chat-message","data":{"from":"alice","text":"how are you?"}}
@@ -955,7 +955,7 @@ $ logoscore watch chat --event chat-message --json
 
 All events from a module (no `--event` filter):
 ```
-$ logoscore watch chat --json
+$ logosctl watch chat --json
 {"timestamp":"2026-03-23T14:30:01Z","module":"chat","event":"chat-message","data":{"from":"alice","text":"hello"}}
 {"timestamp":"2026-03-23T14:30:02Z","module":"chat","event":"user-joined","data":{"user":"bob"}}
 {"timestamp":"2026-03-23T14:30:05Z","module":"chat","event":"chat-message","data":{"from":"bob","text":"hi"}}
@@ -966,7 +966,7 @@ $ logoscore watch chat --json
 
 **Human:**
 ```
-$ logoscore stats
+$ logosctl stats
 MODULE      PID     CPU%    MEMORY
 waku        23456   2.1%    48.3 MB
 chat        23457   0.4%    22.1 MB
@@ -975,7 +975,7 @@ store       23458   0.1%    15.7 MB
 
 **JSON:**
 ```
-$ logoscore stats --json
+$ logosctl stats --json
 [
   {"name":"waku","pid":23456,"cpu_percent":2.1,"memory_mb":48.3},
   {"name":"chat","pid":23457,"cpu_percent":0.4,"memory_mb":22.1},
@@ -991,16 +991,16 @@ Alias for `module-info`. See the `module-info` output section above for all outp
 
 **Human:**
 ```
-$ logoscore list-modules
-Error: No running logoscore daemon.
-  Start one with: logoscore -D
-  Start with modules: logoscore -D -m /path/to/modules
+$ logosctl module ls
+Error: No running logosctl daemon.
+  Start one with: logosctl daemon start
+  Start with modules: logosctl daemon start -m /path/to/modules
 ```
 
 **JSON:**
 ```
-$ logoscore list-modules --json
-{"status":"error","code":"NO_DAEMON","message":"No running logoscore daemon. Start one with: logoscore -D"}
+$ logosctl module ls --json
+{"status":"error","code":"NO_DAEMON","message":"No running logosctl daemon. Start one with: logosctl daemon start"}
 ```
 
 ### Output Rules
@@ -1010,7 +1010,7 @@ $ logoscore list-modules --json
 - Critical and fatal errors always go to stderr.
 - In JSON mode, colors are disabled and only structured data goes to stdout.
 - JSON mode auto-activates when stdout is not a TTY (piped or redirected), so agents and scripts get JSON by default without needing `--json`.
-- Daemon startup/shutdown messages go to stdout, so `logoscore -D > logs.txt` captures them correctly.
+- Daemon startup/shutdown messages go to stdout, so `logosctl daemon start > logs.txt` captures them correctly.
 
 ---
 
@@ -1050,10 +1050,10 @@ client subcommands:
 
 ```bash
 # Start a clean daemon scanning /path
-logoscore -D -m /path &
-logoscore load-module waku          # deps resolved automatically
-logoscore load-module chat
-logoscore call chat send_message "hello"
+logosctl daemon start -m /path &
+logosctl module load waku          # deps resolved automatically
+logosctl module load chat
+logosctl call chat send_message "hello"
 ```
 
 The legacy inline mode (`-c "module.method(args)"` / `--quit-on-finish`, which
@@ -1066,17 +1066,17 @@ a subcommand operates in client mode and connects to a running daemon.
 
 ## AI Agent Workflow
 
-This section describes how an AI agent (such as Claude Code, Cursor, or similar tools that execute bash commands via a tool-use interface) would interact with the logoscore CLI.
+This section describes how an AI agent (such as Claude Code, Cursor, or similar tools that execute bash commands via a tool-use interface) would interact with the logosctl CLI.
 
 ### How Agents Use This CLI
 
-AI agents interact with CLIs by executing bash commands and parsing stdout. They cannot handle interactive prompts, colored output, or ambiguous formatting. The logoscore CLI is designed for this:
+AI agents interact with CLIs by executing bash commands and parsing stdout. They cannot handle interactive prompts, colored output, or ambiguous formatting. The logosctl CLI is designed for this:
 
 - **JSON by default when piped.** Since agents capture stdout programmatically (not via a TTY), JSON mode activates automatically. No need to remember `--json`.
 - **Deterministic exit codes.** Agents check `$?` after each command to decide whether to proceed or handle an error. Each error category has a distinct code.
 - **Structured errors.** When something fails, the JSON error includes a `code` field the agent can branch on, and a `message` field with recovery instructions the agent can follow.
 - **No interactive prompts.** Every operation completes without requiring user input.
-- **Self-describing.** `logoscore info <module> --json` tells the agent what methods are available and what parameters they take, without needing external documentation.
+- **Self-describing.** `logosctl module show <module> --json` tells the agent what methods are available and what parameters they take, without needing external documentation.
 
 ### Example: Agent Preflight — Health Check Before Doing Work
 
@@ -1084,19 +1084,19 @@ Before performing any operation, an agent checks daemon health and ensures requi
 
 ```bash
 # Step 1: Is the daemon alive?
-if ! logoscore status --json | jq -e '.daemon.status == "running"' > /dev/null 2>&1; then
+if ! logosctl daemon status --json | jq -e '.daemon.status == "running"' > /dev/null 2>&1; then
   echo "daemon not running, starting..."
-  logoscore -D -m ./modules &
+  logosctl daemon start --detach &
   sleep 2
 fi
 
 # Step 2: Check if the module I need is healthy
-MODULE_STATUS=$(logoscore status --json | jq -r '.modules[] | select(.name=="chat") | .status')
+MODULE_STATUS=$(logosctl daemon status --json | jq -r '.modules[] | select(.name=="chat") | .status')
 
 case "$MODULE_STATUS" in
   "loaded")     echo "ready" ;;
-  "crashed")    logoscore reload-module chat ;;
-  "not_loaded") logoscore load-module chat ;;
+  "crashed")    logosctl module reload chat ;;
+  "not_loaded") logosctl module load chat ;;
   *)            echo "unknown state: $MODULE_STATUS" ; exit 1 ;;
 esac
 ```
@@ -1105,19 +1105,19 @@ esac
 
 ```bash
 # Agent checks module health
-STATUS=$(logoscore list-modules --json | jq -r '.[] | select(.name=="chat") | .status')
+STATUS=$(logosctl module ls --json | jq -r '.[] | select(.name=="chat") | .status')
 
 if [ "$STATUS" = "crashed" ]; then
   # Get crash details for decision-making
-  CRASH_INFO=$(logoscore module-info chat --json)
+  CRASH_INFO=$(logosctl module show chat --json)
   RESTARTS=$(echo "$CRASH_INFO" | jq '.restart_count')
 
   if [ "$RESTARTS" -lt 5 ]; then
-    logoscore reload-module chat
+    logosctl module reload chat
   else
     echo "chat module crashed $RESTARTS times, escalating"
     # agent decides to alert or investigate logs
-    logoscore module-logs chat --tail 50
+    logosctl module-logs chat --tail 50
   fi
 fi
 ```
@@ -1128,13 +1128,13 @@ This is a realistic sequence an AI agent would execute when asked to "set up and
 
 ```bash
 # Step 1: Start the daemon and verify it's running
-logoscore -D -m ./modules &
+logosctl daemon start --detach &
 sleep 2
-logoscore status --json | jq -e '.daemon.status == "running"' > /dev/null
+logosctl daemon status --json | jq -e '.daemon.status == "running"' > /dev/null
 # Agent confirms daemon is up via exit code 0.
 
 # Step 2: Check what modules are available
-logoscore list-modules --json
+logosctl module ls --json
 # Agent parses:
 # [
 #   {"name":"waku","version":"0.1.0","status":"not_loaded"},
@@ -1144,13 +1144,13 @@ logoscore list-modules --json
 # Agent reads the array and identifies "chat" is available.
 
 # Step 3: Load the chat module
-logoscore load-module chat
+logosctl module load chat
 # Agent parses:
 # {"status":"ok","module":"chat","version":"0.2.0","dependencies_loaded":["waku","store"]}
 # Agent confirms status is "ok" and notes that waku and store were auto-loaded.
 
 # Step 4: Discover what methods are available
-logoscore module-info chat --json
+logosctl module show chat --json
 # Agent parses:
 # {
 #   "name": "chat",
@@ -1173,22 +1173,22 @@ logoscore module-info chat --json
 # The "events" array tells it which events it can watch (and what they mean).
 
 # Step 5: Call a method
-logoscore call chat send_message "hello from agent"
+logosctl call chat send_message "hello from agent"
 # Agent parses:
 # {"status":"ok","module":"chat","method":"send_message","result":"message sent (id: msg_9x8y7z)"}
 # Agent confirms status is "ok".
 
 # Step 6: Verify the message was stored
-logoscore call chat get_history
+logosctl call chat get_history
 # Agent parses:
 # {"status":"ok","module":"chat","method":"get_history","result":[{"id":"msg_9x8y7z","from":"agent","text":"hello from agent","timestamp":"2026-03-23T14:30:01Z"}]}
 # Agent verifies the message appears in history.
 
 # Step 7: Check overall system health
-logoscore status --json | jq '.modules_summary'
+logosctl daemon status --json | jq '.modules_summary'
 # Agent parses:
 # {"loaded": 3, "crashed": 0, "not_loaded": 0}
-# All modules healthy. Agent can also check per-module resource usage via `logoscore stats`.
+# All modules healthy. Agent can also check per-module resource usage via `logosctl stats`.
 ```
 
 ### Example: Agent Handles Errors
@@ -1197,17 +1197,17 @@ When an agent encounters an error, the structured output lets it self-correct:
 
 ```bash
 # Agent tries to call a method on a module that isn't loaded
-logoscore call delivery send_package "pkg_123"
+logosctl call delivery send_package "pkg_123"
 # Exit code: 3
-# {"status":"error","code":"MODULE_NOT_LOADED","message":"Module 'delivery' is not loaded. Load it with: logoscore load-module delivery"}
+# {"status":"error","code":"MODULE_NOT_LOADED","message":"Module 'delivery' is not loaded. Load it with: logosctl module load delivery"}
 
 # Agent reads the error code "MODULE_NOT_LOADED" and the recovery instruction.
 # It follows the suggestion:
-logoscore load-module delivery
+logosctl module load delivery
 # {"status":"ok","module":"delivery","version":"0.1.0","dependencies_loaded":[]}
 
 # Now retries the original call:
-logoscore call delivery send_package "pkg_123"
+logosctl call delivery send_package "pkg_123"
 # {"status":"ok","module":"delivery","method":"send_package","result":"package pkg_123 queued"}
 ```
 
@@ -1217,7 +1217,7 @@ An agent can watch for events to react to real-time activity:
 
 ```bash
 # Start watching in background, capture output to a file
-logoscore watch chat --event chat-message > /tmp/chat_events.log &
+logosctl watch chat --event chat-message > /tmp/chat_events.log &
 WATCH_PID=$!
 
 # ... agent does other work ...
@@ -1259,18 +1259,18 @@ kill $WATCH_PID
 
 ```
 1. START DAEMON
-   logoscore -D -m /path/to/modules
+   logosctl daemon start -m /path/to/modules
    → Core initializes
    → Daemon mints "auto" token (local_only=true) for the local client
    → Scans /path/to/modules for available plugins
-   → Writes ~/.logoscore/daemon/state.json (instance + resolved listeners)
-   → Writes ~/.logoscore/daemon/tokens.json (hashed accepted-token list)
-   → Emits ~/.logoscore/client/config.json + ~/.logoscore/client/auto.json
+   → Writes ~/.logosctl/daemon/state.json (instance + resolved listeners)
+   → Writes ~/.logosctl/daemon/tokens.json (hashed accepted-token list)
+   → Emits ~/.logosctl/client/config.json + ~/.logosctl/client/auto.json
    → Runs event loop (foreground)
 
 2. LOAD MODULES
-   logoscore load-module waku
-   → Reads ~/.logoscore/client/config.json (dial spec + token_file)
+   logosctl module load waku
+   → Reads ~/.logosctl/client/config.json (dial spec + token_file)
    → Loads token from the file token_file points at
    → Connects to daemon's `core_service` via RPC with token
    → Daemon resolves dependencies for "waku"
@@ -1278,26 +1278,26 @@ kill $WATCH_PID
    → Client prints result and exits
 
 3. CALL METHODS
-   logoscore call chat send_message "hello"
-   → Reads dial spec + token from ~/.logoscore/client/
+   logosctl call chat send_message "hello"
+   → Reads dial spec + token from ~/.logosctl/client/
    → Connects to daemon
    → Invokes chat.send_message("hello") via RPC
    → Prints return value to stdout
    → Exits
 
 4. WATCH EVENTS
-   logoscore watch chat --event chat-message --json >> events.log &
+   logosctl watch chat --event chat-message --json >> events.log &
    → Connects to daemon with token
    → Registers event listener for chat::chat-message
    → Streams NDJSON to stdout (redirected to events.log)
    → Runs until killed
 
 5. STOP DAEMON
-   logoscore stop
+   logosctl daemon stop
    → Client sends shutdown RPC to core_service
    → Daemon schedules quit (with brief delay to send RPC response)
    → Daemon unloads all modules
-   → Removes ~/.logoscore/daemon/state.json (tokens.json + config.json survive)
+   → Removes ~/.logosctl/daemon/state.json (tokens.json + config.json survive)
    → Exits
 
    Alternatively: Ctrl+C / kill <pid> / SIGTERM

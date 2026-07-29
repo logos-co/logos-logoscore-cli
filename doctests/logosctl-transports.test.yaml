@@ -1,12 +1,12 @@
-name: "Reaching the logoscore Daemon over TCP and TCP+TLS"
-output: logoscore-transports.md
+name: "Reaching the logosctl Daemon over TCP and TCP+TLS"
+output: logosctl-transports.md
 release: ""
 
 intro: |
-  By default the `logoscore` daemon binds every module to a local Unix socket,
+  By default the `logosctl` daemon binds every module to a local Unix socket,
   so only clients on the same host — using the auto-emitted config under
-  `~/.logoscore/` — can reach it. This doc-test shows how to expose the daemon
-  over the network instead, using the two non-local transports `logoscore`
+  `~/.logosctl/` — can reach it. This doc-test shows how to expose the daemon
+  over the network instead, using the two non-local transports `logosctl`
   supports:
 
   - **`tcp`** — a plaintext TCP listener. Good for loopback and trusted
@@ -28,7 +28,7 @@ intro: |
   > (`client/auto.json`), which is the credential the daemon registers for
   > itself at boot.
   >
-  > Operator-issued tokens (`logoscore issue-token --name alice`) are also
+  > Operator-issued tokens (`logosctl token issue --name alice`) are also
   > honored for `core_service` calls over every transport, and are the better
   > choice for a real remote client: they are named, can carry an `--expires`
   > deadline, and can be revoked while the node keeps running. A token issued
@@ -63,7 +63,7 @@ prerequisites:
     Verify: `openssl version`
 
 sections:
-  - title: "Build logoscore and prepare modules"
+  - title: "Build logosctl and prepare modules"
     step: true
     text: |
       Build the CLI and assemble a modules directory, exactly as in the daemon
@@ -72,10 +72,10 @@ sections:
       here `test_basic_module` from logos-test-modules.
     steps:
       - title: "Build the CLI"
-        run: "nix build 'github:logos-co/logos-logoscore-cli{release}' --out-link ./logos"
-        check_file: "logos/bin/logoscore"
+        run: "nix build 'github:logos-co/logos-logosctl-cli{release}' --out-link ./logos"
+        check_file: "logos/bin/logosctl"
         post_text: |
-          The build produces `logos/bin/logoscore` plus a `logos/modules/`
+          The build produces `logos/bin/logosctl` plus a `logos/modules/`
           directory containing the built-in `capability_module`.
 
       - title: "Install a module to load"
@@ -126,7 +126,7 @@ sections:
         at connect time.
 
       We use `--config-dir ./daemon-home` to keep all daemon state inside the
-      working directory instead of `~/.logoscore`.
+      working directory instead of `~/.logosctl`.
     steps:
       - title: "Refuse plaintext TCP on a public interface"
         text: |
@@ -135,8 +135,8 @@ sections:
           it unless you explicitly pass `--insecure-tcp`. Watch it reject a
           `0.0.0.0` listener (the `|| true` lets the doc-test continue past the
           expected non-zero exit):
-        run: "./logos/bin/logoscore --config-dir ./daemon-home -D -m ./modules --module-transport core_service=tcp,host=0.0.0.0,port=6000 2>&1 || true"
-        code_block: "logoscore -D -m ./modules --module-transport core_service=tcp,host=0.0.0.0,port=6000"
+        run: "./logos/bin/logosctl --config-dir ./daemon-home daemon start --detach --module-transport core_service=tcp,host=0.0.0.0,port=6000 2>&1 || true"
+        code_block: "logosctl daemon start --detach --module-transport core_service=tcp,host=0.0.0.0,port=6000"
         expect_contains:
           - "plaintext tcp on non-loopback host"
           - "--insecure-tcp"
@@ -148,9 +148,9 @@ sections:
         text: |
           Start the daemon in the background with TCP listeners for both
           well-known modules, capturing its output to `daemon.log`:
-        run: "sh -c './logos/bin/logoscore --config-dir ./daemon-home -D -m ./modules --module-transport core_service=tcp,host=127.0.0.1,port=6000 --module-transport capability_module=tcp,host=127.0.0.1,port=6001 > daemon.log 2>&1 &'"
+        run: "sh -c './logos/bin/logosctl --config-dir ./daemon-home daemon start --detach --module-transport core_service=tcp,host=127.0.0.1,port=6000 --module-transport capability_module=tcp,host=127.0.0.1,port=6001 > daemon.log 2>&1 &'"
         code_block: |
-          logoscore -D -m ./modules \
+          logosctl daemon start --detach \
               --module-transport core_service=tcp,host=127.0.0.1,port=6000 \
               --module-transport capability_module=tcp,host=127.0.0.1,port=6001 \
               > daemon.log &
@@ -163,7 +163,7 @@ sections:
           `daemon/state.json`. Each well-known module shows the implicit
           `local` listener first, followed by the `tcp` one we asked for:
         run: "cat ./daemon-home/daemon/state.json"
-        code_block: "cat ~/.logoscore/daemon/state.json"
+        code_block: "cat ~/.logosctl/daemon/state.json"
         expect_contains:
           - '"protocol": "tcp"'
           - '"port": 6000'
@@ -224,34 +224,34 @@ sections:
         text: |
           With the dial spec in place, every client command works against
           `--config-dir ./client-home` — the traffic now goes over TCP:
-        run: "./logos/bin/logoscore --config-dir ./client-home status"
-        code_block: "logoscore --config-dir ./client-home status"
+        run: "./logos/bin/logosctl --config-dir ./client-home status"
+        code_block: "logosctl --config-dir ./client-home status"
         expect_contains:
           - '"status":"running"'
           - "test_basic_module"
 
       - title: "List, load, and call over TCP"
         text: "Drive the module lifecycle exactly as you would locally:"
-        run: "./logos/bin/logoscore --config-dir ./client-home list-modules"
-        code_block: "logoscore --config-dir ./client-home list-modules"
+        run: "./logos/bin/logosctl --config-dir ./client-home module ls"
+        code_block: "logosctl --config-dir ./client-home module ls"
         expect_contains:
           - "test_basic_module"
 
-      - run: "./logos/bin/logoscore --config-dir ./client-home load-module test_basic_module"
-        code_block: "logoscore --config-dir ./client-home load-module test_basic_module"
+      - run: "./logos/bin/logosctl --config-dir ./client-home module load test_basic_module"
+        code_block: "logosctl --config-dir ./client-home module load test_basic_module"
         expect_contains:
           - "test_basic_module"
           - '"status":"ok"'
 
-      - run: "./logos/bin/logoscore --config-dir ./client-home call test_basic_module addInts 2 3"
-        code_block: "logoscore --config-dir ./client-home call test_basic_module addInts 2 3"
+      - run: "./logos/bin/logosctl --config-dir ./client-home call test_basic_module addInts 2 3"
+        code_block: "logosctl --config-dir ./client-home call test_basic_module addInts 2 3"
         expect_contains:
           - '"result":5'
 
       - title: "Stop the daemon"
         text: "Shut the TCP daemon down before moving on to the TLS variant:"
-        run: "./logos/bin/logoscore --config-dir ./client-home stop"
-        code_block: "logoscore --config-dir ./client-home stop"
+        run: "./logos/bin/logosctl --config-dir ./client-home stop"
+        code_block: "logosctl --config-dir ./client-home stop"
         expect_contains:
           - '"status":"ok"'
 
@@ -280,7 +280,7 @@ sections:
           mkdir -p tls
           openssl req -x509 -newkey rsa:2048 -nodes \
             -keyout tls/key.pem -out tls/cert.pem -days 365 \
-            -subj "/CN=logoscore-test" \
+            -subj "/CN=logosctl-test" \
             -addext "subjectAltName=IP:127.0.0.1,DNS:localhost"
           cp tls/cert.pem tls/ca.pem
         check_file: "tls/cert.pem"
@@ -290,9 +290,9 @@ sections:
           Bind both well-known modules over `tcp_ssl`, passing the cert and key.
           On loopback no `--insecure-tcp` is involved at all — TLS is never
           plaintext:
-        run: "sh -c './logos/bin/logoscore --config-dir ./tls-daemon-home -D -m ./modules --module-transport \"core_service=tcp_ssl,host=127.0.0.1,port=6443,cert=$PWD/tls/cert.pem,key=$PWD/tls/key.pem\" --module-transport \"capability_module=tcp_ssl,host=127.0.0.1,port=6444,cert=$PWD/tls/cert.pem,key=$PWD/tls/key.pem\" > tls-daemon.log 2>&1 &'"
+        run: "sh -c './logos/bin/logosctl --config-dir ./tls-daemon-home daemon start --detach --module-transport \"core_service=tcp_ssl,host=127.0.0.1,port=6443,cert=$PWD/tls/cert.pem,key=$PWD/tls/key.pem\" --module-transport \"capability_module=tcp_ssl,host=127.0.0.1,port=6444,cert=$PWD/tls/cert.pem,key=$PWD/tls/key.pem\" > tls-daemon.log 2>&1 &'"
         code_block: |
-          logoscore -D -m ./modules \
+          logosctl daemon start --detach \
               --module-transport "core_service=tcp_ssl,host=127.0.0.1,port=6443,cert=$PWD/tls/cert.pem,key=$PWD/tls/key.pem" \
               --module-transport "capability_module=tcp_ssl,host=127.0.0.1,port=6444,cert=$PWD/tls/cert.pem,key=$PWD/tls/key.pem" \
               > tls-daemon.log &
@@ -321,18 +321,18 @@ sections:
 
       - title: "Drive the daemon over TLS"
         text: "Status, load, and call now travel over an encrypted connection:"
-        run: "./logos/bin/logoscore --config-dir ./tls-client-home status"
-        code_block: "logoscore --config-dir ./tls-client-home status"
+        run: "./logos/bin/logosctl --config-dir ./tls-client-home status"
+        code_block: "logosctl --config-dir ./tls-client-home status"
         expect_contains:
           - '"status":"running"'
 
-      - run: "./logos/bin/logoscore --config-dir ./tls-client-home load-module test_basic_module"
-        code_block: "logoscore --config-dir ./tls-client-home load-module test_basic_module"
+      - run: "./logos/bin/logosctl --config-dir ./tls-client-home module load test_basic_module"
+        code_block: "logosctl --config-dir ./tls-client-home module load test_basic_module"
         expect_contains:
           - '"status":"ok"'
 
-      - run: "./logos/bin/logoscore --config-dir ./tls-client-home call test_basic_module addInts 40 2"
-        code_block: "logoscore --config-dir ./tls-client-home call test_basic_module addInts 40 2"
+      - run: "./logos/bin/logosctl --config-dir ./tls-client-home call test_basic_module addInts 40 2"
+        code_block: "logosctl --config-dir ./tls-client-home call test_basic_module addInts 40 2"
         expect_contains:
           - '"result":42'
 
@@ -355,8 +355,8 @@ sections:
               }
           }
           JSON
-          ./logos/bin/logoscore --config-dir ./tls-client-home status || true
-        code_block: "logoscore --config-dir ./tls-client-home status   # no ca → rejected"
+          ./logos/bin/logosctl --config-dir ./tls-client-home status || true
+        code_block: "logosctl --config-dir ./tls-client-home status   # no ca → rejected"
         expect_contains:
           - '"status":"not_running"'
         post_text: |
@@ -365,8 +365,8 @@ sections:
           > omitting the CA — but never do that against a real network.
 
       - title: "Stop the TLS daemon"
-        run: "./logos/bin/logoscore --config-dir ./tls-daemon-home stop"
-        code_block: "logoscore --config-dir ./tls-daemon-home stop"
+        run: "./logos/bin/logosctl --config-dir ./tls-daemon-home stop"
+        code_block: "logosctl --config-dir ./tls-daemon-home stop"
         expect_contains:
           - '"status":"ok"'
 

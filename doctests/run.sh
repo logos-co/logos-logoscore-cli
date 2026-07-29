@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# Execute every logoscore doc-test end-to-end and regenerate its Markdown.
+# Execute every logosctl doc-test end-to-end and regenerate its Markdown.
 #
 # Each `*.test.yaml` in this directory is a self-contained doc-test:
-#   - logoscore-daemon.test.yaml              — daemon lifecycle (local same-host)
-#   - logoscore-transports.test.yaml          — reaching the daemon over TCP / TCP+TLS
-#   - logoscore-concurrent-blocking.test.yaml — many concurrent clients vs a blocking
+#   - logosctl-daemon.test.yaml              — daemon lifecycle (local same-host)
+#   - logosctl-transports.test.yaml          — reaching the daemon over TCP / TCP+TLS
+#   - logosctl-concurrent-blocking.test.yaml — many concurrent clients vs a blocking
 #                                               module method (serialization, no crash)
 #
 # The runner is the shared `doctest` CLI
 # (https://github.com/logos-co/logos-doctest), invoked directly via its flake.
-# `doctest run` executes every command in a temp directory (building logoscore,
+# `doctest run` executes every command in a temp directory (building logosctl,
 # preparing modules, starting the daemon, calling methods) and asserts on the
 # output; `doctest generate` renders the same spec to Markdown under outputs/;
 # `doctest clean` strips build artifacts so only the generated docs remain.
@@ -19,7 +19,7 @@
 # set DOCTEST, e.g.:  DOCTEST="nix run path:../../logos-doctest --" ./run.sh
 #
 # By default every spec runs. Pass spec filenames as arguments to run a subset,
-# e.g.:  ./run.sh logoscore-transports.test.yaml
+# e.g.:  ./run.sh logosctl-transports.test.yaml
 #
 set -euo pipefail
 
@@ -49,21 +49,21 @@ output_md_for() {
 }
 
 # Build the doc-tests against THIS repo's current commit rather than the latest
-# published flake. Each spec's `github:logos-co/logos-logoscore-cli{release}` URL
+# published flake. Each spec's `github:logos-co/logos-logosctl-cli{release}` URL
 # is pinned to $COMMIT via --release-for, so the run exercises exactly what's
 # checked out here. Override by exporting COMMIT (e.g. a tag), or set COMMIT=""
 # to fall back to latest.
 #
 # Note: nix fetches the commit from the GitHub remote, so $COMMIT must be pushed
-# to logos-co/logos-logoscore-cli. A local-only / uncommitted HEAD won't resolve;
+# to logos-co/logos-logosctl-cli. A local-only / uncommitted HEAD won't resolve;
 # export COMMIT="" (or push first) in that case.
 COMMIT="${COMMIT-$(git rev-parse HEAD)}"
 RELEASE_FOR=()
 if [ -n "${COMMIT}" ]; then
-  RELEASE_FOR=(--release-for "logos-logoscore-cli=${COMMIT}")
-  echo "==> Pinning logos-logoscore-cli to ${COMMIT}"
+  RELEASE_FOR=(--release-for "logos-logosctl-cli=${COMMIT}")
+  echo "==> Pinning logos-logosctl-cli to ${COMMIT}"
 else
-  echo "==> COMMIT empty; building logos-logoscore-cli from latest"
+  echo "==> COMMIT empty; building logos-logosctl-cli from latest"
 fi
 
 echo "==> Clearing previous ${OUTPUT_DIR}/"

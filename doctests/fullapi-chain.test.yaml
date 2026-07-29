@@ -5,7 +5,7 @@ release: ""
 intro: |
   This doc-test exercises the **entire supported API surface** of a Logos module —
   every method parameter/return type and every event parameter type — end to end
-  through `logoscore`, and proves it behaves identically across:
+  through `logosctl`, and proves it behaves identically across:
 
   * two **providers** of the same contract, one written in **C++**
     (`test_fullapi_cpp`) and one in **Rust** (`test_fullapi_rust`); and
@@ -18,7 +18,7 @@ intro: |
   fully hermetic (unlike the cross-version chat check it replaces).
 
 what_you_learn:
-  - How to load a family of related modules into the logoscore daemon
+  - How to load a family of related modules into the logosctl daemon
   - How the same contract, implemented in C++ and in Rust, answers identically
   - How a consumer binds an interface dependency to a runtime-chosen provider
   - How a proxy forwards calls and re-emits events across a language boundary
@@ -41,14 +41,14 @@ prerequisites:
     never opens a peer connection — once the modules are built it runs offline.
 
 sections:
-  - title: "Build logoscore"
+  - title: "Build logosctl"
     step: true
     text: |
-      Build the logoscore CLI from the published flake, symlinked to `./logos/`.
+      Build the logosctl CLI from the published flake, symlinked to `./logos/`.
     steps:
       - title: "Build the CLI"
-        run: "nix build 'github:logos-co/logos-logoscore-cli{release}' --out-link ./logos"
-        check_file: "logos/bin/logoscore"
+        run: "nix build 'github:logos-co/logos-logosctl-cli{release}' --out-link ./logos"
+        check_file: "logos/bin/logosctl"
 
   - title: "Install the full_api module family"
     step: true
@@ -75,11 +75,11 @@ sections:
   - title: "Start the daemon"
     step: true
     text: |
-      Start logoscore in daemon mode; it discovers every module under `./modules/`.
+      Start logosctl in daemon mode; it discovers every module under `./modules/`.
     steps:
       - title: "Start the daemon"
-        run: "sh -c './logos/bin/logoscore -D -m ./modules > logs.txt 2>&1 &'"
-        code_block: "logoscore -D -m ./modules > logs.txt &"
+        run: "sh -c './logos/bin/logosctl daemon start --detach'"
+        code_block: "logosctl daemon start --detach"
       - run: "sleep 3"
       - title: "Load the module family"
         text: |
@@ -87,9 +87,9 @@ sections:
           module explicitly so every one is present regardless.
         run: |
           for m in test_fullapi_cpp test_fullapi_rust test_fullapi_proxy test_fullapi_proxy_rust; do
-            ./logos/bin/logoscore load-module "$m"
+            ./logos/bin/logosctl module load "$m"
           done
-          ./logos/bin/logoscore list-modules
+          ./logos/bin/logosctl module ls
         expect_contains:
           - "test_fullapi_proxy"
 
@@ -102,8 +102,8 @@ sections:
     steps:
       - title: "Identity"
         run: |
-          ./logos/bin/logoscore call test_fullapi_cpp whoAmI
-          ./logos/bin/logoscore call test_fullapi_rust whoAmI
+          ./logos/bin/logosctl call test_fullapi_cpp whoAmI
+          ./logos/bin/logosctl call test_fullapi_rust whoAmI
         expect_contains:
           - "test_fullapi_cpp"
           - "test_fullapi_rust"
@@ -111,11 +111,11 @@ sections:
         run: |
           for mod in test_fullapi_cpp test_fullapi_rust; do
             echo "== $mod =="
-            ./logos/bin/logoscore call "$mod" echoInt 42
-            ./logos/bin/logoscore call "$mod" echoUint 7
-            ./logos/bin/logoscore call "$mod" echoDouble 3.5
-            ./logos/bin/logoscore call "$mod" echoBool true
-            ./logos/bin/logoscore call "$mod" echoString hello
+            ./logos/bin/logosctl call "$mod" echoInt 42
+            ./logos/bin/logosctl call "$mod" echoUint 7
+            ./logos/bin/logosctl call "$mod" echoDouble 3.5
+            ./logos/bin/logosctl call "$mod" echoBool true
+            ./logos/bin/logosctl call "$mod" echoString hello
           done
         expect_contains:
           - '"result":42'
@@ -134,10 +134,10 @@ sections:
         run: |
           for mod in test_fullapi_cpp test_fullapi_rust; do
             echo "== $mod =="
-            ./logos/bin/logoscore call "$mod" echoIntList 'json:[1,2,3]'
-            ./logos/bin/logoscore call "$mod" echoStringList 'json:["a","b"]'
-            ./logos/bin/logoscore call "$mod" echoMap 'json:{"k":"v"}'
-            ./logos/bin/logoscore call "$mod" echoString 'str:json:literal'
+            ./logos/bin/logosctl call "$mod" echoIntList 'json:[1,2,3]'
+            ./logos/bin/logosctl call "$mod" echoStringList 'json:["a","b"]'
+            ./logos/bin/logosctl call "$mod" echoMap 'json:{"k":"v"}'
+            ./logos/bin/logosctl call "$mod" echoString 'str:json:literal'
           done
         expect_contains:
           - '"result":[1,2,3]'
@@ -153,15 +153,15 @@ sections:
           `echoBytes` returns unchanged (bytes are NOT auto-decoded to a string,
           so the response carries the `_bytes` tag, not the literal text).
         run: |
-          ./logos/bin/logoscore call test_fullapi_cpp echoBytes 'json:{"_bytes":"aGVsbG8"}'
+          ./logos/bin/logosctl call test_fullapi_cpp echoBytes 'json:{"_bytes":"aGVsbG8"}'
         expect_contains:
           - '"_bytes":"aGVsbG8"'
       - title: "Result return (success and error)"
         run: |
-          ./logos/bin/logoscore call test_fullapi_cpp makeResult true
-          ./logos/bin/logoscore call test_fullapi_rust makeResult true
-          ./logos/bin/logoscore call test_fullapi_cpp makeResult false
-          ./logos/bin/logoscore call test_fullapi_rust makeResult false
+          ./logos/bin/logosctl call test_fullapi_cpp makeResult true
+          ./logos/bin/logosctl call test_fullapi_rust makeResult true
+          ./logos/bin/logosctl call test_fullapi_cpp makeResult false
+          ./logos/bin/logosctl call test_fullapi_rust makeResult false
         expect_contains:
           - '"success":true'
           - '"success":false'
@@ -175,16 +175,16 @@ sections:
     steps:
       - title: "Bind to the C++ provider"
         run: |
-          ./logos/bin/logoscore call test_fullapi_proxy useProvider test_fullapi_cpp
-          ./logos/bin/logoscore call test_fullapi_proxy whoAmI
-          ./logos/bin/logoscore call test_fullapi_proxy echoInt 99
+          ./logos/bin/logosctl call test_fullapi_proxy useProvider test_fullapi_cpp
+          ./logos/bin/logosctl call test_fullapi_proxy whoAmI
+          ./logos/bin/logosctl call test_fullapi_proxy echoInt 99
         expect_contains:
           - "test_fullapi_cpp"
           - '"result":99'
       - title: "Re-bind to the Rust provider"
         run: |
-          ./logos/bin/logoscore call test_fullapi_proxy useProvider test_fullapi_rust
-          ./logos/bin/logoscore call test_fullapi_proxy whoAmI
+          ./logos/bin/logosctl call test_fullapi_proxy useProvider test_fullapi_rust
+          ./logos/bin/logosctl call test_fullapi_proxy whoAmI
         expect_contains:
           - "test_fullapi_rust"
       - title: "Every array type round-trips through the bound provider"
@@ -197,10 +197,10 @@ sections:
           running it against both the C++ and the Rust provider proves each
           decodes every array type identically across that hop too.
         run: |
-          ./logos/bin/logoscore call test_fullapi_proxy useProvider test_fullapi_cpp
-          ./logos/bin/logoscore call test_fullapi_proxy probeArrays
-          ./logos/bin/logoscore call test_fullapi_proxy useProvider test_fullapi_rust
-          ./logos/bin/logoscore call test_fullapi_proxy probeArrays
+          ./logos/bin/logosctl call test_fullapi_proxy useProvider test_fullapi_cpp
+          ./logos/bin/logosctl call test_fullapi_proxy probeArrays
+          ./logos/bin/logosctl call test_fullapi_proxy useProvider test_fullapi_rust
+          ./logos/bin/logosctl call test_fullapi_proxy probeArrays
         expect_contains:
           - "intList=3 uintList=2 doubleList=2 boolList=2 stringList=2 anyList=3"
       - title: "Async forwarding of the FULL surface through the proxy (start -> read)"
@@ -215,14 +215,14 @@ sections:
           against both the C++ and the Rust provider. (This is the same non-blocking
           path the UI exercises in the Basecamp full-API check.)
         run: |
-          ./logos/bin/logoscore call test_fullapi_proxy useProvider test_fullapi_cpp
-          ./logos/bin/logoscore call test_fullapi_proxy probeAsync
+          ./logos/bin/logosctl call test_fullapi_proxy useProvider test_fullapi_cpp
+          ./logos/bin/logosctl call test_fullapi_proxy probeAsync
           sleep 2
-          ./logos/bin/logoscore call test_fullapi_proxy getAsyncProbe
-          ./logos/bin/logoscore call test_fullapi_proxy useProvider test_fullapi_rust
-          ./logos/bin/logoscore call test_fullapi_proxy probeAsync
+          ./logos/bin/logosctl call test_fullapi_proxy getAsyncProbe
+          ./logos/bin/logosctl call test_fullapi_proxy useProvider test_fullapi_rust
+          ./logos/bin/logosctl call test_fullapi_proxy probeAsync
           sleep 2
-          ./logos/bin/logoscore call test_fullapi_proxy getAsyncProbe
+          ./logos/bin/logosctl call test_fullapi_proxy getAsyncProbe
         expect_contains:
           - "ALL_OK_ASYNC:test_fullapi_cpp"
           - "ALL_OK_ASYNC:test_fullapi_rust"
@@ -233,18 +233,18 @@ sections:
           provider -> proxy event path. The daemon's event loop pumps the delivery
           between the two client calls.
         run: |
-          ./logos/bin/logoscore call test_fullapi_proxy useProvider test_fullapi_cpp
-          ./logos/bin/logoscore call test_fullapi_proxy fireStringEvent hello
+          ./logos/bin/logosctl call test_fullapi_proxy useProvider test_fullapi_cpp
+          ./logos/bin/logosctl call test_fullapi_proxy fireStringEvent hello
           sleep 1
-          ./logos/bin/logoscore call test_fullapi_proxy getLastEvent
+          ./logos/bin/logosctl call test_fullapi_proxy getLastEvent
         expect_contains:
           - "stringEvent:hello"
       - title: "Cross-language event round-trip"
         run: |
-          ./logos/bin/logoscore call test_fullapi_proxy useProvider test_fullapi_rust
-          ./logos/bin/logoscore call test_fullapi_proxy fireIntEvent 7
+          ./logos/bin/logosctl call test_fullapi_proxy useProvider test_fullapi_rust
+          ./logos/bin/logosctl call test_fullapi_proxy fireIntEvent 7
           sleep 1
-          ./logos/bin/logoscore call test_fullapi_proxy getLastEvent
+          ./logos/bin/logosctl call test_fullapi_proxy getLastEvent
         expect_contains:
           - "intEvent:7"
 
@@ -257,11 +257,11 @@ sections:
     steps:
       - title: "Forward to both providers"
         run: |
-          ./logos/bin/logoscore call test_fullapi_proxy_rust useProvider test_fullapi_cpp
-          ./logos/bin/logoscore call test_fullapi_proxy_rust whoAmI
-          ./logos/bin/logoscore call test_fullapi_proxy_rust echoDouble 2.5
-          ./logos/bin/logoscore call test_fullapi_proxy_rust useProvider test_fullapi_rust
-          ./logos/bin/logoscore call test_fullapi_proxy_rust whoAmI
+          ./logos/bin/logosctl call test_fullapi_proxy_rust useProvider test_fullapi_cpp
+          ./logos/bin/logosctl call test_fullapi_proxy_rust whoAmI
+          ./logos/bin/logosctl call test_fullapi_proxy_rust echoDouble 2.5
+          ./logos/bin/logosctl call test_fullapi_proxy_rust useProvider test_fullapi_rust
+          ./logos/bin/logosctl call test_fullapi_proxy_rust whoAmI
         expect_contains:
           - "test_fullapi_cpp"
           - "test_fullapi_rust"
@@ -275,23 +275,23 @@ sections:
           path is exercised through both a C++ AND a Rust consumer, against both
           providers (2x2 with the sync matrix).
         run: |
-          ./logos/bin/logoscore call test_fullapi_proxy_rust useProvider test_fullapi_cpp
-          ./logos/bin/logoscore call test_fullapi_proxy_rust probeAsync
+          ./logos/bin/logosctl call test_fullapi_proxy_rust useProvider test_fullapi_cpp
+          ./logos/bin/logosctl call test_fullapi_proxy_rust probeAsync
           sleep 2
-          ./logos/bin/logoscore call test_fullapi_proxy_rust getAsyncProbe
-          ./logos/bin/logoscore call test_fullapi_proxy_rust useProvider test_fullapi_rust
-          ./logos/bin/logoscore call test_fullapi_proxy_rust probeAsync
+          ./logos/bin/logosctl call test_fullapi_proxy_rust getAsyncProbe
+          ./logos/bin/logosctl call test_fullapi_proxy_rust useProvider test_fullapi_rust
+          ./logos/bin/logosctl call test_fullapi_proxy_rust probeAsync
           sleep 2
-          ./logos/bin/logoscore call test_fullapi_proxy_rust getAsyncProbe
+          ./logos/bin/logosctl call test_fullapi_proxy_rust getAsyncProbe
         expect_contains:
           - "ALL_OK_ASYNC:test_fullapi_cpp"
           - "ALL_OK_ASYNC:test_fullapi_rust"
       - title: "Event round-trip through the Rust proxy"
         run: |
-          ./logos/bin/logoscore call test_fullapi_proxy_rust useProvider test_fullapi_cpp
-          ./logos/bin/logoscore call test_fullapi_proxy_rust fireStringEvent hi
+          ./logos/bin/logosctl call test_fullapi_proxy_rust useProvider test_fullapi_cpp
+          ./logos/bin/logosctl call test_fullapi_proxy_rust fireStringEvent hi
           sleep 1
-          ./logos/bin/logoscore call test_fullapi_proxy_rust getLastEvent
+          ./logos/bin/logosctl call test_fullapi_proxy_rust getLastEvent
         expect_contains:
           - "stringEvent:hi"
 
@@ -299,4 +299,4 @@ sections:
     step: true
     steps:
       - title: "Stop the daemon"
-        run: "./logos/bin/logoscore stop"
+        run: "./logos/bin/logosctl daemon stop"

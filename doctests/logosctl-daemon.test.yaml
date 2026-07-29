@@ -1,21 +1,21 @@
-name: "Running Modules with the logoscore Daemon"
-output: logoscore-daemon.md
+name: "Running Modules with the logosctl Daemon"
+output: logosctl-daemon.md
 release: ""
 
 intro: |
-  This doc-test walks through the **daemon mode** of `logoscore`: start a long-running
+  This doc-test walks through the **daemon mode** of `logosctl`: start a long-running
   process, inspect its status, load a module, introspect and call it, watch its
   resource usage, unload and reload it, and finally shut the daemon down — verifying
   at each stage that the command had the effect we expect.
 
-  `logoscore` is the headless CLI frontend for the Logos platform. In daemon mode
+  `logosctl` is the headless CLI frontend for the Logos platform. In daemon mode
   (`-D`), it runs in the background and exposes client subcommands (`status`,
-  `list-modules`, `load-module`, `module-info`, `stats`, `call`, `unload-module`,
+  `module ls`, `load-module`, `module-info`, `stats`, `call`, `unload-module`,
   `reload-module`, `stop`, …) that connect over a local RPC channel.
 
 what_you_learn:
-  - How to build and run the logoscore CLI
-  - How to prepare a modules directory for the daemon to scan
+  - How to build and run the logosctl CLI
+  - How a session directory holds the modules the daemon scans
   - How to start the daemon in the background and capture its logs
   - How to inspect the daemon and the modules it has discovered
   - How to load a module, introspect it with `module-info`, and call its methods
@@ -35,39 +35,44 @@ prerequisites:
     Verify: `nix flake --help >/dev/null 2>&1 && echo "Flakes enabled"`
 
 sections:
-  - title: "Build logoscore"
+  - title: "Build logosctl"
     step: true
     text: |
-      Build the logoscore CLI from the published flake. The result is symlinked to
+      Build the logosctl CLI from the published flake. The result is symlinked to
       `./logos/` for easy reference in the steps below.
     steps:
       - title: "Build the CLI"
-        run: "nix build 'github:logos-co/logos-logoscore-cli{release}' --out-link ./logos"
-        check_file: "logos/bin/logoscore"
+        run: "nix build 'github:logos-co/logos-logosctl-cli{release}' --out-link ./logos"
+        check_file: "logos/bin/logosctl"
         post_text: |
-          The build produces `logos/bin/logoscore` plus bundled runtime libraries and
+          The build produces `logos/bin/logosctl` plus bundled runtime libraries and
           a `logos/modules/` directory containing the built-in `capability_module`.
 
   - title: "Prepare a modules directory"
     step: true
     text: |
-      `logoscore -m ./modules` scans `./modules/` for subdirectories containing
-      `manifest.json`. We install `test_basic_module` from logos-test-modules and
-      copy the bundled `capability_module` (required for auth when loading modules).
+      A logosctl **session** is a single directory that holds everything the
+      daemon needs: its config, the modules installed into it, its persistence
+      and its trust material. `--config-dir` picks which session to use, and
+      the daemon scans that session's `modules/` subdirectory (plus the
+      read-only set bundled beside the binary).
+
+      Normally you populate a session with `logosctl install`. Here we drop
+      `test_basic_module` straight into `./session/modules/` instead, because
+      this doc-test uses a locally-built module that is not in any catalog.
     steps:
       - title: "Install a module to load"
         text: |
           Build `test_basic_module` and merge it with the bundled capability module
-          into `./modules/`:
+          into the session's `modules/` directory:
         run: |
           SYSTEM=$(nix eval --impure --raw --expr 'builtins.currentSystem')
           nix build "github:logos-co/logos-test-modules#modules.$SYSTEM.test_basic_module.install" --out-link ./result-module
-          mkdir -p modules
-          cp -RL ./logos/modules/. ./modules/
-          cp -RL ./result-module/modules/. ./modules/
-        check_file: "modules/test_basic_module/manifest.json"
+          mkdir -p session/modules
+          cp -RL ./result-module/modules/. ./session/modules/
+        check_file: "session/modules/test_basic_module/manifest.json"
         post_text: |
-          The modules directory now contains:
+          The session's modules directory now contains:
 
           ```
           modules/
@@ -87,14 +92,14 @@ sections:
     steps:
       - title: "Start the daemon"
         text: |
-          Start logoscore in daemon mode in the background, capturing output to
+          Start logosctl in daemon mode in the background, capturing output to
           `logs.txt`:
-        run: "sh -c './logos/bin/logoscore -D -m ./modules > logs.txt 2>&1 &'"
-        code_block: "logoscore -D -m ./modules > logs.txt &"
+        run: "sh -c './logos/bin/logosctl --config-dir ./session daemon start --detach'"
+        code_block: "logosctl daemon start --detach"
         post_text: |
           The `-D` flag starts the daemon. The client subcommands in the following
           steps connect to this running process via the config written under
-          `~/.logoscore/`.
+          `~/.logosctl/`.
 
       - run: "sleep 3"
 
@@ -108,17 +113,17 @@ sections:
           command renders a human-readable form on a terminal and JSON when its
           output is piped; `--human` and `--json` force either form explicitly:
         run: |
-          ./logos/bin/logoscore status --human
+          ./logos/bin/logosctl --config-dir ./session daemon status --human
           echo '# --- JSON ---'
-          ./logos/bin/logoscore status --json
+          ./logos/bin/logosctl --config-dir ./session daemon status --json
         code_block: |
-          logoscore status            # human-readable (default on a TTY)
-          logoscore status --json     # JSON (default when piped)
+          logosctl daemon status            # human-readable (default on a TTY)
+          logosctl daemon status --json     # JSON (default when piped)
         post_text: |
           Human-readable form:
 
           ```text
-          Logoscore Daemon
+          Logosctl Daemon
             Status:       running
             PID:          12345
             Uptime:       6s
@@ -141,12 +146,12 @@ sections:
       - title: "List discovered modules"
         text: "List modules visible in the scan directory, in both forms:"
         run: |
-          ./logos/bin/logoscore list-modules --human
+          ./logos/bin/logosctl --config-dir ./session module ls --human
           echo '# --- JSON ---'
-          ./logos/bin/logoscore list-modules --json
+          ./logos/bin/logosctl --config-dir ./session module ls --json
         code_block: |
-          logoscore list-modules            # human-readable table
-          logoscore list-modules --json     # JSON
+          logosctl module ls            # human-readable table
+          logosctl module ls --json     # JSON
         expect_contains:
           - "test_basic_module"
           # Version comes from each module's metadata.json, so it is present
@@ -173,8 +178,8 @@ sections:
 
       - title: "Load the module"
         text: "Load `test_basic_module` into the running daemon:"
-        run: "./logos/bin/logoscore load-module test_basic_module"
-        code_block: "logoscore load-module test_basic_module"
+        run: "./logos/bin/logosctl --config-dir ./session module load test_basic_module"
+        code_block: "logosctl module load test_basic_module"
         expect_contains:
           - "test_basic_module"
 
@@ -183,12 +188,12 @@ sections:
           Re-run `status`. The module that was `not_loaded` before now reports
           `loaded`, and once loaded it carries an uptime (shown in both forms):
         run: |
-          ./logos/bin/logoscore status --human
+          ./logos/bin/logosctl --config-dir ./session daemon status --human
           echo '# --- JSON ---'
-          ./logos/bin/logoscore status --json
+          ./logos/bin/logosctl --config-dir ./session daemon status --json
         code_block: |
-          logoscore status
-          logoscore status --json
+          logosctl daemon status
+          logosctl daemon status --json
         expect_contains:
           - "test_basic_module"
           - "loaded"
@@ -209,7 +214,7 @@ sections:
           assert it is its **own** process-group leader (`pgid == pid`) and is
           **not** in the daemon's group.
         run: |
-          dpid=$(./logos/bin/logoscore status --json | python3 -c "import json,sys;print(json.load(sys.stdin)['daemon']['pid'])")
+          dpid=$(./logos/bin/logosctl --config-dir ./session daemon status --json | python3 -c "import json,sys;print(json.load(sys.stdin)['daemon']['pid'])")
           dpgid=$(ps -o pgid= -p "$dpid" | tr -d ' ')
           result=NO_MODULE_SUBPROCESS
           for hp in $(pgrep -f logos_host); do
@@ -224,7 +229,7 @@ sections:
           echo "daemon_pid=$dpid daemon_pgid=$dpgid -> $result"
         code_block: |
           # a module subprocess must lead its own group: pgid == pid, != daemon
-          dpid=$(logoscore status --json | jq .daemon.pid)
+          dpid=$(logosctl daemon status --json | jq .daemon.pid)
           host=$(pgrep -P "$dpid" -f logos_host | head -1)
           [ "$host" = "$(ps -o pgid= -p "$host" | tr -d ' ')" ] && echo ISOLATED
         expect_contains:
@@ -235,12 +240,12 @@ sections:
           `module-info` shows a single module's status and the `Q_INVOKABLE`
           methods it exposes — the same methods you can `call`:
         run: |
-          ./logos/bin/logoscore module-info test_basic_module --human
+          ./logos/bin/logosctl --config-dir ./session module show test_basic_module --human
           echo '# --- JSON ---'
-          ./logos/bin/logoscore module-info test_basic_module --json
+          ./logos/bin/logosctl --config-dir ./session module show test_basic_module --json
         code_block: |
-          logoscore module-info test_basic_module
-          logoscore module-info test_basic_module --json
+          logosctl module show test_basic_module
+          logosctl module show test_basic_module --json
         expect_contains:
           - "test_basic_module"
           - '"status":"loaded"'
@@ -278,12 +283,12 @@ sections:
           `stats` reports per-module resource usage (process id, CPU, memory) for
           the modules the daemon is running:
         run: |
-          ./logos/bin/logoscore stats --human
+          ./logos/bin/logosctl --config-dir ./session stats --human
           echo '# --- JSON ---'
-          ./logos/bin/logoscore stats --json
+          ./logos/bin/logosctl --config-dir ./session stats --json
         code_block: |
-          logoscore stats
-          logoscore stats --json
+          logosctl stats
+          logosctl stats --json
         expect_contains:
           - "test_basic_module"
         post_text: |
@@ -305,12 +310,12 @@ sections:
       - title: "Call methods"
         text: "Invoke methods on the loaded module, in both forms:"
         run: |
-          ./logos/bin/logoscore call test_basic_module returnTrue --human
+          ./logos/bin/logosctl --config-dir ./session call test_basic_module returnTrue --human
           echo '# --- JSON ---'
-          ./logos/bin/logoscore call test_basic_module returnTrue --json
+          ./logos/bin/logosctl --config-dir ./session call test_basic_module returnTrue --json
         code_block: |
-          logoscore call test_basic_module returnTrue
-          logoscore call test_basic_module returnTrue --json
+          logosctl call test_basic_module returnTrue
+          logosctl call test_basic_module returnTrue --json
         expect_contains:
           - '"result":true'
         post_text: |
@@ -326,25 +331,25 @@ sections:
           {"status":"ok","module":"test_basic_module","method":"returnTrue","result":true}
           ```
 
-      - run: "./logos/bin/logoscore call test_basic_module addInts 2 3"
-        code_block: "logoscore call test_basic_module addInts 2 3"
+      - run: "./logos/bin/logosctl --config-dir ./session call test_basic_module addInts 2 3"
+        code_block: "logosctl call test_basic_module addInts 2 3"
         expect_contains:
           - '"result":5'
 
-      - run: "./logos/bin/logoscore call test_basic_module echo hello"
-        code_block: "logoscore call test_basic_module echo hello"
+      - run: "./logos/bin/logosctl --config-dir ./session call test_basic_module echo hello"
+        code_block: "logosctl call test_basic_module echo hello"
         expect_contains:
           - "hello"
 
-      - run: "./logos/bin/logoscore call test_basic_module returnString"
-        code_block: "logoscore call test_basic_module returnString"
+      - run: "./logos/bin/logosctl --config-dir ./session call test_basic_module returnString"
+        code_block: "logosctl call test_basic_module returnString"
         expect_contains:
           - "test_basic_module"
 
       - title: "Unload the module"
         text: "Remove `test_basic_module` from the daemon:"
-        run: "./logos/bin/logoscore unload-module test_basic_module"
-        code_block: "logoscore unload-module test_basic_module"
+        run: "./logos/bin/logosctl --config-dir ./session module unload test_basic_module"
+        code_block: "logosctl module unload test_basic_module"
         expect_contains:
           - "test_basic_module"
           - '"status":"ok"'
@@ -353,8 +358,8 @@ sections:
         text: |
           A `call` against the now-unloaded module is rejected — the daemon reports
           that it is not loaded:
-        run: "./logos/bin/logoscore call test_basic_module returnTrue || true"
-        code_block: "logoscore call test_basic_module returnTrue"
+        run: "./logos/bin/logosctl --config-dir ./session call test_basic_module returnTrue || true"
+        code_block: "logosctl call test_basic_module returnTrue"
         post_text: |
           > The trailing `|| true` lets the doc-test continue past the expected
           > non-zero exit code so we can assert on the error message.
@@ -365,25 +370,25 @@ sections:
         text: |
           `reload-module` unloads and re-loads a module in one step (handy after
           rebuilding it). The module is loaded and callable again afterwards:
-        run: "./logos/bin/logoscore reload-module test_basic_module"
-        code_block: "logoscore reload-module test_basic_module"
+        run: "./logos/bin/logosctl --config-dir ./session module reload test_basic_module"
+        code_block: "logosctl module reload test_basic_module"
         expect_contains:
           - "test_basic_module"
           - '"status":"loaded"'
 
-      - run: "./logos/bin/logoscore call test_basic_module addInts 40 2"
-        code_block: "logoscore call test_basic_module addInts 40 2"
+      - run: "./logos/bin/logosctl --config-dir ./session call test_basic_module addInts 40 2"
+        code_block: "logosctl call test_basic_module addInts 40 2"
         expect_contains:
           - '"result":42'
 
       - title: "Stop the daemon"
         text: "Shut down the daemon cleanly:"
-        run: "./logos/bin/logoscore stop"
-        code_block: "logoscore stop"
+        run: "./logos/bin/logosctl --config-dir ./session daemon stop"
+        code_block: "logosctl daemon stop"
         post_text: |
           The daemon removes its state file and exits. You can also stop it with
           `Ctrl+C` if running in the foreground, or by sending `SIGTERM` to the
-          daemon PID shown in `logoscore status`.
+          daemon PID shown in `logosctl daemon status`.
 
       - run: "sleep 2"
 
@@ -392,8 +397,8 @@ sections:
           A final `status` confirms the shutdown. With no daemon running, the
           client reports `not_running` instead of connecting (and exits non-zero,
           so we add `|| true` to let the doc-test assert on the output):
-        run: "./logos/bin/logoscore status || true"
-        code_block: "logoscore status"
+        run: "./logos/bin/logosctl --config-dir ./session daemon status || true"
+        code_block: "logosctl daemon status"
         expect_contains:
           - '"status":"not_running"'
 
@@ -407,9 +412,9 @@ sections:
           `getppid` watchdog on other platforms. (Graceful shutdown, above, still
           reaps workers per-PID; this covers the crash path.)
         run: |
-          ./logos/bin/logoscore -D --config-dir ./crashcfg -m ./modules > crash.log 2>&1 &
+          ./logos/bin/logosctl --config-dir ./session -D --config-dir ./crashcfg -m ./modules > crash.log 2>&1 &
           sleep 5
-          dpid=$(./logos/bin/logoscore --config-dir ./crashcfg status --json | python3 -c "import json,sys;print(json.load(sys.stdin)['daemon']['pid'])")
+          dpid=$(./logos/bin/logosctl --config-dir ./crashcfg status --json | python3 -c "import json,sys;print(json.load(sys.stdin)['daemon']['pid'])")
           worker=""
           for h in $(pgrep -f logos_host); do
             [ "$(ps -o ppid= -p "$h" | tr -d ' ')" = "$dpid" ] && { worker="$h"; break; }
@@ -424,7 +429,7 @@ sections:
           echo "RESULT=$result"
         code_block: |
           # hard-kill the daemon; its module subprocess must exit on its own
-          logoscore -D -m ./modules &      # (throwaway)
-          kill -9 "$(logoscore status --json | jq .daemon.pid)"
+          logosctl daemon start --detach &      # (throwaway)
+          kill -9 "$(logosctl daemon status --json | jq .daemon.pid)"
         expect_contains:
           - "WORKER_CLEANED_UP"

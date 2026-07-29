@@ -1,8 +1,8 @@
-# Logoscore CLI — Project Description
+# Logosctl CLI — Project Description
 
 ## Overview
 
-The `logoscore` CLI is a standalone application that provides the command-line interface for the Logos Core runtime. It depends on **liblogos**, a C library that provides the core runtime (plugin discovery, loading, dependency resolution, event loop). The CLI is responsible for:
+The `logosctl` CLI is a standalone application that provides the command-line interface for the Logos Core runtime. It depends on **liblogos**, a C library that provides the core runtime (plugin discovery, loading, dependency resolution, event loop). The CLI is responsible for:
 
 - Running as a daemon that hosts the liblogos runtime
 - Providing client commands that talk to the daemon via RPC
@@ -12,12 +12,12 @@ This project will live in its own repository. liblogos is consumed as an externa
 ## Project Structure
 
 ```
-logoscore-cli/
+logosctl-cli/
 ├── src/                              # All CLI source code
 │   ├── main.cpp                      # Entry point — detects mode, dispatches
 │   ├── config.cpp/h                  # Token + config file resolution
 │   │
-│   ├── daemon/                       # Daemon path (logoscore -D)
+│   ├── daemon/                       # Daemon path (logosctl daemon start)
 │   │   ├── daemon.cpp/h              # Start core, load core_service, run event loop,
 │   │   │                             # open each --module-transport listener
 │   │   ├── daemon_state.cpp/h        # DaemonConfig (config.json) + DaemonRuntimeState
@@ -104,11 +104,11 @@ The CLI uses these functions from liblogos (declared in `logos_core.h`):
 
 ## CLI Execution Paths
 
-The `logoscore` binary detects its mode from the first argument and dispatches to one of two paths:
+The `logosctl` binary detects its mode from the first argument and dispatches to one of two paths:
 
 ```
-logoscore -D / daemon         →  Daemon path    (long-running, hosts modules)
-logoscore <subcommand>        →  Client path    (short-lived, talks to daemon)
+logosctl daemon start / daemon         →  Daemon path    (long-running, hosts modules)
+logosctl <subcommand>        →  Client path    (short-lived, talks to daemon)
 ```
 
 ### Detection logic (main.cpp)
@@ -122,7 +122,7 @@ else if argv contains -m/-p (no -D)    → error (inline mode removed)
 else                                   → print help
 ```
 
-### Daemon Path (`logoscore -D`)
+### Daemon Path (`logosctl daemon start`)
 
 ```
 main.cpp
@@ -201,7 +201,7 @@ specific client; once copied to the target host, the daemon-side raw file may
 be deleted because validation runs against the in-memory map seeded from the
 hashes.
 
-### Client Path (`logoscore <subcommand>`)
+### Client Path (`logosctl <subcommand>`)
 
 ```
 main.cpp
@@ -209,7 +209,7 @@ main.cpp
     1. Read <configDir>/client/config.json (dial spec + instance_id + token_file)
     2. Set LOGOS_INSTANCE_ID env var from instance_id
        → now LogosInstance::id("core_service") returns the correct registry URL
-    3. Read the raw token from token_file (or LOGOSCORE_TOKEN env var if set)
+    3. Read the raw token from token_file (or LOGOSCTL_TOKEN env var if set)
     4. Build LogosTransportConfig from the dial spec (endpoint/host/port/codec
        and cert/key/ca/verify_peer for TLS) — applied per-connection only,
        never installed as a process-wide default (the SDK's LogosAPIProvider
@@ -242,7 +242,7 @@ through to the same RPC path.
 
 ### Inline Path (removed)
 
-The legacy inline path (`logoscore -m -l -c "module.method(args)" --quit-on-finish`)
+The legacy inline path (`logosctl -m -l -c "module.method(args)" --quit-on-finish`)
 started the core in the same short-lived process, loaded modules, executed the
 `-c` calls directly via the C API, and exited. It has been removed — use a
 daemon (`-D`) plus `load-module` / `call` client subcommands instead. The
@@ -443,14 +443,14 @@ QVariant CoreServiceImpl::callMethod(const QString& method, const QVariantList& 
   "config_source": "cli",
   "resolved": {
     "modules_dirs": ["/path/to/modules"],
-    "persistence_path": "/var/lib/logoscore",
+    "persistence_path": "/var/lib/logosctl",
     "modules": {
       "core_service": {
         "transports": [
           { "protocol": "local" },
           { "protocol": "tcp",     "host": "0.0.0.0", "port": 6000, "codec": "json" },
           { "protocol": "tcp_ssl", "host": "0.0.0.0", "port": 6443,
-            "codec": "cbor", "ca_file": "/etc/logoscore/ca.pem",
+            "codec": "cbor", "ca_file": "/etc/logosctl/ca.pem",
             "verify_peer": true }
         ]
       },
@@ -491,7 +491,7 @@ QVariant CoreServiceImpl::callMethod(const QString& method, const QVariantList& 
 
 | Method | Description |
 |--------|-------------|
-| `TokenStore()` | Default-constructed; paths come from `Config::*` (the process-global config dir). Seeds itself from `tokens.json["tokens"]`. Tests isolate state via `LOGOSCORE_CONFIG_DIR` / `Config::setConfigDir`. |
+| `TokenStore()` | Default-constructed; paths come from `Config::*` (the process-global config dir). Seeds itself from `tokens.json["tokens"]`. Tests isolate state via `LOGOSCTL_CONFIG_DIR` / `Config::setConfigDir`. |
 | `issueToken(name, expires, localOnly, replace) -> IssueResult { status, token }` | Mint a new token. `status` is one of `Ok` / `InvalidName` / `AlreadyExists` / `IoError`; `token` is set only on `Ok`. The CLI keys exit-code distinct error categories off this status so operators don't see "name collision" for permission failures. **Fails closed** rather than corrupting state: a CSPRNG failure (empty raw token) returns `IoError` and persists nothing; an on-disk `tokens.json` whose schema version this build doesn't support returns `IoError` and is left byte-for-byte intact (instead of being rewritten at the current version, wiping operator tokens). On `--replace` the new raw token is staged to `daemon/tokens/<name>.json.new` and promoted only after `tokens.json` commits, so a failed write never destroys the still-valid prior raw token. |
 | `revokeToken(name) -> RevokeStatus` | Remove the `name` entry from `tokens.json["tokens"]` and delete `daemon/tokens/<name>.json`. Returns `Ok` / `InvalidName` / `NotFound` / `IoError`. Like `issueToken`, refuses (`IoError`) to rewrite an unsupported-schema-version `tokens.json`. |
 | `listTokens() -> vector<IssuedToken>` | Enumerate `{name, issued_at, expires_at, local_only}` — never plaintext, never the digest. |
@@ -520,7 +520,7 @@ The CLI client is **not** a child process of the daemon — it's a separate invo
 
 The client/config.json carries `instance_id` rather than a hardcoded registry URL so the client can reconstruct URLs using the same `LogosInstance::id()` function the SDK uses internally.
 
-The token is generated on daemon startup, hashed into `tokens.json["tokens"]`, and emitted raw to `client/auto.json` for the local-default client to pick up. Client commands read it automatically via `client/config.json`'s `token_file` pointer. For remote/CI usage, the token can also be passed via `LOGOSCORE_TOKEN` env var.
+The token is generated on daemon startup, hashed into `tokens.json["tokens"]`, and emitted raw to `client/auto.json` for the local-default client to pick up. Client commands read it automatically via `client/config.json`'s `token_file` pointer. For remote/CI usage, the token can also be passed via `LOGOSCTL_TOKEN` env var.
 
 ### ClientStateFile
 
@@ -602,7 +602,7 @@ The client is a thin wrapper around `LogosAPIClient`. Each method maps 1:1 to a 
 
 | Method | core_service method called |
 |--------|---------------------------|
-| `Client::connect() -> bool` | Read `<configDir>/client/config.json`, set `LOGOS_INSTANCE_ID` from `instance_id`, build `LogosTransportConfig` from the dial spec, load token from `token_file` (or `LOGOSCORE_TOKEN` env), create `LogosAPIClient` targeting `"core_service"`, authenticate |
+| `Client::connect() -> bool` | Read `<configDir>/client/config.json`, set `LOGOS_INSTANCE_ID` from `instance_id`, build `LogosTransportConfig` from the dial spec, load token from `token_file` (or `LOGOSCTL_TOKEN` env), create `LogosAPIClient` targeting `"core_service"`, authenticate |
 | `Client::isConnected() -> bool` | — |
 | `Client::loadModule(name) -> QVariant` | `core_service.loadModule(name)` |
 | `Client::unloadModule(name) -> QVariant` | `core_service.unloadModule(name)` |
@@ -650,8 +650,8 @@ QVariant Client::loadModule(const QString& name) {
 
 | Method | Description |
 |--------|-------------|
-| `Config::getToken() -> QString` | Token resolution: only `LOGOSCORE_TOKEN` env var. Filesystem fallback (`client/<token_file>`) lives in `ClientStateFile::readTokenFile` since it requires parsing the client config. |
-| `Config::configDir() -> QString` | Resolve config dir: explicit setter (`--config-dir`) → `LOGOSCORE_CONFIG_DIR` env → `~/.logoscore` |
+| `Config::getToken() -> QString` | Token resolution: only `LOGOSCTL_TOKEN` env var. Filesystem fallback (`client/<token_file>`) lives in `ClientStateFile::readTokenFile` since it requires parsing the client config. |
+| `Config::configDir() -> QString` | Resolve config dir: explicit setter (`--config-dir`) → `LOGOSCTL_CONFIG_DIR` env → `~/.logosctl` |
 | `Config::setConfigDir(QString)` | Process-wide override set from `main` when `--config-dir` is passed |
 | `Config::daemonConfigPath() / daemonStatePath() / daemonTokensPath() / daemonTokensDir()` | Daemon-side path helpers under `<configDir>/daemon/` |
 | `Config::clientConfigPath() / clientDir() / clientTokenPath(filename)` | Client-side path helpers under `<configDir>/client/`. `clientTokenPath` rejects any `filename` that isn't a plain name (contains `/`, `\`, or `..`) and resolves it to an in-`client/` sentinel, so an operator-influenced `token_file` value can't escape the dir to read an arbitrary file as a credential. |
@@ -659,13 +659,13 @@ QVariant Client::loadModule(const QString& name) {
 The client dial spec lives in `client/config.json` and is loaded via `ClientStateFile::read()` (not `Config`). See the **ClientStateFile** section above for the schema and parsing contract.
 
 **Token resolution order:**
-1. `LOGOSCORE_TOKEN` environment variable
+1. `LOGOSCTL_TOKEN` environment variable
 2. `<configDir>/client/<token_file>` (`token_file` defaults to `auto.json` when `client/config.json` doesn't override it)
 
 **Config dir resolution order:**
-1. `--config-dir <path>` CLI flag (sets process-wide override, mirrors into `LOGOSCORE_CONFIG_DIR`)
-2. `LOGOSCORE_CONFIG_DIR` environment variable
-3. `~/.logoscore` (default)
+1. `--config-dir <path>` CLI flag (sets process-wide override, mirrors into `LOGOSCTL_CONFIG_DIR`)
+2. `LOGOSCTL_CONFIG_DIR` environment variable
+3. `~/.logosctl` (default)
 
 Parallel daemons run side-by-side when invoked with distinct `--config-dir` values; client commands must target the daemon by passing the same `--config-dir`. Two daemons may **not** share a config-dir: startup reads `daemon/state.json` and refuses (exit 1) if its recorded pid is still alive, since both would write the same `state.json` and either one's clean shutdown would unlink it out from under the other. A stale `state.json` left by a crashed daemon (pid no longer alive) is ignored and overwritten.
 
@@ -689,30 +689,30 @@ Parallel daemons run side-by-side when invoked with distinct `--config-dir` valu
 
 All client-path commands connect to the daemon's `core_service` module via `LogosAPIClient` and call its LOGOS_METHODs. They never call liblogos C API functions directly.
 
-### logoscore daemon
+### logosctl daemon
 
 Start the daemon process. **This is the only command that runs the daemon path.**
 
 ```
-logoscore -D [--modules-dir <path>]...
-logoscore daemon [--modules-dir <path>]...
+logosctl daemon start [--modules-dir <path>]...
+logosctl daemon [--modules-dir <path>]...
 ```
 
 **Behavior:**
 1. `logos_core_init(argc, argv)`, add module directories, `logos_core_start()`
 2. Register `core_service` in-process via `logos_core_register_module()`
-3. Write `~/.logoscore/daemon/state.json` (listeners + hashed-token table) and emit `~/.logoscore/client/config.json` + `~/.logoscore/client/auto.json` for the local client
+3. Write `~/.logosctl/daemon/state.json` (listeners + hashed-token table) and emit `~/.logosctl/client/config.json` + `~/.logosctl/client/auto.json` for the local client
 4. `logos_core_exec()` (Qt event loop — blocks)
 5. On SIGINT/SIGTERM: `logos_core_cleanup()`, remove `daemon/state.json`, exit
 
 **Exit codes:** 0 on clean shutdown, 1 on error.
 
-### logoscore load-module
+### logosctl module load
 
 Load a module into the running daemon.
 
 ```
-logoscore load-module <name>
+logosctl module load <name>
 ```
 
 **Behavior:**
@@ -722,12 +722,12 @@ logoscore load-module <name>
 
 **Exit codes:** 0 on success, 2 if no daemon, 3 if module not found or load failed.
 
-### logoscore unload-module
+### logosctl module unload
 
 Unload a module from the running daemon.
 
 ```
-logoscore unload-module <name>
+logosctl module unload <name>
 ```
 
 **Behavior:**
@@ -736,12 +736,12 @@ logoscore unload-module <name>
 
 **Exit codes:** 0 on success, 2 if no daemon, 3 if module not found or unload failed.
 
-### logoscore list-modules
+### logosctl module ls
 
 List available or loaded modules.
 
 ```
-logoscore list-modules [--loaded]
+logosctl module ls [--loaded]
 ```
 
 **Behavior:**
@@ -753,12 +753,12 @@ logoscore list-modules [--loaded]
 
 **Exit codes:** 0 on success, 2 if no daemon.
 
-### logoscore status
+### logosctl daemon status
 
 Show overall daemon and module health.
 
 ```
-logoscore status
+logosctl daemon status
 ```
 
 **Behavior:**
@@ -769,12 +769,12 @@ logoscore status
 
 **Exit codes:** 0 on success, 1 if daemon not running (uses 1 not 2 because the status command itself succeeded — it's reporting the state, not failing to connect).
 
-### logoscore reload-module
+### logosctl module reload
 
 Unload and re-load a module.
 
 ```
-logoscore reload-module <name>
+logosctl module reload <name>
 ```
 
 **Behavior:**
@@ -784,12 +784,12 @@ logoscore reload-module <name>
 
 **Exit codes:** 0 on success, 2 if no daemon, 3 if module not found or reload failed.
 
-### logoscore module-info
+### logosctl module show
 
 Show detailed information about a specific module.
 
 ```
-logoscore module-info <name>
+logosctl module show <name>
 ```
 
 **Behavior:**
@@ -801,18 +801,18 @@ logoscore module-info <name>
 
 **Exit codes:** 0 on success, 2 if no daemon, 3 if module not found.
 
-### logoscore call
+### logosctl call
 
 Call a method on a loaded module.
 
 ```
-logoscore call <module> <method> [args...]
+logosctl call <module> <method> [args...]
 ```
 
 Alternative syntax:
 
 ```
-logoscore module <name> method <method> [args...]
+logosctl module <name> method <method> [args...]
 ```
 
 **Behavior:**
@@ -824,12 +824,12 @@ logoscore module <name> method <method> [args...]
 
 **Exit codes:** 0 on success, 2 if no daemon, 3 if module not loaded, 4 if method not found or call failed.
 
-### logoscore watch
+### logosctl watch
 
 Watch events from a loaded module.
 
 ```
-logoscore watch <module> [--event <name>]
+logosctl watch <module> [--event <name>]
 ```
 
 **Behavior:**
@@ -841,12 +841,12 @@ logoscore watch <module> [--event <name>]
 
 **Exit codes:** 0 on clean shutdown, 2 if no daemon, 3 if module not loaded.
 
-### logoscore stats
+### logosctl stats
 
 Show resource usage for loaded modules.
 
 ```
-logoscore stats
+logosctl stats
 ```
 
 **Behavior:**
@@ -856,12 +856,12 @@ logoscore stats
 
 **Exit codes:** 0 on success, 2 if no daemon.
 
-### logoscore stop
+### logosctl daemon stop
 
 Stop the running daemon via RPC.
 
 ```
-logoscore stop
+logosctl daemon stop
 ```
 
 **Behavior:**
@@ -873,12 +873,12 @@ logoscore stop
 
 **Exit codes:** 0 on success (including when daemon exits before response), 2 if no daemon.
 
-### logoscore info
+### logosctl info
 
 Alias for `module-info`. Delegates to `module-info` command.
 
 ```
-logoscore info <module>
+logosctl module show <module>
 ```
 
 **Behavior:** Same as `module-info <module>` — see above.
@@ -894,7 +894,7 @@ Client commands never call liblogos functions directly. The full call chain is:
 ```
 CLI client                    core_service (daemon-side)              liblogos C API
 ─────────                     ─────────────────────────               ──────────────
-logoscore load-module waku
+logosctl module load waku
   → Client::loadModule("waku")
     → LogosAPIClient::invokeRemoteMethod(
         "core_service", "loadModule", "waku")
@@ -945,11 +945,11 @@ Client commands call core_service LOGOS_METHODs, which delegate to liblogos inte
 ```bash
 nix build
 
-# The logoscore binary is at:
-./result/bin/logoscore
+# The logosctl binary is at:
+./result/bin/logosctl
 
 # Run daemon
-./result/bin/logoscore -D -m /path/to/modules
+./result/bin/logosctl daemon start -m /path/to/modules
 ```
 
 ---
@@ -960,134 +960,134 @@ nix build
 
 ```bash
 # Start the daemon with module directories
-logoscore -D -m ./modules &
+logosctl daemon start --detach &
 
 # Check daemon health
-logoscore status
+logosctl daemon status
 
 # Load modules
-logoscore load-module waku
-logoscore load-module chat
+logosctl module load waku
+logosctl module load chat
 
 # List loaded modules (with status and uptime)
-logoscore list-modules --loaded
+logosctl module ls --loaded
 
 # Get detailed module info
-logoscore module-info chat
+logosctl module show chat
 
 # Call a method
-logoscore call chat send_message "hello world"
+logosctl call chat send_message "hello world"
 
 # Reload a crashed module
-logoscore reload-module chat
+logosctl module reload chat
 
 # Watch events
-logoscore watch chat --event chat-message
+logosctl watch chat --event chat-message
 
 # Get stats
-logoscore stats
+logosctl stats
 
 # Stop daemon
-logoscore stop
+logosctl daemon stop
 ```
 
 ### Agent / Script Usage
 
 ```bash
 # Start daemon
-logoscore -D -m ./modules &
+logosctl daemon start --detach &
 sleep 2
 
 # Preflight: verify daemon is running
-logoscore status --json | jq -e '.daemon.status == "running"' > /dev/null
+logosctl daemon status --json | jq -e '.daemon.status == "running"' > /dev/null
 
 # Check what's available and their state
-logoscore list-modules --json
+logosctl module ls --json
 # [
 #   {"name":"waku","version":"0.1.0","status":"not_loaded"},
 #   {"name":"chat","version":"0.2.0","status":"not_loaded"}
 # ]
 
 # Load modules (JSON output for parsing)
-logoscore load-module waku --json
+logosctl module load waku --json
 # {"status":"ok","module":"waku","version":"0.1.0","dependencies_loaded":["store"]}
 
-logoscore load-module chat --json
+logosctl module load chat --json
 # {"status":"ok","module":"chat","version":"0.2.0","dependencies_loaded":[]}
 
 # Discover methods before calling
-logoscore module-info chat --json | jq '.methods[].name'
+logosctl module show chat --json | jq '.methods[].name'
 # "send_message"
 # "get_history"
 # "get_status"
 
 # Call method and parse result
-RESULT=$(logoscore call chat send_message "hello" --json)
+RESULT=$(logosctl call chat send_message "hello" --json)
 echo "$RESULT" | jq -r '.result'
 
 # Handle crashed modules
-MODULE_STATUS=$(logoscore status --json | jq -r '.modules[] | select(.name=="chat") | .status')
+MODULE_STATUS=$(logosctl daemon status --json | jq -r '.modules[] | select(.name=="chat") | .status')
 if [ "$MODULE_STATUS" = "crashed" ]; then
-  logoscore module-info chat --json | jq '{exit_code, crash_signal, restart_count}'
-  logoscore reload-module chat --json
+  logosctl module show chat --json | jq '{exit_code, crash_signal, restart_count}'
+  logosctl module reload chat --json
 fi
 
 # Stream events to log file
-logoscore watch chat --event chat-message --json >> events.log &
+logosctl watch chat --event chat-message --json >> events.log &
 WATCH_PID=$!
 
 # Check overall health before cleanup
-logoscore status --json | jq '.modules_summary'
+logosctl daemon status --json | jq '.modules_summary'
 # {"loaded": 3, "crashed": 0, "not_loaded": 0}
 
 # Cleanup
 kill $WATCH_PID
-logoscore stop
+logosctl daemon stop
 ```
 
 ### Using Environment Variables for Auth
 
 ```bash
 # Set token via environment
-export LOGOSCORE_TOKEN=xyz123
+export LOGOSCTL_TOKEN=xyz123
 
 # Or inline per-command
-LOGOSCORE_TOKEN=xyz123 logoscore load-module waku
+LOGOSCTL_TOKEN=xyz123 logosctl module load waku
 
 # Or via the client/ tree (point client/config.json's token_file at a JSON
 # file the daemon emitted — useful for remote clients). The file is a
 # {"version":1,"name":"alice","token":"<raw>","issued_at":"<iso>"}
 # object that `issue-token --name alice` writes to
-# <daemon-host>/.logoscore/daemon/tokens/alice.json. Copy it across
+# <daemon-host>/.logosctl/daemon/tokens/alice.json. Copy it across
 # (scp / ansible / cloud-secret-fetch) and reference it from
 # client/config.json's token_file:
-mkdir -p ~/.logoscore/client
-scp daemon-host:~/.logoscore/daemon/tokens/alice.json ~/.logoscore/client/
-# then ensure ~/.logoscore/client/config.json's token_file = "alice.json"
-logoscore load-module waku
+mkdir -p ~/.logosctl/client
+scp daemon-host:~/.logosctl/daemon/tokens/alice.json ~/.logosctl/client/
+# then ensure ~/.logosctl/client/config.json's token_file = "alice.json"
+logosctl module load waku
 ```
 
 ### Piping and Composition
 
 ```bash
 # Filter loaded modules
-logoscore list-modules --json | jq '[.[] | select(.status == "loaded")]'
+logosctl module ls --json | jq '[.[] | select(.status == "loaded")]'
 
 # Find crashed modules
-logoscore list-modules --json | jq '[.[] | select(.status == "crashed")]'
+logosctl module ls --json | jq '[.[] | select(.status == "crashed")]'
 
 # Watch events and filter
-logoscore watch chat --event chat-message --json | jq 'select(.data.from == "alice")'
+logosctl watch chat --event chat-message --json | jq 'select(.data.from == "alice")'
 
 # Monitor module health with status dashboard
-watch -n 5 'logoscore status --json | jq "{daemon: .daemon.status, modules: .modules_summary}"'
+watch -n 5 'logosctl daemon status --json | jq "{daemon: .daemon.status, modules: .modules_summary}"'
 
 # Monitor resource usage
-watch -n 5 'logoscore stats --json | jq ".[] | {name, cpu_percent, memory_mb}"'
+watch -n 5 'logosctl stats --json | jq ".[] | {name, cpu_percent, memory_mb}"'
 
 # Auto-reload crashed modules
-logoscore list-modules --json | jq -r '.[] | select(.status == "crashed") | .name' | while read mod; do
-  logoscore reload-module "$mod" --json
+logosctl module ls --json | jq -r '.[] | select(.status == "crashed") | .name' | while read mod; do
+  logosctl module reload "$mod" --json
 done
 ```
 
@@ -1122,8 +1122,8 @@ done
 
 1. **Tab completion** — Shell completion scripts for bash/zsh/fish.
 2. **TUI mode** — Interactive terminal UI with autocomplete (like Obsidian CLI).
-3. **Batch mode** — Execute multiple commands from a file (`logoscore batch commands.txt`).
-4. **`module-logs` command** — Stream or tail module process logs (`logoscore module-logs chat --tail 50`). Referenced by error messages but not yet specified.
+3. **Batch mode** — Execute multiple commands from a file (`logosctl batch commands.txt`).
+4. **`module-logs` command** — Stream or tail module process logs (`logosctl module-logs chat --tail 50`). Referenced by error messages but not yet specified.
 5. **Extract core_service** — If core_service grows, it could be extracted into a standalone plugin loaded from disk rather than statically linked. The LOGOS_PROVIDER API makes this trivial.
 6. **Capability-scoped tokens** — Today all tokens are admin-equivalent. Named tokens (`issue-token --name …`) create separate identities but each one is still fully authorised against the daemon. A scope/capability system would let e.g. a read-only token call `list-modules` / `status` but reject `load-module` / `stop`.
 7. **Client-cert TLS** — The `tcp_ssl` transport today authenticates the daemon to the client (server cert); mutual TLS + client-cert auth would be a natural extension once we have scoped tokens, and subsumes the token-file distribution problem for many deployments.

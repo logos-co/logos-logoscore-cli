@@ -171,13 +171,21 @@ void Output::printStats(const LogosList& stats)
         return;
     }
 
-    std::cout << padRight("MODULE", 12)
+    // Size the name column to the widest entry. A fixed 12 was narrower than
+    // real module names ("test_basic_module"), so the name ran straight into
+    // the PID with no separator.
+    std::size_t nameWidth = std::string("MODULE").size();
+    for (const auto& s : stats)
+        nameWidth = std::max(nameWidth, s.value("name", std::string{}).size());
+    nameWidth += 2;
+
+    std::cout << padRight("MODULE", nameWidth)
               << padRight("PID", 8)
               << padRight("CPU%", 8)
               << "MEMORY" << std::endl;
 
     for (const auto& s : stats) {
-        std::cout << padRight(s.value("name", std::string{}), 12)
+        std::cout << padRight(s.value("name", std::string{}), nameWidth)
                   << padRight(fmt::format("{}", static_cast<int64_t>(s.value("pid", 0.0))), 8)
                   << padRight(fmt::format("{:.1f}%", s.value("cpu_percent", 0.0)), 8)
                   << fmt::format("{:.1f} MB", s.value("memory_mb", 0.0))
