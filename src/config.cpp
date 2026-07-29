@@ -35,13 +35,13 @@ std::string Config::configDir()
 }
 
 std::string Config::daemonDir()        { return configDir() + "/daemon"; }
-std::string Config::daemonConfigPath() { return daemonDir() + "/config.json"; }
+std::string Config::daemonConfigPath() { return daemonDir() + "/config.yaml"; }
 std::string Config::daemonStatePath()  { return daemonDir() + "/state.json"; }
 std::string Config::daemonTokensPath() { return daemonDir() + "/tokens.json"; }
 std::string Config::daemonTokensDir()  { return daemonDir() + "/tokens"; }
 
 std::string Config::clientDir()        { return configDir() + "/client"; }
-std::string Config::clientConfigPath() { return clientDir() + "/config.json"; }
+std::string Config::clientConfigPath() { return clientDir() + "/config.yaml"; }
 
 std::string Config::modulesDir()       { return configDir() + "/modules"; }
 std::string Config::pluginsDir()       { return configDir() + "/plugins"; }

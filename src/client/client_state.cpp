@@ -1,5 +1,8 @@
 #include "client_state.h"
 #include "../config.h"
+#include "../yaml_json.h"
+
+#include <sstream>
 
 #include <nlohmann/json.hpp>
 
@@ -88,9 +91,17 @@ ClientState ClientStateFile::read()
     std::ifstream ifs(filePath());
     if (!ifs) return state;
 
-    json obj;
-    try { obj = json::parse(ifs); }
-    catch (...) { return state; }
+    std::stringstream buf;
+    buf << ifs.rdbuf();
+    std::string parseError;
+    auto parsed = yaml_json::parse(buf.str(), &parseError);
+    if (!parsed || !parsed->is_object()) {
+        std::cerr << "ClientState: " << filePath() << " is not valid YAML: "
+                  << (parsed ? "top level must be a mapping" : parseError)
+                  << std::endl;
+        return state;
+    }
+    json obj = std::move(*parsed);
 
     state.schemaVersion = obj.value("version", 0);
     if (state.schemaVersion != kClientStateSchemaVersion) {
@@ -152,7 +163,7 @@ bool ClientStateFile::write(const ClientState& state)
 
     std::ofstream ofs(path, std::ios::trunc);
     if (!ofs) return false;
-    ofs << obj.dump(4) << "\n";
+    ofs << yaml_json::dump(obj);
     return ofs.good();
 }
 

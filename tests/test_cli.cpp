@@ -233,170 +233,123 @@ TEST_F(CLITest, Stop_NoDaemon_ReturnsFast) {
     EXPECT_LE(secs, 5) << "stop should return within 5 seconds (took " << secs << "s).";
     EXPECT_NE(exitCode, 0);
 }
-
 // ═════════════════════════════════════════════════════════════════════════════
-// Relative path resolution — logos_core cannot load plugin metadata from
-// relative paths (dlopen fails to resolve RPATH).  logoscore must resolve
-// --modules-dir to an absolute path before calling logos_core_add_modules_dir.
+// Configuration moved from flags to the session's YAML documents.
 //
-// These tests verify this by checking that the "Added plugins directory:"
-// debug message contains an absolute path, even when the CLI receives a
-// relative one.
+// The old per-flag surface (-m/--modules-dir, --persistence-path,
+// --module-transport, --insecure-tcp, --access-policy, --access-group,
+// --persist-config, and the seven --client-* dial flags) is gone. What those
+// flags used to validate is now validated when the document is installed, so
+// these tests moved with it: a bad value is rejected by `daemon config set` /
+// `client config set` rather than at parse time.
 // ═════════════════════════════════════════════════════════════════════════════
 
-TEST_F(CLITest, DaemonMode_RelativePath_ResolvedToAbsolute) {
-    fs::path parentDir = fs::temp_directory_path() / "logoscore_test_relpath_daemon";
-    fs::path modulesDir = parentDir / "my_modules";
-    fs::create_directories(modulesDir);
-
-    // cd into parentDir, start daemon with relative "./my_modules"
-    std::string cmd = "cd " + parentDir.string() + " && HOME=" + parentDir.string()
-        + " timeout 5 "
-        + logoscoreBinary.string()
-        + " -D --verbose --modules-dir ./my_modules 2>&1";
-
-    FILE* pipe = popen(cmd.c_str(), "r");
-    ASSERT_NE(pipe, nullptr);
-    std::string output;
-    char buffer[256];
-    while (fgets(buffer, sizeof(buffer), pipe))
-        output += buffer;
-    pclose(pipe);
-
-    std::string marker = "Added plugins directory:";
-    auto pos = output.find(marker);
-    ASSERT_NE(pos, std::string::npos) << "Should see plugins directory message. Output:\n" << output;
-
-    std::string afterMarker = output.substr(pos + marker.size());
-    bool isAbsolute = afterMarker.find("/my_modules") != std::string::npos;
-    bool isRelative = afterMarker.find("\"./my_modules\"") != std::string::npos;
-    EXPECT_TRUE(isAbsolute && !isRelative)
-        << "Daemon relative --modules-dir should be resolved to absolute before passing to logos_core. "
-        << "Output:\n" << output;
-
-    fs::remove_all(parentDir);
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// Persistence path option
-// ═════════════════════════════════════════════════════════════════════════════
-
-TEST_F(CLITest, HelpCommand_ShowsPersistencePath) {
+TEST_F(CLITest, Help_ShowsOnlyTheSurvivingGlobalFlags) {
     std::string output;
     int exitCode = runLogoscore("--help", &output);
     EXPECT_EQ(exitCode, 0);
-    EXPECT_NE(output.find("--persistence-path"), std::string::npos)
-        << "Help should document --persistence-path option. Output:\n" << output;
-}
 
-// NOTE: module manifest discovery (with/without "type") was previously
-// exercised through inline mode; that behaviour lives in liblogos and is
-// covered there. The daemon path is verified by the integration tests.
-
-// ═════════════════════════════════════════════════════════════════════════════
-// Inline mode removed — daemon-only flags must be rejected, not silently ignored
-// ═════════════════════════════════════════════════════════════════════════════
-
-TEST_F(CLITest, DaemonFlags_NoDaemonNoSubcommand_Rejected) {
-    // `logoscore -m <dir>` with no -D and no subcommand used to start inline
-    // mode; it must now fail with guidance toward the daemon/client workflow.
-    std::string output;
-    int exitCode = runLogoscore("--modules-dir /tmp/logoscore_test_x", &output);
-    EXPECT_EQ(exitCode, 1) << "Output:\n" << output;
-    EXPECT_NE(output.find("daemon"), std::string::npos)
-        << "Should point at the daemon (-D) workflow. Output:\n" << output;
-}
-
-TEST_F(CLITest, DaemonFlags_WithClientSubcommand_Rejected) {
-    // Daemon-only flags alongside a client subcommand are a no-op trap; reject
-    // them before attempting the command, regardless of whether a daemon runs.
-    std::string output;
-    int exitCode = runLogoscore("--modules-dir /tmp/logoscore_test_x status", &output);
-    EXPECT_EQ(exitCode, 1) << "Output:\n" << output;
-    EXPECT_NE(output.find("daemon"), std::string::npos)
-        << "Should reject -m with a client subcommand. Output:\n" << output;
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// BUG-026: --module-transport port must reject trailing garbage
-// std::stoi("6000x") returns 6000 and std::stoi("0x1F90") returns 0; the
-// parser must require the WHOLE value to be a valid integer or error out,
-// so a typo can't silently bind a different (or auto-allocated) port.
-// ═════════════════════════════════════════════════════════════════════════════
-
-// Use the timeout helper: a correct build REJECTS the bad port and exits 1
-// before the event loop; a buggy build parses the prefix, starts the daemon,
-// and would block — surfacing as timeout's exit 124 rather than a hung test.
-TEST_F(CLITest, ModuleTransportPort_TrailingGarbageRejected) {
-    std::string output;
-    int exitCode = runLogoscoreWithTimeout(
-        "-D --module-transport core_service=tcp,port=6000x", &output, 5);
-    EXPECT_EQ(exitCode, 1)
-        << "port=6000x must be rejected (exit 1), not parsed as 6000 and "
-           "started (124=timeout). Output:\n" << output;
-    EXPECT_NE(output.find("not a valid integer"), std::string::npos)
+    // --config-dir survives because it selects *which* session to act on, so
+    // it cannot itself live inside one.
+    EXPECT_NE(output.find("--config-dir"), std::string::npos)
         << "Output:\n" << output;
-}
 
-TEST_F(CLITest, ModuleTransportPort_HexLikeRejected) {
-    std::string output;
-    int exitCode = runLogoscoreWithTimeout(
-        "-D --module-transport core_service=tcp,port=0x1F90", &output, 5);
-    EXPECT_EQ(exitCode, 1)
-        << "port=0x1F90 must be rejected (exit 1), not parsed as 0. "
-           "Output:\n" << output;
-    EXPECT_NE(output.find("not a valid integer"), std::string::npos)
-        << "Output:\n" << output;
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// BUG-027: --client-codec must be validated (json|cbor), mirroring the daemon
-// side. An invalid value was stored verbatim and silently coerced to JSON at
-// dial time, defeating the documented "connect fails on codec mismatch".
-// ═════════════════════════════════════════════════════════════════════════════
-
-TEST_F(CLITest, ClientCodec_InvalidRejected) {
-    // Codec validation happens during the client-config merge, before any
-    // connect. A correct build exits 1 with "must be"; a buggy build silently
-    // coerces to JSON and proceeds to `status` (exit 2, no daemon). Timeout
-    // helper guards against any unexpected block.
-    // Global client flags are parsed before the subcommand (after it they're
-    // swallowed by allow_extras), so place --client-codec ahead of `status`.
-    std::string output;
-    int exitCode = runLogoscoreWithTimeout(
-        "--client-codec jsonn status", &output, 5);
-    EXPECT_EQ(exitCode, 1)
-        << "An invalid --client-codec must be rejected with exit 1, not "
-           "coerced to JSON (exit 2). Output:\n" << output;
-    EXPECT_NE(output.find("must be"), std::string::npos)
-        << "Output:\n" << output;
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// BUG-028: --token-file must reject a file that exists but carries no usable
-// token (missing/empty token field, or unparseable JSON), instead of marking
-// the config usable and failing later at connect time.
-// ═════════════════════════════════════════════════════════════════════════════
-
-TEST_F(CLITest, TokenFile_PresentButEmptyTokenRejected) {
-    // Stage a client/ dir with a token file that has no usable token field.
-    const fs::path cfgDir = fs::temp_directory_path() /
-        ("logoscore_cli_tf_" + std::to_string(::getpid()));
-    const fs::path clientDir = cfgDir / "client";
-    fs::create_directories(clientDir);
-    {
-        std::ofstream ofs(clientDir / "empty.json", std::ios::trunc);
-        ofs << "{}\n";  // valid JSON, but no "token" key
+    for (const char* gone : {"--modules-dir", "--persistence-path",
+                             "--module-transport", "--insecure-tcp",
+                             "--access-policy", "--access-group",
+                             "--persist-config", "--client-transport",
+                             "--client-codec", "--token-file", "--ssl-ca"}) {
+        EXPECT_EQ(output.find(gone), std::string::npos)
+            << gone << " should no longer exist as a flag. Output:\n" << output;
     }
-    // --token-file is a global client flag too; place it before `status`.
+}
+
+TEST_F(CLITest, RemovedFlags_AreRejectedNotIgnored) {
+    // Silently accepting a flag that no longer does anything would leave the
+    // operator's intent unapplied with nothing to explain it.
+    std::string output;
+    int exitCode = runLogoscoreWithTimeout("-D --modules-dir /tmp/x", &output, 5);
+    EXPECT_EQ(exitCode, 109)
+        << "A removed flag must be a parse error, not ignored (and must not "
+           "start a daemon -- 124 would mean it did). Output:\n" << output;
+}
+
+TEST_F(CLITest, DaemonConfigSet_RejectsMalformedYaml) {
+    const fs::path cfgDir = fs::temp_directory_path() /
+        ("logoscore_cli_badyaml_" + std::to_string(::getpid()));
+    fs::create_directories(cfgDir);
+    const fs::path doc = cfgDir / "bad.yaml";
+    { std::ofstream ofs(doc, std::ios::trunc); ofs << "modules:\n  - [unclosed\n"; }
+
     std::string output;
     int exitCode = runLogoscoreWithTimeout(
-        "--config-dir " + cfgDir.string() +
-        " --token-file empty.json status", &output, 5);
+        "--config-dir " + cfgDir.string() + " daemon config set " + doc.string(),
+        &output, 5);
+    EXPECT_EQ(exitCode, 1) << "Output:\n" << output;
+    // The existing config must survive a rejected document.
+    EXPECT_FALSE(fs::exists(cfgDir / "daemon" / "config.yaml"))
+        << "A malformed document must not be written.";
     fs::remove_all(cfgDir);
-    EXPECT_EQ(exitCode, 1)
-        << "A token file with no usable token must be rejected up front "
-           "(exit 1), not accepted and failed later. Output:\n" << output;
-    EXPECT_NE(output.find("token"), std::string::npos)
-        << "Output:\n" << output;
+}
+
+TEST_F(CLITest, DaemonConfigSet_RejectsUnknownKeys) {
+    // `insecureTcp` is a near-miss for `insecure_tcp`. The loader ignores
+    // unrecognised keys, so without this check the daemon would boot with the
+    // operator's intent silently dropped.
+    const fs::path cfgDir = fs::temp_directory_path() /
+        ("logoscore_cli_badkey_" + std::to_string(::getpid()));
+    fs::create_directories(cfgDir);
+    const fs::path doc = cfgDir / "typo.yaml";
+    { std::ofstream ofs(doc, std::ios::trunc); ofs << "insecureTcp: true\n"; }
+
+    std::string output;
+    int exitCode = runLogoscoreWithTimeout(
+        "--config-dir " + cfgDir.string() + " daemon config set " + doc.string(),
+        &output, 5);
+    EXPECT_EQ(exitCode, 1) << "Output:\n" << output;
+    EXPECT_NE(output.find("insecure_tcp"), std::string::npos)
+        << "The error should name the correct spelling. Output:\n" << output;
+    fs::remove_all(cfgDir);
+}
+
+TEST_F(CLITest, DaemonConfigSet_RoundTripsThroughShow) {
+    const fs::path cfgDir = fs::temp_directory_path() /
+        ("logoscore_cli_rt_" + std::to_string(::getpid()));
+    fs::create_directories(cfgDir);
+    const fs::path doc = cfgDir / "node.yaml";
+    {
+        std::ofstream ofs(doc, std::ios::trunc);
+        ofs << "insecure_tcp: true\n"
+               "modules:\n"
+               "  core_service:\n"
+               "    - protocol: tcp\n"
+               "      host: 127.0.0.1\n"
+               "      port: 8645\n";
+    }
+
+    std::string output;
+    int exitCode = runLogoscoreWithTimeout(
+        "--config-dir " + cfgDir.string() + " daemon config set " + doc.string(),
+        &output, 5);
+    ASSERT_EQ(exitCode, 0) << "Output:\n" << output;
+
+    std::string shown;
+    exitCode = runLogoscoreWithTimeout(
+        "--config-dir " + cfgDir.string() + " daemon config show --human", &shown, 5);
+    EXPECT_EQ(exitCode, 0) << "Output:\n" << shown;
+    EXPECT_NE(shown.find("8645"), std::string::npos) << "Output:\n" << shown;
+    EXPECT_NE(shown.find("insecure_tcp"), std::string::npos) << "Output:\n" << shown;
+    fs::remove_all(cfgDir);
+}
+
+TEST_F(CLITest, DaemonConfigShow_AbsentIsNotAnError) {
+    // A session with no config runs on defaults; that is a normal state.
+    const fs::path cfgDir = fs::temp_directory_path() /
+        ("logoscore_cli_absent_" + std::to_string(::getpid()));
+    fs::create_directories(cfgDir);
+    std::string output;
+    int exitCode = runLogoscoreWithTimeout(
+        "--config-dir " + cfgDir.string() + " daemon config show --human", &output, 5);
+    EXPECT_EQ(exitCode, 0) << "Output:\n" << output;
+    fs::remove_all(cfgDir);
 }

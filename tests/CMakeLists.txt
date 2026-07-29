@@ -3,6 +3,7 @@
 # Testable library: config, daemon_state, output, commands (with mock client)
 set(TEST_LIB_SOURCES
     ${CMAKE_SOURCE_DIR}/src/config.cpp
+    ${CMAKE_SOURCE_DIR}/src/yaml_json.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/daemon_state.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/port_allocator.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/token_store.cpp
@@ -24,6 +25,7 @@ set(TEST_LIB_SOURCES
     ${CMAKE_SOURCE_DIR}/src/client/commands/list_tokens_command.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/package_command.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/catalog_command.cpp
+    ${CMAKE_SOURCE_DIR}/src/client/commands/config_command.cpp
 )
 
 add_library(logoscore_testlib STATIC ${TEST_LIB_SOURCES})
@@ -38,6 +40,7 @@ target_link_libraries(logoscore_testlib PUBLIC
     nlohmann_json::nlohmann_json
     OpenSSL::Crypto
     fmt::fmt
+    yaml-cpp::yaml-cpp
 )
 
 # Unit tests

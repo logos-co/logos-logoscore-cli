@@ -1,5 +1,6 @@
 #include "daemon_state.h"
 #include "../config.h"
+#include "../yaml_json.h"
 
 #include <nlohmann/json.hpp>
 
@@ -134,8 +135,20 @@ std::optional<DaemonConfig> daemonConfigFromJson(const json& obj)
             const std::string& moduleName = it.key();
             if (moduleName.empty()) continue;
             const auto& moduleObj = it.value();
-            if (!moduleObj.is_object()) continue;
-            const auto& arr = moduleObj.value("transports", json::array());
+            // Two accepted spellings. The canonical one is
+            // `<module>: { transports: [ ... ] }`, which is what we emit and
+            // what state.json uses. A bare sequence is the obvious thing to
+            // hand-write, so accept it as shorthand rather than skipping it
+            // silently — an ignored transport block means the daemon boots
+            // local-only with no hint as to why.
+            json arr;
+            if (moduleObj.is_array()) {
+                arr = moduleObj;
+            } else if (moduleObj.is_object()) {
+                arr = moduleObj.value("transports", json::array());
+            } else {
+                continue;
+            }
             if (!arr.is_array()) continue;
             std::vector<TransportInfo> transports;
             for (const auto& j : arr) {
@@ -175,7 +188,7 @@ std::optional<DaemonConfig> daemonConfigFromJson(const json& obj)
 // need durability would need an explicit fsync(fd) on the temp file
 // plus a dir fsync after rename. Returns false on any I/O step — including a
 // failed chmod, so a credential file is never published at the wrong mode.
-bool atomicWriteJson(const fs::path& path, const json& obj,
+bool atomicWriteText(const fs::path& path, const std::string& text,
                      mode_t mode = S_IRUSR | S_IWUSR)
 {
     std::error_code ec;
@@ -193,7 +206,7 @@ bool atomicWriteJson(const fs::path& path, const json& obj,
     {
         std::ofstream ofs(tmp, std::ios::trunc);
         if (!ofs) return false;
-        ofs << obj.dump(4) << "\n";
+        ofs << text;
         ofs.close();
         if (!ofs) return false;
     }
@@ -217,6 +230,14 @@ bool atomicWriteJson(const fs::path& path, const json& obj,
     return true;
 }
 
+// JSON flavour, for the machine-owned files (state.json, tokens, the auto
+// token). Shares the atomic-rename + chmod path above.
+bool atomicWriteJson(const fs::path& path, const json& obj,
+                     mode_t mode = S_IRUSR | S_IWUSR)
+{
+    return atomicWriteText(path, obj.dump(4) + "\n", mode);
+}
+
 } // namespace
 
 // -- DaemonConfigFile -------------------------------------------------------
@@ -231,15 +252,29 @@ std::optional<DaemonConfig> DaemonConfigFile::read()
     std::ifstream ifs(filePath());
     if (!ifs) return std::nullopt;
 
-    json obj;
-    try { obj = json::parse(ifs); }
-    catch (...) { return std::nullopt; }
+    // The file is YAML (a human writes it); the schema work below is still
+    // done by daemonConfigFromJson, so the format change stops here.
+    std::stringstream buf;
+    buf << ifs.rdbuf();
+    std::string parseError;
+    auto parsed = yaml_json::parse(buf.str(), &parseError);
+    if (!parsed) {
+        std::cerr << "DaemonConfig: " << filePath() << " is not valid YAML: "
+                  << parseError << std::endl;
+        return std::nullopt;
+    }
+    json obj = std::move(*parsed);
+    if (!obj.is_object()) {
+        std::cerr << "DaemonConfig: " << filePath()
+                  << " must be a mapping at the top level." << std::endl;
+        return std::nullopt;
+    }
 
     const int v = obj.value("version", 0);
     if (v != kDaemonConfigSchemaVersion) {
         std::cerr << "DaemonConfig: unsupported schema version " << v
                   << " in " << filePath()
-                  << " — relaunch with --persist-config to regenerate "
+                  << " — rewrite it with `daemon config set` "
                   << "(expected version " << kDaemonConfigSchemaVersion
                   << ")." << std::endl;
         return std::nullopt;
@@ -251,7 +286,7 @@ bool DaemonConfigFile::write(const DaemonConfig& cfg)
 {
     json obj = daemonConfigToJson(cfg);
     obj["version"] = kDaemonConfigSchemaVersion;
-    return atomicWriteJson(fs::path(filePath()), obj);
+    return atomicWriteText(fs::path(filePath()), yaml_json::dump(obj));
 }
 
 // -- DaemonRuntimeStateFile -------------------------------------------------
@@ -504,9 +539,11 @@ bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
     } else {
         std::ifstream ifs(clientCfgPath);
         if (ifs) {
-            json existing;
-            try { existing = json::parse(ifs); }
-            catch (...) { existing = json::object(); }
+            std::stringstream ebuf;
+            ebuf << ifs.rdbuf();
+            json existing = json::object();
+            if (auto parsed = yaml_json::parse(ebuf.str()); parsed && parsed->is_object())
+                existing = std::move(*parsed);
             const std::string existingInstance =
                 existing.value("instance_id", std::string{});
             if (!existingInstance.empty() && existingInstance != instanceId) {
@@ -536,9 +573,11 @@ bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
         client["instance_id"] = instanceId;
         client["daemon"]      = std::move(daemonBlock);
 
-        // config.json carries no secret (the token lives in a separate file),
-        // so it is safe to make group-readable when sharing.
-        if (!atomicWriteJson(fs::path(clientCfgPath), client, fileMode)) return false;
+        // The client config carries no secret (the token lives in a separate
+        // file), so it is safe to make group-readable when sharing. Written
+        // as YAML: this is a file operators hand-edit for remote setups.
+        if (!atomicWriteText(fs::path(clientCfgPath), yaml_json::dump(client),
+                             fileMode)) return false;
         if (shareWithGroup)
             ::chown(clientCfgPath.c_str(), static_cast<uid_t>(-1), groupGid);
     }

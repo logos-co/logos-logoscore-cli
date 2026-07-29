@@ -81,6 +81,11 @@ else()
     message(STATUS "Using system fmt")
 endif()
 
+# ── yaml-cpp ─────────────────────────────────────────────────────────────────
+# The user-editable config files are YAML; everything machine-owned
+# (state.json, tokens.json, the auto token) stays JSON. See src/yaml_json.h.
+find_package(yaml-cpp REQUIRED)
+
 # ── CLI11 (header-only) ──────────────────────────────────────────────────────
 find_package(CLI11 QUIET)
 if(NOT CLI11_FOUND)
@@ -100,6 +105,7 @@ set(CLI_SOURCES
     src/main.cpp
     src/config.cpp
     src/paths.cpp
+    src/yaml_json.cpp
 
     # Daemon path
     src/daemon/daemon.cpp
@@ -127,6 +133,7 @@ set(CLI_SOURCES
     src/client/commands/list_tokens_command.cpp
     src/client/commands/package_command.cpp
     src/client/commands/catalog_command.cpp
+    src/client/commands/config_command.cpp
 
     # Core service (in-process daemon module)
     src/core_service/core_service_impl.cpp
@@ -143,6 +150,7 @@ target_link_libraries(logoscore PRIVATE
     CLI11::CLI11
     OpenSSL::Crypto
     fmt::fmt
+    yaml-cpp::yaml-cpp
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::RemoteObjects
 )

@@ -173,6 +173,7 @@
               pkgs.cli11
               pkgs.gtest
               pkgs.fmt
+              pkgs.yaml-cpp
             ];
 
             cmakeFlags = [
@@ -269,6 +270,7 @@
               pkgs.cli11
               pkgs.gtest
               pkgs.fmt
+              pkgs.yaml-cpp
               liblogosLib
               # cppSdk propagates Boost, OpenSSL, nlohmann_json (but
               # not Qt) via its symlinkJoin's propagatedBuildInputs —

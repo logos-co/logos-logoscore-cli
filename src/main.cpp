@@ -110,6 +110,37 @@ static std::optional<std::string> resolveAccessPolicy(const std::string& arg)
     return content;
 }
 
+// Collapse the two-token group verbs into the single tokens CLI11 has
+// subcommands for, before any parsing happens:
+//
+//     daemon config ...  ->  daemon-config ...
+//     client config ...  ->  client-config ...
+//     daemon start   ...  ->  daemon ...
+//     daemon stop    ...  ->  stop ...
+//     daemon status  ...  ->  status ...
+//
+// Doing this in argv rather than with nested CLI11 subcommands avoids a
+// collision with daemonSub->fallthrough(): a nested subcommand's unmatched
+// arguments fall through to the parent and then to the top level, which
+// rejects them ("The following argument was not expected: show").
+static std::vector<std::string> normalizeGroupVerbs(int argc, char* argv[])
+{
+    std::vector<std::string> out;
+    out.reserve(static_cast<size_t>(argc));
+    for (int i = 0; i < argc; ++i) {
+        const std::string a = argv[i];
+        const std::string next = (i + 1 < argc) ? argv[i + 1] : std::string{};
+        if (a == "daemon" || a == "client") {
+            if (next == "config") { out.push_back(a + "-config"); ++i; continue; }
+            if (a == "daemon" && next == "start")  { out.push_back("daemon"); ++i; continue; }
+            if (a == "daemon" && next == "stop")   { out.push_back("stop");   ++i; continue; }
+            if (a == "daemon" && next == "status") { out.push_back("status"); ++i; continue; }
+        }
+        out.push_back(a);
+    }
+    return out;
+}
+
 int main(int argc, char *argv[])
 {
     // Pre-scan argv for `--config-dir` so the override applies before
@@ -159,129 +190,25 @@ int main(int argc, char *argv[])
     bool daemonFlag = false;
     app.add_flag("-D", daemonFlag, "Start the daemon process");
 
-    // Shared option: modules directory (used by the daemon)
-    std::vector<std::string> modulesDirs;
-    auto* modulesDirOpt = app.add_option("-m,--modules-dir", modulesDirs,
-        "Module search directory (repeatable)");
-
-    std::string persistencePath;
-    auto* persistencePathOpt = app.add_option("--persistence-path", persistencePath,
-        "Base directory for module instance persistence (default: ~/.logoscore/data)");
-
-    // --access-policy: inter-module access policy (file path or inline
-    // JSON). Daemon-only; forwarded to the runtime before modules load.
-    std::string accessPolicyArg;
-    auto* accessPolicyOpt = app.add_option("--access-policy", accessPolicyArg,
-        "Inter-module access policy: path to a JSON file, or inline JSON "
-        "(mode + per-target caller allowlists)");
-
-    // --access-group: share the daemon with an OS group. Sockets become
-    // group-connectable (0660, chgrp'd) and the client artifacts group-readable,
-    // so a second OS user in the group can drive the daemon (docker.sock model).
-    std::string accessGroupArg;
-    auto* accessGroupOpt = app.add_option("--access-group", accessGroupArg,
-        "OS group to share the daemon with: makes the local sockets and client "
-        "config/token group-accessible so a member can run logoscore commands");
-
-    // --persist-config: write the merged (defaults < config.json < CLI)
-    // result to disk. Without it, CLI flags affect the running process
-    // only; with it, the next no-flag launch reproduces the same
-    // behavior. Applies symmetrically to daemon (daemon/config.json) and
-    // client (client/config.json) modes.
-    bool persistConfig = false;
-    app.add_flag("--persist-config", persistConfig,
-        "Write the merged config to config.json so the next launch reproduces these flags");
-
-    // Override the config dir (daemon/{config,state,tokens}.json,
-    // client/config.json, data/) so parallel logoscore instances can
-    // run side-by-side. Client commands must be invoked with the
-    // same --config-dir as the daemon they target.
+    // Everything that used to be a flag here -- module directories, the
+    // persistence path, per-module transports, the access policy and group,
+    // the plaintext-TCP opt-in, and the seven client dial-spec flags -- now
+    // lives in the session's YAML documents, written with
+    // `daemon config set` / `client config set`. See src/yaml_json.h for why
+    // the split is YAML for humans, JSON for machines.
+    //
+    // Configuration is never passed alongside an unrelated command, so
+    // `daemon start` and every client command take the session exactly as it
+    // is on disk. That removes the whole defaults < config.json < CLI merge
+    // layer, along with the ad-hoc `NAME=PROTOCOL[,k=v...]` grammar that
+    // existed only to squeeze a nested structure through a flag.
+    //
+    // --config-dir is the one survivor, and it is not configuration: it
+    // selects *which* session to act on, so it cannot itself live inside one.
     std::string configDirStr;
     app.add_option("--config-dir", configDirStr,
-        "Override config directory (default: ~/.logoscore; also LOGOSCORE_CONFIG_DIR)");
-
-    // ── Transport flags (daemon side) ────────────────────────────────────────
-    // Per-module transport configuration. Each `--module-transport`
-    // adds one listener to the named module. Format:
-    //
-    //     NAME=PROTOCOL[,k=v[,k=v...]]
-    //
-    // PROTOCOL is `local`, `tcp`, or `tcp_ssl`. Recognized k=v pairs:
-    //
-    //     host         (tcp / tcp_ssl)
-    //     port         (tcp / tcp_ssl; 0 = auto-allocate ephemeral)
-    //     codec        (tcp / tcp_ssl; "json" default | "cbor")
-    //     ca           (tcp_ssl; CA cert path for client verification)
-    //     cert,key     (tcp_ssl; server cert + key paths)
-    //     verify_peer  (tcp_ssl; "true"|"false", default true)
-    //
-    // Repeatable. Each module gets its own list — there is no
-    // "core_service is the source, capability_module inherits" magic
-    // any more. Operators are expected to configure each module
-    // explicitly, matching the on-disk shape of daemon/state.json's
-    // resolved.modules block.
-    //
-    // Default when omitted: each well-known module
-    // (`core_service`, `capability_module`) gets a single `local`
-    // listener.
-    //
-    // Examples:
-    //     logoscore -D \
-    //         --module-transport core_service=local \
-    //         --module-transport core_service=tcp,host=0.0.0.0,port=6000,codec=json \
-    //         --module-transport capability_module=local \
-    //         --module-transport capability_module=tcp,host=0.0.0.0,port=6001,codec=json
-    std::vector<std::string> moduleTransportFlags;
-    auto* moduleTransportOpt = app.add_option("--module-transport", moduleTransportFlags,
-        "Configure a module's transport: NAME=PROTOCOL[,k=v...] (repeatable)");
-
-    // Plaintext-TCP safety net: refuse to bind plaintext `tcp` on a
-    // non-loopback host unless this flag is set. Without it, a daemon
-    // configured with `--module-transport core_service=tcp,host=0.0.0.0`
-    // would put tokens on the wire in cleartext on every RPC. The
-    // escape hatch exists for trusted-network test setups; production
-    // use should pass tcp_ssl or wrap with a TLS terminator.
-    bool insecureTcp = false;
-    auto* insecureTcpOpt = app.add_flag("--insecure-tcp", insecureTcp,
-        "Allow plaintext tcp on non-loopback hosts (tokens travel cleartext)");
-
-    // ── Transport flags (client side) ────────────────────────────────────────
-    //
-    // Each flag has a matching `LOGOSCORE_CLIENT_*` env-var fallback,
-    // so callers that drive logoscore as a subprocess (e.g. the Python
-    // wrapper) can configure the dial spec without manipulating CLI
-    // strings. CLI flag still wins over the env var when both are set
-    // — same precedence as anywhere else in the program.
-    std::string clientTransport;  // empty = prefer local
-    auto* clientTransportOpt = app.add_option("--client-transport", clientTransport,
-        "Pick one of the daemon's advertised transports: local | tcp | tcp_ssl");
-    clientTransportOpt->envname("LOGOSCORE_CLIENT_TRANSPORT");
-    std::string clientTcpHost;
-    auto* clientTcpHostOpt = app.add_option("--client-tcp-host", clientTcpHost,
-        "Override the daemon's advertised host (e.g. 'localhost' when daemon bound 0.0.0.0 in docker)");
-    clientTcpHostOpt->envname("LOGOSCORE_CLIENT_TCP_HOST");
-    uint16_t clientTcpPort = 0;
-    auto* clientTcpPortOpt = app.add_option("--client-tcp-port", clientTcpPort,
-        "Override the daemon's advertised port (useful when port-forwarding or NAT changes the reachable port)");
-    clientTcpPortOpt->envname("LOGOSCORE_CLIENT_TCP_PORT");
-    bool clientNoVerifyPeer = false;
-    auto* clientNoVerifyPeerOpt = app.add_flag("--no-verify-peer", clientNoVerifyPeer,
-        "Disable TLS peer verification (dev only)");
-    clientNoVerifyPeerOpt->envname("LOGOSCORE_CLIENT_NO_VERIFY_PEER");
-    std::string clientCodec;  // empty = accept whatever the daemon advertised
-    auto* clientCodecOpt = app.add_option("--client-codec", clientCodec,
-        "Require a specific wire codec (json | cbor); if the daemon advertised "
-        "a different codec for the picked transport, connect fails.");
-    clientCodecOpt->envname("LOGOSCORE_CLIENT_CODEC");
-    std::string clientTokenFile;
-    auto* clientTokenFileOpt = app.add_option("--token-file", clientTokenFile,
-        "Filename inside client/ to use for authentication (must already exist; "
-        "no copy semantics)");
-    clientTokenFileOpt->envname("LOGOSCORE_CLIENT_TOKEN_FILE");
-    std::string clientSslCa;
-    auto* clientSslCaOpt = app.add_option("--ssl-ca", clientSslCa,
-        "CA cert path used to verify the daemon's TLS chain (tcp_ssl only)");
-    clientSslCaOpt->envname("LOGOSCORE_CLIENT_SSL_CA");
+        "Session directory to use (default: ~/.logoscore; also LOGOSCORE_CONFIG_DIR). "
+        "Holds this session's config, modules, plugins, keyring and data.");
 
     // ── Client subcommands ───────────────────────────────────────────────────
     // All client subcommands use allow_extras() so their positional args and
@@ -289,8 +216,24 @@ int main(int argc, char *argv[])
     // Global flags (--json, --quiet) mixed in after the subcommand are also
     // captured and extracted before dispatching to the command object.
 
-    auto* daemonSub  = app.add_subcommand("daemon", "Start the daemon process");
+    // The `daemon` group. A bare `daemon` (or -D) still starts the runtime;
+    // `daemon start|stop|status` are the explicit spellings, and
+    // `daemon config show|set` operates on the session's config file without
+    // needing a daemon at all.
+    auto* daemonSub  = app.add_subcommand("daemon",
+        "Start the daemon, or manage it: start | stop | status | config show|set FILE");
     daemonSub->fallthrough();  // -m, -v after "daemon" fall through to parent
+    // The group verbs are normalized in argv before parsing (see
+    // normalizeGroupVerbs), so `daemon config` arrives here as the single
+    // token `daemon-config`. Declaring them flat keeps them clear of
+    // daemonSub->fallthrough(), which otherwise pushes a nested
+    // subcommand's extras up to the top level where they are rejected.
+    auto* daemonConfigSub = app.add_subcommand("daemon-config",
+        "Show or replace the daemon configuration: show | set FILE");
+    auto* clientConfigSub = app.add_subcommand("client-config",
+        "Show or replace the client dial spec: show | set FILE");
+    daemonConfigSub->allow_extras();
+    clientConfigSub->allow_extras();
 
     auto* statusSub        = app.add_subcommand("status", "Show daemon and module health");
     auto* loadModuleSub    = app.add_subcommand("load-module", "Load a module into the daemon");
@@ -344,7 +287,15 @@ int main(int argc, char *argv[])
     app.require_subcommand(0, 1);  // 0 or 1 subcommand
 
     // ── Parse ────────────────────────────────────────────────────────────────
-    CLI11_PARSE(app, argc, argv);
+    // Parse the normalized argv (group verbs collapsed). The original argc/argv
+    // are still handed to QCoreApplication below, which only cares about Qt's
+    // own switches.
+    std::vector<std::string> normalized = normalizeGroupVerbs(argc, argv);
+    std::vector<char*> normalizedArgv;
+    normalizedArgv.reserve(normalized.size());
+    for (auto& a : normalized) normalizedArgv.push_back(a.data());
+    const int normalizedArgc = static_cast<int>(normalizedArgv.size());
+    CLI11_PARSE(app, normalizedArgc, normalizedArgv.data());
 
     qInstallMessageHandler(messageHandler);
 
@@ -370,6 +321,37 @@ int main(int argc, char *argv[])
         setenv("LOGOSCORE_CONFIG_DIR", absCfgPath.string().c_str(), 1);
     }
 
+    // ── `daemon <verb>` / `client <verb>` routing ────────────────────────────
+    // Management verbs are handled before the daemon-mode branch below, so
+    // `daemon config set` and `daemon stop` never boot a second runtime.
+    {
+        auto runManagementCommand = [&](const std::string& mapped,
+                                        CLI::App* sub) -> int {
+            std::vector<std::string> extras;
+            for (const auto& r : sub->remaining()) {
+                if (r == "--json" || r == "-j")               jsonMode = true;
+                else if (r == "--no-json" || r == "--human")  humanMode = true;
+                else if (r == "--quiet" || r == "-q")         quiet = true;
+                else                                          extras.push_back(r);
+            }
+            QCoreApplication qapp(argc, argv);
+            qapp.setApplicationName("logoscore");
+            qapp.setApplicationVersion(QString::fromStdString(logoscore_version::version()));
+            Output output(jsonMode);
+            if (humanMode) output.setHumanMode(true);
+            RpcClient rpcClient;
+            auto cmd = createCommand(mapped, rpcClient, output);
+            if (!cmd) {
+                output.printError("INVALID_ARGS", "Unknown command: " + mapped);
+                return 1;
+            }
+            return cmd->execute(extras);
+        };
+
+        if (daemonConfigSub->parsed()) return runManagementCommand("daemon-config", daemonConfigSub);
+        if (clientConfigSub->parsed()) return runManagementCommand("client-config", clientConfigSub);
+    }
+
     // ── Daemon mode ──────────────────────────────────────────────────────────
     if (daemonFlag || daemonSub->parsed()) {
         QCoreApplication qapp(argc, argv);
@@ -386,188 +368,14 @@ int main(int argc, char *argv[])
             return c == "json" || c == "cbor";
         };
 
-        // Parse --module-transport NAME=PROTOCOL[,k=v...] flags into
-        // a per-module map. Each flag adds one listener to the named
-        // module. There is deliberately no implicit core_service /
-        // capability_module relationship — each module's transport
-        // list is built solely from its own flags, then defaulted
-        // to a single LocalSocket entry below for the well-known
-        // modules if the operator didn't configure them.
-        std::map<std::string, std::vector<TransportInfo>> moduleTransportsMap;
-        for (const auto& spec : moduleTransportFlags) {
-            const auto eq = spec.find('=');
-            if (eq == std::string::npos || eq == 0 || eq == spec.size() - 1) {
-                std::cerr << "Error: --module-transport expects "
-                          << "'NAME=PROTOCOL[,k=v...]', got: '" << spec
-                          << "'" << std::endl;
-                return 1;
-            }
-            const std::string moduleName = spec.substr(0, eq);
-            const std::string body = spec.substr(eq + 1);
-
-            // Split body on commas. The first part is the protocol;
-            // the rest are key=value pairs. Splitting comma-separated
-            // is safe — neither host names nor port numbers nor codec
-            // names contain commas; cert paths on POSIX don't either.
-            std::vector<std::string> parts;
-            for (size_t i = 0; i < body.size(); ) {
-                auto comma = body.find(',', i);
-                parts.push_back(body.substr(i, comma == std::string::npos
-                                                  ? std::string::npos
-                                                  : comma - i));
-                if (comma == std::string::npos) break;
-                i = comma + 1;
-            }
-            if (parts.empty() || parts[0].empty()) {
-                std::cerr << "Error: --module-transport '" << spec
-                          << "' missing protocol" << std::endl;
-                return 1;
-            }
-
-            TransportInfo t;
-            t.protocol = parts[0];
-
-            // Defaults for tcp / tcp_ssl when the operator omits
-            // them. host="127.0.0.1" matches the daemon-side bind
-            // convention used by older flags and keeps a bare
-            // `--module-transport core_service=tcp` working out of
-            // the box on a single host.
-            if (t.protocol == "tcp" || t.protocol == "tcp_ssl") {
-                t.host = "127.0.0.1";
-                t.codec = "json";
-                t.verifyPeer = true;
-            }
-
-            for (size_t i = 1; i < parts.size(); ++i) {
-                const auto& kv = parts[i];
-                const auto kvSep = kv.find('=');
-                if (kvSep == std::string::npos) {
-                    std::cerr << "Error: --module-transport '" << spec
-                              << "' has malformed kv pair '" << kv
-                              << "' (expected k=v)" << std::endl;
-                    return 1;
-                }
-                const std::string k = kv.substr(0, kvSep);
-                const std::string v = kv.substr(kvSep + 1);
-                if      (k == "host")  t.host = v;
-                else if (k == "codec") t.codec = v;
-                else if (k == "ca")    t.caFile = v;
-                else if (k == "cert")  t.certFile = v;
-                else if (k == "key")   t.keyFile = v;
-                else if (k == "verify_peer") {
-                    // Strict allowlist: a typo like `verify_peer=treu`
-                    // would otherwise silently match the false branch
-                    // and disable TLS peer verification, weakening
-                    // security without any visible signal.
-                    if      (v == "true"  || v == "1") t.verifyPeer = true;
-                    else if (v == "false" || v == "0") t.verifyPeer = false;
-                    else {
-                        std::cerr << "Error: --module-transport verify_peer '"
-                                  << v << "' must be one of true|false|1|0"
-                                  << std::endl;
-                        return 1;
-                    }
-                }
-                else if (k == "port") {
-                    // Require the WHOLE value to parse — std::stoi would accept
-                    // "6000x" as 6000 / "0x1F90" as 0, silently binding the wrong port.
-                    int parsedPort = 0;
-                    size_t consumed = 0;
-                    try { parsedPort = std::stoi(v, &consumed); }
-                    catch (...) { consumed = 0; }
-                    if (v.empty() || consumed != v.size()) {
-                        std::cerr << "Error: --module-transport port '" << v
-                                  << "' is not a valid integer" << std::endl;
-                        return 1;
-                    }
-                    if (parsedPort < 0 || parsedPort > 0xFFFF) {
-                        std::cerr << "Error: --module-transport port '" << v
-                                  << "' must be in [0, 65535]" << std::endl;
-                        return 1;
-                    }
-                    t.port = static_cast<uint16_t>(parsedPort);
-                } else {
-                    std::cerr << "Error: --module-transport unknown key '"
-                              << k << "' in '" << spec << "'" << std::endl;
-                    return 1;
-                }
-            }
-
-            // Per-protocol validation.
-            if (t.protocol == "local") {
-                // host/port/codec/cert ignored for local.
-            } else if (t.protocol == "tcp") {
-                if (!validateCodec(t.codec)) {
-                    std::cerr << "Error: --module-transport tcp codec '"
-                              << t.codec << "' must be 'json' or 'cbor'"
-                              << std::endl;
-                    return 1;
-                }
-                // Plaintext-TCP guard runs post-merge below so disk-fed
-                // listeners are also covered.
-            } else if (t.protocol == "tcp_ssl") {
-                if (!validateCodec(t.codec)) {
-                    std::cerr << "Error: --module-transport tcp_ssl codec '"
-                              << t.codec << "' must be 'json' or 'cbor'"
-                              << std::endl;
-                    return 1;
-                }
-                if (t.certFile.empty() || t.keyFile.empty()) {
-                    std::cerr << "Error: --module-transport tcp_ssl for '"
-                              << moduleName << "' requires cert= and key="
-                              << std::endl;
-                    return 1;
-                }
-            } else {
-                std::cerr << "Error: --module-transport unknown protocol '"
-                          << t.protocol << "' (expected local | tcp | tcp_ssl)"
-                          << std::endl;
-                return 1;
-            }
-
-            moduleTransportsMap[moduleName].push_back(std::move(t));
-        }
-
-        // Per-flag merge: load disk config (if any), then layer CLI
-        // overrides on top — but only for flags the operator
-        // explicitly passed. CLI11's Option::count() is the only
-        // accurate signal: a default-valued local var is
-        // indistinguishable from an explicit `--persistence-path ""`
-        // without it. Anything not touched by either CLI or disk
-        // falls through to defaults.
+        // Configuration comes solely from daemon/config.yaml. Absent or
+        // unreadable means defaults, which is a working local-only daemon.
         DaemonConfig mergedCfg;
         std::string  configSource = "defaults";
-
         if (auto disk = DaemonConfigFile::read()) {
             mergedCfg = *disk;
-            configSource = "config.json";
+            configSource = "config.yaml";
         }
-
-        const bool anyCliFlag = (modulesDirOpt->count()      > 0)
-                             || (persistencePathOpt->count() > 0)
-                             || (moduleTransportOpt->count() > 0)
-                             || (insecureTcpOpt->count()     > 0)
-                             || (accessPolicyOpt->count()    > 0)
-                             || (accessGroupOpt->count()     > 0);
-        if (anyCliFlag) configSource = "cli";
-
-        if (modulesDirOpt->count() > 0)      mergedCfg.modulesDirs     = modulesDirs;
-        if (persistencePathOpt->count() > 0) mergedCfg.persistencePath = persistencePath;
-        if (insecureTcpOpt->count() > 0)     mergedCfg.insecureTcp     = insecureTcp;
-        if (accessGroupOpt->count() > 0)     mergedCfg.accessGroup     = accessGroupArg;
-        // Resolve --access-policy (file-or-inline); abort on bad input.
-        if (accessPolicyOpt->count() > 0) {
-            auto resolved = resolveAccessPolicy(accessPolicyArg);
-            if (!resolved) return 1;
-            mergedCfg.accessPolicy = std::move(*resolved);
-        }
-        // --module-transport replaces the disk's modules wholesale
-        // when the operator passes any. There's no per-module merge:
-        // mixing operator intent with stale disk entries leads to
-        // surprising behavior (a flag that disabled a listener on
-        // disk would silently re-enable it). Either operator-specified
-        // or disk-specified — never a hybrid.
-        if (moduleTransportOpt->count() > 0) mergedCfg.modules = moduleTransportsMap;
 
         // Make sure the well-known modules at least *have* an entry,
         // so a bare `logoscore -D` (no transport flags) still boots
@@ -646,128 +454,8 @@ int main(int argc, char *argv[])
             }
         }
 
-        return Daemon::start(argc, argv, mergedCfg, configSource, persistConfig, g_verbose);
+        return Daemon::start(argc, argv, mergedCfg, configSource, g_verbose);
     }
-
-    // ── Client-side per-flag merge ───────────────────────────────────────────
-    // Same precedence as the daemon side: defaults < client/config.json
-    // < CLI args. CLI11's Option::count() drives per-flag override
-    // detection. If the operator passed any client-config flag, the
-    // merged result takes effect for this run; if `--persist-config`
-    // is also passed, the merged result is written back to
-    // client/config.json so subsequent no-flag launches reproduce it.
-    {
-        const bool anyClientCfgFlag = (clientTransportOpt->count()    > 0)
-                                   || (clientTcpHostOpt->count()      > 0)
-                                   || (clientTcpPortOpt->count()      > 0)
-                                   || (clientNoVerifyPeerOpt->count() > 0)
-                                   || (clientCodecOpt->count()        > 0)
-                                   || (clientTokenFileOpt->count()    > 0)
-                                   || (clientSslCaOpt->count()        > 0);
-
-        if (anyClientCfgFlag || persistConfig) {
-            // Validate --client-codec up front; otherwise a typo is stored
-            // verbatim and silently coerced to JSON at dial time.
-            if (clientCodecOpt->count() > 0
-             && clientCodec != "json" && clientCodec != "cbor") {
-                std::cerr << "Error: --client-codec '" << clientCodec
-                          << "' must be 'json' or 'cbor'" << std::endl;
-                return 1;
-            }
-
-            ClientState merged = ClientStateFile::read();  // disk (or empty)
-
-            // The transport-shape overrides apply to BOTH dialed
-            // modules (core_service and capability_module) since
-            // both go through the same daemon endpoint. An operator
-            // who needs per-module divergence has to hand-edit
-            // client/config.json — keeping the CLI surface small.
-            auto applyToModule = [&](const std::string& moduleName) {
-                ClientModuleTransport& t = merged.daemon[moduleName];
-                if (clientTransportOpt->count() > 0) t.protocol = clientTransport;
-                if (clientTcpHostOpt->count()   > 0) t.host     = clientTcpHost;
-                if (clientTcpPortOpt->count()   > 0) t.port     = clientTcpPort;
-                if (clientCodecOpt->count()     > 0) t.codec    = clientCodec;
-                if (clientNoVerifyPeerOpt->count() > 0) t.verifyPeer = !clientNoVerifyPeer;
-                if (clientSslCaOpt->count()     > 0) t.caFile   = clientSslCa;
-                // Default protocol when this module is being
-                // freshly added by CLI flags (i.e. nothing on disk
-                // and the operator didn't pick a transport).
-                if (t.protocol.empty()) t.protocol = "local";
-            };
-            applyToModule("core_service");
-            applyToModule("capability_module");
-
-            if (clientTokenFileOpt->count() > 0) {
-                merged.tokenFile = clientTokenFile;
-                // Refuse to start if the named raw-token file isn't
-                // already under client/. No copy semantics — the
-                // operator is expected to scp the daemon-side
-                // tokens/<name>.json into place themselves.
-                std::error_code ec;
-                if (!std::filesystem::exists(
-                        Config::clientTokenPath(clientTokenFile), ec)) {
-                    std::cerr << "Error: --token-file '" << clientTokenFile
-                              << "' does not exist at "
-                              << Config::clientDir() << "/" << clientTokenFile
-                              << ". Copy it from the daemon's daemon/tokens/ dir first."
-                              << std::endl;
-                    return 1;
-                }
-                // Existence isn't enough — validate the content now so a file
-                // with no usable token errors here, not later at connect time.
-                if (ClientStateFile::readTokenFile(clientTokenFile).empty()) {
-                    std::cerr << "Error: --token-file '" << clientTokenFile
-                              << "' at " << Config::clientTokenPath(clientTokenFile)
-                              << " has no usable 'token' field (missing key, "
-                                 "empty, or unparseable JSON)."
-                              << std::endl;
-                    return 1;
-                }
-            }
-
-            // Stamp the schema version in case the merge built it
-            // up from defaults — the on-disk path needs it for the
-            // version check in ClientStateFile::read.
-            merged.schemaVersion = kClientStateSchemaVersion;
-            // `fileOk` is the "this is usable for dialing" bit;
-            // RpcClient::connect checks it. The merge guarantees
-            // every run has at least one daemon entry, so fileOk
-            // is true iff a token_file is also set.
-            merged.fileOk = !merged.daemon.empty() && !merged.tokenFile.empty();
-
-            // Inject merged state into ClientStateFile so the
-            // override applies for this run regardless of disk state.
-            ClientStateFile::setOverride(merged);
-
-            if (persistConfig) {
-                if (ClientStateFile::write(merged)) {
-                    fprintf(stdout, "Persisted client config: %s\n",
-                            ClientStateFile::filePath().c_str());
-                } else {
-                    fprintf(stderr, "Warning: failed to persist client config to %s\n",
-                            ClientStateFile::filePath().c_str());
-                }
-            }
-        }
-    }
-
-    // -m/-l/--persistence-path configure the daemon (-D) only. Inline (-c) mode
-    // has been removed, so these flags are meaningless for a client subcommand
-    // or a bare invocation — reject them with daemon/client guidance rather than
-    // silently ignoring them.
-    auto rejectDaemonOnlyFlags = [&]() -> bool {
-        if (modulesDirOpt->count() == 0 && persistencePathOpt->count() == 0)
-            return false;
-        std::cerr <<
-            "Error: -m/--modules-dir and --persistence-path apply only to the "
-            "daemon (-D); inline (-c) mode has been removed. "
-            "Use daemon + client commands:\n"
-            "  logoscore -D -m <dir>                     # start a daemon (clean)\n"
-            "  logoscore load-module <module>            # load a module\n"
-            "  logoscore call <module> <method> [args]   # call a method\n";
-        return true;
-    };
 
     // ── Client mode ──────────────────────────────────────────────────────────
     struct SubInfo { CLI::App* sub; std::string name; };
@@ -797,9 +485,6 @@ int main(int argc, char *argv[])
     for (auto& [sub, name] : clientSubs) {
         if (!sub->parsed())
             continue;
-
-        if (rejectDaemonOnlyFlags())
-            return 1;
 
         QCoreApplication qapp(argc, argv);
         qapp.setApplicationName("logoscore");
@@ -846,10 +531,6 @@ int main(int argc, char *argv[])
 
         return cmd->execute(cmdArgs);
     }
-
-    // ── Stray daemon-only flags without -D and without a subcommand ──────────
-    if (rejectDaemonOnlyFlags())
-        return 1;
 
     // ── No mode detected — show help ─────────────────────────────────────────
     std::cout << app.help() << std::endl;

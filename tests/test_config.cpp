@@ -68,12 +68,12 @@ TEST_F(ConfigTest, Paths_DaemonAndClientUnderConfigDir)
 {
     const std::string cfg = Config::configDir();
     EXPECT_EQ(Config::daemonDir(),        cfg + "/daemon");
-    EXPECT_EQ(Config::daemonConfigPath(), cfg + "/daemon/config.json");
+    EXPECT_EQ(Config::daemonConfigPath(), cfg + "/daemon/config.yaml");
     EXPECT_EQ(Config::daemonStatePath(),  cfg + "/daemon/state.json");
     EXPECT_EQ(Config::daemonTokensPath(), cfg + "/daemon/tokens.json");
     EXPECT_EQ(Config::daemonTokensDir(),  cfg + "/daemon/tokens");
     EXPECT_EQ(Config::clientDir(),        cfg + "/client");
-    EXPECT_EQ(Config::clientConfigPath(), cfg + "/client/config.json");
+    EXPECT_EQ(Config::clientConfigPath(), cfg + "/client/config.yaml");
     EXPECT_EQ(Config::clientTokenPath("auto.json"), cfg + "/client/auto.json");
 }
 

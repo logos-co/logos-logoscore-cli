@@ -16,7 +16,7 @@ public:
     //   tokens.json  — hashed-at-rest token array (survives daemon restarts)
     //   tokens/      — raw, operator-copyable per-token files (0600)
     static std::string daemonDir();
-    static std::string daemonConfigPath();   // <configDir>/daemon/config.json
+    static std::string daemonConfigPath();   // <configDir>/daemon/config.yaml
     static std::string daemonStatePath();    // <configDir>/daemon/state.json
     static std::string daemonTokensPath();   // <configDir>/daemon/tokens.json
     static std::string daemonTokensDir();    // <configDir>/daemon/tokens
@@ -24,7 +24,7 @@ public:
     // Client-owned tree: <configDir>/client/{config.json, <token_file>}.
     // The client never reads anything outside client/.
     static std::string clientDir();
-    static std::string clientConfigPath();   // <configDir>/client/config.json
+    static std::string clientConfigPath();   // <configDir>/client/config.yaml
     // Path to the raw-token file inside client/, given its filename
     // (e.g. "auto.json"). Caller is expected to read the filename from
     // client/config.json's `token_file` field.

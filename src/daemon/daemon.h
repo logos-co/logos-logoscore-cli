@@ -27,16 +27,9 @@ public:
     // "defaults") recorded into state.json's `config_source` field
     // so operators can tell at a glance where the running daemon's
     // config came from.
-    // If `persistConfig` is true, the daemon writes `cfg` to
-    // daemon/config.json after transports have successfully bound
-    // and state.json is on disk. The persisted file holds operator
-    // *intent* (port=0 stays 0) — the actually-bound port lives in
-    // state.json. No-op when false, which is the default outcome of
-    // a launch that didn't pass `--persist-config`.
     static int start(int argc, char* argv[],
                      const DaemonConfig& cfg,
                      const std::string& configSource,
-                     bool persistConfig,
                      bool verbose = false);
 
 private:

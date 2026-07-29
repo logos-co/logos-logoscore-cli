@@ -224,7 +224,6 @@ void bootstrapPackageModules(LogosAPI* api,
 int Daemon::start(int argc, char* argv[],
                   const DaemonConfig& cfg,
                   const std::string& configSource,
-                  bool persistConfig,
                   bool verbose)
 {
     const auto& modulesDirs      = cfg.modulesDirs;
@@ -521,21 +520,6 @@ int Daemon::start(int argc, char* argv[],
         fprintf(stderr, "Failed to write daemon state file: %s\n",
                 DaemonRuntimeStateFile::filePath().c_str());
         return 1;
-    }
-
-    // Persist operator preferences only if asked. Done after state.json
-    // is on disk so a config that fails earlier (e.g. bind failure)
-    // doesn't pollute config.json. The persisted file holds intent
-    // (port=0 stays 0) — the resolved values are in state.json.
-    // Persistence failures are non-fatal: log and continue.
-    if (persistConfig) {
-        if (DaemonConfigFile::write(cfg)) {
-            fprintf(stdout, "Persisted config: %s\n",
-                    DaemonConfigFile::filePath().c_str());
-        } else {
-            fprintf(stderr, "Warning: failed to persist config to %s\n",
-                    DaemonConfigFile::filePath().c_str());
-        }
     }
 
     // 10. Generate the local-client convenience artifacts (client/config.json
