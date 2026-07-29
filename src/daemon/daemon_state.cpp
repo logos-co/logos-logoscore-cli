@@ -108,6 +108,16 @@ json daemonConfigToJson(const DaemonConfig& cfg)
     sslObj["ca"]   = cfg.sslCa;
     obj["ssl"] = std::move(sslObj);
 
+    // Only emit `dirs` when something is actually redirected, so a default
+    // config stays free of noise the reader has to interpret.
+    json dirsObj = json::object();
+    if (!cfg.dirs.modules.empty()) dirsObj["modules"] = cfg.dirs.modules;
+    if (!cfg.dirs.plugins.empty()) dirsObj["plugins"] = cfg.dirs.plugins;
+    if (!cfg.dirs.keyring.empty()) dirsObj["keyring"] = cfg.dirs.keyring;
+    if (!cfg.dirs.data.empty())    dirsObj["data"]    = cfg.dirs.data;
+    if (!cfg.dirs.cache.empty())   dirsObj["cache"]   = cfg.dirs.cache;
+    if (!dirsObj.empty()) obj["dirs"] = std::move(dirsObj);
+
     obj["insecure_tcp"] = cfg.insecureTcp;
     if (!cfg.accessPolicy.empty()) obj["access_policy"] = cfg.accessPolicy;
     if (!cfg.accessGroup.empty())  obj["access_group"]  = cfg.accessGroup;
@@ -172,6 +182,18 @@ std::optional<DaemonConfig> daemonConfigFromJson(const json& obj)
         cfg.sslKey  = obj["ssl"].value("key",  std::string{});
         cfg.sslCa   = obj["ssl"].value("ca",   std::string{});
     }
+
+    if (obj.contains("dirs") && obj["dirs"].is_object()) {
+        const auto& d = obj["dirs"];
+        cfg.dirs.modules = d.value("modules", std::string{});
+        cfg.dirs.plugins = d.value("plugins", std::string{});
+        cfg.dirs.keyring = d.value("keyring", std::string{});
+        cfg.dirs.data    = d.value("data",    std::string{});
+        cfg.dirs.cache   = d.value("cache",   std::string{});
+    }
+    // persistence_path is the older spelling of dirs.data and still works;
+    // dirs.data wins when both are set.
+    if (cfg.dirs.data.empty()) cfg.dirs.data = cfg.persistencePath;
 
     cfg.insecureTcp = obj.value("insecure_tcp", false);
     cfg.accessPolicy = obj.value("access_policy", std::string{});

@@ -54,11 +54,24 @@ public:
     // These are the *writable* halves. Their read-only counterparts ship
     // beside the binary (paths::bundledModulesDir()); the package manager
     // scans both and lets the writable copy win on a name collision.
+    // Default to <configDir>/<name>, which is what makes a session portable.
+    // Each can be redirected from the config's `dirs:` block -- to share one
+    // keyring across sessions, to put the cache on a bigger disk, to point at
+    // a read-only modules tree managed by something else.
+    //
+    // A relative override resolves inside the session, so it stays portable;
+    // an absolute one deliberately opts out of that.
     static std::string modulesDir();   // <configDir>/modules
     static std::string pluginsDir();   // <configDir>/plugins
     static std::string keyringDir();   // <configDir>/keyring
     static std::string dataDir();      // <configDir>/data   (module persistence)
     static std::string cacheDir();     // <configDir>/cache  (downloaded .lgx)
+
+    // Redirect one of the above. An empty value clears the override. Applied
+    // by the daemon once it has read the config; `~` and relative paths are
+    // resolved here so every caller sees a final absolute path.
+    enum class SessionDir { Modules, Plugins, Keyring, Data, Cache };
+    static void setSessionDirOverride(SessionDir which, const std::string& path);
 
     // Override the config dir for the lifetime of the process. Called from main
     // when --config-dir is passed, so daemon + client agree on a single config

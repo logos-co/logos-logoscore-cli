@@ -135,10 +135,32 @@ picks which one (default `~/.logosctl`, also `LOGOSCTL_CONFIG_DIR`):
 └── data/               # per-module persistence
 ```
 
-A session is **portable**: copy the directory and its packages, catalogs and
-trust assumptions come with it. Two sessions can hold different package sets and
-disagree about which signers they trust. The only things left outside are the
-binary itself and the runtime sockets in `$TMPDIR`.
+A session is **portable by default**: copy the directory and its packages,
+catalogs and trust assumptions come with it. Two sessions can hold different
+package sets and disagree about which signers they trust. The only things left
+outside are the binary itself and the runtime sockets in `$TMPDIR`.
+
+That default is not a cage — any of the subdirectories can be redirected:
+
+```yaml
+dirs:
+  keyring: ~/.config/logos/trusted-keys   # share trust across sessions
+  cache: /var/cache/logos                 # put downloads on a bigger disk
+  modules: /opt/logos/modules             # a tree something else manages
+  plugins: plugins-custom                 # relative -> stays inside the session
+  data: /var/lib/logos/data
+```
+
+How a value is written decides whether portability survives:
+
+| Form | Resolves to | |
+|---|---|---|
+| `plugins-custom` | `<session>/plugins-custom` | still portable |
+| `~/x` | `$HOME/x` | outside the session |
+| `/var/cache/logos` | as given | outside the session |
+
+`persistence_path` is the older spelling of `dirs.data` and still works;
+`dirs.data` wins if both are set.
 
 Modules come from two places: the read-only set bundled beside the binary
 (`capability_module`, `package_manager`, `package_downloader`) and the writable
@@ -179,6 +201,8 @@ daemon running with your intent missing.
 ```yaml
 # node.yaml
 insecure_tcp: false
+dirs:                        # optional; each defaults to <session>/<name>
+  keyring: ~/.config/logos/trusted-keys
 access_group: logos          # share the daemon with an OS group (see below)
 signature_policy: warn       # none | warn | require
 modules_dirs:                # extra read-only module directories to scan

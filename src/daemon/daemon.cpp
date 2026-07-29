@@ -229,6 +229,17 @@ int Daemon::start(int argc, char* argv[],
 {
     const auto& modulesDirs      = cfg.modulesDirs;
     const auto& persistencePath  = cfg.persistencePath;
+
+    // Apply the session-directory redirects before anything asks Config for a
+    // path. Defaults keep every directory inside the config dir, which is what
+    // makes a session portable; an override is an explicit decision to move
+    // one out (a shared keyring, a cache on a bigger disk, a modules tree
+    // something else manages).
+    Config::setSessionDirOverride(Config::SessionDir::Modules, cfg.dirs.modules);
+    Config::setSessionDirOverride(Config::SessionDir::Plugins, cfg.dirs.plugins);
+    Config::setSessionDirOverride(Config::SessionDir::Keyring, cfg.dirs.keyring);
+    Config::setSessionDirOverride(Config::SessionDir::Data,    cfg.dirs.data);
+    Config::setSessionDirOverride(Config::SessionDir::Cache,   cfg.dirs.cache);
     const auto& moduleTransports = cfg.modules;
     // 1. Generate instance ID BEFORE core init, so logos_host inherits it
     std::random_device rd;
@@ -364,9 +375,10 @@ int Daemon::start(int argc, char* argv[],
     }
 
     // 4. Set persistence base path for module instance data
-    std::string persistenceBase = persistencePath.empty()
-        ? Config::dataDir()
-        : persistencePath;
+    // Config::dataDir() already reflects dirs.data, and the loader folds the
+    // older persistence_path spelling into it, so there is nothing to choose
+    // between here.
+    std::string persistenceBase = Config::dataDir();
     logos_core_set_persistence_base_path(persistenceBase.c_str());
 
     // 4b. Install the access policy before any module loads. Empty =>

@@ -1,5 +1,6 @@
 #include "config.h"
 #include <cstdlib>
+#include <map>
 
 namespace {
 // Process-wide override set by setConfigDir(). Empty = not overridden.
@@ -61,11 +62,50 @@ std::string Config::daemonTokensDir()  { return daemonDir() + "/tokens"; }
 std::string Config::clientDir()        { return configDir() + "/client"; }
 std::string Config::clientConfigPath() { return clientDir() + (isModern() ? "/config.yaml" : "/config.json"); }
 
-std::string Config::modulesDir()       { return configDir() + "/modules"; }
-std::string Config::pluginsDir()       { return configDir() + "/plugins"; }
-std::string Config::keyringDir()       { return configDir() + "/keyring"; }
-std::string Config::dataDir()          { return configDir() + "/data"; }
-std::string Config::cacheDir()         { return configDir() + "/cache"; }
+namespace {
+
+std::map<Config::SessionDir, std::string>& sessionDirOverrides()
+{
+    static std::map<Config::SessionDir, std::string> m;
+    return m;
+}
+
+// Resolve an override to a final absolute path.
+//   ~/x  -> $HOME/x        (natural to write in a config file)
+//   x    -> <configDir>/x  (stays inside the session, so still portable)
+//   /x   -> /x             (explicitly outside the session)
+std::string resolveOverride(const std::string& raw)
+{
+    if (raw.empty()) return raw;
+    if (raw[0] == '~' && (raw.size() == 1 || raw[1] == '/')) {
+        const char* home = std::getenv("HOME");
+        if (home && *home) return std::string(home) + raw.substr(1);
+    }
+    if (raw[0] == '/') return raw;
+    return Config::configDir() + "/" + raw;
+}
+
+std::string sessionDir(Config::SessionDir which, const char* defaultName)
+{
+    auto& m = sessionDirOverrides();
+    auto it = m.find(which);
+    if (it != m.end() && !it->second.empty()) return it->second;
+    return Config::configDir() + "/" + defaultName;
+}
+
+}  // namespace
+
+void Config::setSessionDirOverride(SessionDir which, const std::string& path)
+{
+    if (path.empty()) sessionDirOverrides().erase(which);
+    else              sessionDirOverrides()[which] = resolveOverride(path);
+}
+
+std::string Config::modulesDir() { return sessionDir(SessionDir::Modules, "modules"); }
+std::string Config::pluginsDir() { return sessionDir(SessionDir::Plugins, "plugins"); }
+std::string Config::keyringDir() { return sessionDir(SessionDir::Keyring, "keyring"); }
+std::string Config::dataDir()    { return sessionDir(SessionDir::Data,    "data"); }
+std::string Config::cacheDir()   { return sessionDir(SessionDir::Cache,   "cache"); }
 
 std::string Config::clientTokenPath(const std::string& filename)
 {

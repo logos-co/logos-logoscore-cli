@@ -42,9 +42,22 @@ struct TransportInfo {
 // `--persist-config`. Defaults supplied by the merge layer in main.
 // Values reflect intent (e.g. `port: 0` stays `0` — the resolved
 // port lives in DaemonRuntimeState.resolved).
+// Redirects for the session's subdirectories. Empty means "use the default",
+// which is <configDir>/<name> -- that default is what makes a session portable.
+// Set one to share a keyring between sessions, put the cache on a bigger disk,
+// or point at a modules tree something else manages.
+struct SessionDirs {
+    std::string modules;
+    std::string plugins;
+    std::string keyring;
+    std::string data;
+    std::string cache;
+};
+
 struct DaemonConfig {
     std::vector<std::string> modulesDirs;
     std::string              persistencePath;
+    SessionDirs              dirs;
     // Per-module advertised transport set. Built from
     // `--module-transport` CLI flags (and the previous-launch config
     // when present). `core_service` and `capability_module` always

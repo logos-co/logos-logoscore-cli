@@ -189,3 +189,64 @@ TEST_F(ConfigTest, LegacyAndModernFlavorsShareNothing)
     EXPECT_NE(std::string::npos, legacyClnt.find("config.json"));
     EXPECT_NE(std::string::npos, modernClnt.find("config.yaml"));
 }
+
+// The session is portable by default -- every subdirectory lives inside the
+// config dir -- but each one can be redirected, so a shared keyring or a cache
+// on a bigger disk doesn't force you to give that up wholesale.
+TEST_F(ConfigTest, SessionDirsDefaultInsideTheSession)
+{
+    const std::string cfg = testDir;
+    Config::setConfigDir(cfg);
+    for (auto which : {Config::SessionDir::Modules, Config::SessionDir::Plugins,
+                       Config::SessionDir::Keyring, Config::SessionDir::Data,
+                       Config::SessionDir::Cache})
+        Config::setSessionDirOverride(which, "");
+
+    EXPECT_EQ(Config::modulesDir(), cfg + "/modules");
+    EXPECT_EQ(Config::pluginsDir(), cfg + "/plugins");
+    EXPECT_EQ(Config::keyringDir(), cfg + "/keyring");
+    EXPECT_EQ(Config::dataDir(),    cfg + "/data");
+    EXPECT_EQ(Config::cacheDir(),   cfg + "/cache");
+}
+
+TEST_F(ConfigTest, SessionDirOverrideResolvesByForm)
+{
+    const std::string cfg = testDir;
+    Config::setConfigDir(cfg);
+
+    // Absolute: deliberately outside the session.
+    Config::setSessionDirOverride(Config::SessionDir::Keyring, "/opt/shared/keys");
+    EXPECT_EQ(Config::keyringDir(), "/opt/shared/keys");
+
+    // Relative: still inside the session, so it stays portable.
+    Config::setSessionDirOverride(Config::SessionDir::Modules, "my-modules");
+    EXPECT_EQ(Config::modulesDir(), cfg + "/my-modules");
+
+    // `~` is natural to write in a config file and would otherwise be taken
+    // as a relative path, producing <configDir>/~/... which exists nowhere.
+    if (const char* home = std::getenv("HOME")) {
+        Config::setSessionDirOverride(Config::SessionDir::Cache, "~/lgx-cache");
+        EXPECT_EQ(Config::cacheDir(), std::string(home) + "/lgx-cache");
+    }
+
+    // Clearing restores the default.
+    Config::setSessionDirOverride(Config::SessionDir::Keyring, "");
+    EXPECT_EQ(Config::keyringDir(), cfg + "/keyring");
+
+    for (auto which : {Config::SessionDir::Modules, Config::SessionDir::Cache})
+        Config::setSessionDirOverride(which, "");
+}
+
+// An override is resolved once, when it is set. Relocating the session
+// afterwards must not silently drag an absolute override along with it.
+TEST_F(ConfigTest, SessionDirOverrideIsResolvedAtSetTime)
+{
+    Config::setConfigDir(testDir);
+    Config::setSessionDirOverride(Config::SessionDir::Modules, "my-modules");
+    const std::string before = Config::modulesDir();
+
+    Config::setConfigDir(testDir + "-moved");
+    EXPECT_EQ(Config::modulesDir(), before);
+
+    Config::setSessionDirOverride(Config::SessionDir::Modules, "");
+}
