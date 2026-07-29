@@ -15,8 +15,17 @@ public:
 
     // Module lifecycle
     StdLogosResult loadModule(const std::string& name);
-    StdLogosResult unloadModule(const std::string& name);
+    // `withDependents` cascades the unload to every module that depends on
+    // `name`, leaves-first. It defaults to true at the CLI layer: unloading a
+    // module while its dependents keep running leaves them talking to a dead
+    // provider, so the cascade is the safe default and opting out is explicit.
+    StdLogosResult unloadModule(const std::string& name, bool withDependents);
     StdLogosResult reloadModule(const std::string& name);
+
+    // Re-scan the module directories so packages installed since boot become
+    // discoverable without restarting the daemon. This is what lets
+    // `install` be followed by `load` in the same session.
+    LogosMap refreshModules();
 
     // Queries
     LogosList listModules(const std::string& filter);

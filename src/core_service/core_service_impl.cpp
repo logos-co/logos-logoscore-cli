@@ -140,9 +140,13 @@ StdLogosResult CoreServiceImpl::loadModule(const std::string& name)
     return {true, result};
 }
 
-StdLogosResult CoreServiceImpl::unloadModule(const std::string& name)
+StdLogosResult CoreServiceImpl::unloadModule(const std::string& name, bool withDependents)
 {
-    logos_core_unload_module(name.c_str(), false);
+    // Snapshot before the call so we can report which *dependents* came down
+    // as a side effect, mirroring how loadModule reports dependencies_loaded.
+    std::vector<std::string> before = getLoadedModuleNames();
+
+    logos_core_unload_module(name.c_str(), withDependents);
 
     auto loaded = getLoadedModuleNames();
     if (containsName(loaded, name)) {
@@ -153,10 +157,32 @@ StdLogosResult CoreServiceImpl::unloadModule(const std::string& name)
         return {false, errResult, "Module '" + name + "' is not loaded."};
     }
 
+    std::unordered_set<std::string> afterSet(loaded.begin(), loaded.end());
+    LogosList dependentsUnloaded = LogosList::array();
+    for (const auto& wasLoaded : before) {
+        if (wasLoaded != name && afterSet.find(wasLoaded) == afterSet.end())
+            dependentsUnloaded.push_back(wasLoaded);
+    }
+
     LogosMap result;
     result["status"] = "ok";
     result["module"] = name;
+    result["dependents_unloaded"] = dependentsUnloaded;
     return {true, result};
+}
+
+LogosMap CoreServiceImpl::refreshModules()
+{
+    logos_core_refresh_modules();
+
+    LogosList known = LogosList::array();
+    for (const auto& n : getKnownModuleNames())
+        known.push_back(n);
+
+    LogosMap result;
+    result["status"] = "ok";
+    result["known_modules"] = known;
+    return result;
 }
 
 StdLogosResult CoreServiceImpl::reloadModule(const std::string& name)

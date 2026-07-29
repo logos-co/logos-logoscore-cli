@@ -68,11 +68,20 @@ nlohmann::json CoreServiceImpl::callMethodStd(const std::string& methodName,
     if (methodName == "loadModule" && args.size() >= 1)
         return stdLogosResultToJson(loadModule(args[0].get<std::string>()));
 
-    if (methodName == "unloadModule" && args.size() >= 1)
-        return stdLogosResultToJson(unloadModule(args[0].get<std::string>()));
+    if (methodName == "unloadModule" && args.size() >= 1) {
+        // Older callers pass only the name; the cascade is the default so an
+        // omitted second argument behaves like `--no-dependents` was NOT given.
+        const bool withDependents =
+            args.size() >= 2 ? args[1].get<bool>() : true;
+        return stdLogosResultToJson(
+            unloadModule(args[0].get<std::string>(), withDependents));
+    }
 
     if (methodName == "reloadModule" && args.size() >= 1)
         return stdLogosResultToJson(reloadModule(args[0].get<std::string>()));
+
+    if (methodName == "refreshModules")
+        return refreshModules();
 
     if (methodName == "listModules") {
         std::string filter = args.size() >= 1 ? args[0].get<std::string>() : "all";
@@ -146,12 +155,17 @@ std::vector<LogosMethodMetadata> CoreServiceImpl::getMethodsStd()
              "StdLogosResult");
 
     mkMethod("unloadModule",
-             nlohmann::json::array({mkParam("name", "string")}),
+             nlohmann::json::array({mkParam("name", "string"),
+                                    mkParam("withDependents", "bool")}),
              "StdLogosResult");
 
     mkMethod("reloadModule",
              nlohmann::json::array({mkParam("name", "string")}),
              "StdLogosResult");
+
+    mkMethod("refreshModules",
+             nlohmann::json::array(),
+             "LogosMap");
 
     mkMethod("listModules",
              nlohmann::json::array({mkParam("filter", "string")}),

@@ -145,12 +145,21 @@ LogosMap RpcClient::loadModule(const std::string& name)
                     {"message", fmt::format("loadModule('{}') RPC call failed.", name)}};
 }
 
-LogosMap RpcClient::unloadModule(const std::string& name)
+LogosMap RpcClient::unloadModule(const std::string& name, bool withDependents)
 {
-    nlohmann::json ret = d->invoke("unloadModule", nlohmann::json::array({name}));
+    nlohmann::json ret = d->invoke("unloadModule",
+                                   nlohmann::json::array({name, withDependents}));
     if (ret.is_object()) return ret;
     return LogosMap{{"status","error"},{"code","RPC_FAILED"},
                     {"message", fmt::format("unloadModule('{}') RPC call failed.", name)}};
+}
+
+LogosMap RpcClient::refreshModules()
+{
+    nlohmann::json ret = d->invoke("refreshModules", nlohmann::json::array());
+    if (ret.is_object()) return ret;
+    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
+                    {"message", "refreshModules() RPC call failed."}};
 }
 
 LogosMap RpcClient::reloadModule(const std::string& name)

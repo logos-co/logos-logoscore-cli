@@ -26,11 +26,16 @@ public:
     LogosList moduleStatsResult;
     LogosMap  callMethodResult;
     LogosMap  shutdownResult;
+    LogosMap  refreshModulesResult;
 
     // Track calls
     bool shutdownCalled = false;
+    bool refreshModulesCalled = false;
     std::string lastLoadedModule;
     std::string lastUnloadedModule;
+    // Defaults to true so a test that never sets --no-dependents still sees
+    // the production default rather than a value-initialised false.
+    bool lastUnloadWithDependents = true;
     std::string lastReloadedModule;
     std::string lastInfoModule;
     std::string lastCallModule;
@@ -55,9 +60,15 @@ public:
         return loadModuleResult;
     }
 
-    LogosMap unloadModule(const std::string& name) override {
+    LogosMap unloadModule(const std::string& name, bool withDependents) override {
         lastUnloadedModule = name;
+        lastUnloadWithDependents = withDependents;
         return unloadModuleResult;
+    }
+
+    LogosMap refreshModules() override {
+        refreshModulesCalled = true;
+        return refreshModulesResult;
     }
 
     LogosMap reloadModule(const std::string& name) override {
@@ -260,6 +271,57 @@ TEST_F(CommandTest, UnloadModule_Success)
     });
 
     EXPECT_EQ(mockClient.lastUnloadedModule, "waku");
+}
+
+// The cascade is the default — a bare `unload-module X` must take X's
+// dependents down with it, since leaving them bound to an unloaded provider
+// is the more surprising outcome.
+TEST_F(CommandTest, UnloadModule_CascadesToDependentsByDefault)
+{
+    mockClient.unloadModuleResult = LogosMap{
+        {"status", "ok"}, {"module", "waku"}
+    };
+    mockClient.lastUnloadWithDependents = false;  // prove the command sets it
+
+    auto cmd = createCommand("unload-module", mockClient, output);
+    captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"waku"}), 0);
+    });
+
+    EXPECT_TRUE(mockClient.lastUnloadWithDependents);
+}
+
+TEST_F(CommandTest, UnloadModule_NoDependentsOptsOutOfCascade)
+{
+    mockClient.unloadModuleResult = LogosMap{
+        {"status", "ok"}, {"module", "waku"}
+    };
+
+    auto cmd = createCommand("unload-module", mockClient, output);
+    captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"waku", "--no-dependents"}), 0);
+    });
+
+    EXPECT_EQ(mockClient.lastUnloadedModule, "waku");
+    EXPECT_FALSE(mockClient.lastUnloadWithDependents);
+}
+
+// A cascade that quietly stops three other modules has to be reported.
+TEST_F(CommandTest, UnloadModule_Human_ReportsUnloadedDependents)
+{
+    mockClient.unloadModuleResult = LogosMap{
+        {"status", "ok"}, {"module", "waku"},
+        {"dependents_unloaded", LogosList{"chat", "delivery"}}
+    };
+
+    output.setHumanMode(true);
+    auto cmd = createCommand("unload-module", mockClient, output);
+    std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"waku"}), 0);
+    });
+
+    EXPECT_NE(out.find("chat"), std::string::npos);
+    EXPECT_NE(out.find("delivery"), std::string::npos);
 }
 
 // ── reload-module ────────────────────────────────────────────────────────────

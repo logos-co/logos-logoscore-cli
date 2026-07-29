@@ -19,8 +19,13 @@ public:
 
     // Module lifecycle
     virtual LogosMap loadModule(const std::string& name) = 0;
-    virtual LogosMap unloadModule(const std::string& name) = 0;
+    // Cascades to dependents unless the caller opts out (`--no-dependents`).
+    virtual LogosMap unloadModule(const std::string& name,
+                                  bool withDependents) = 0;
     virtual LogosMap reloadModule(const std::string& name) = 0;
+
+    // Re-scan the daemon's module directories after an install.
+    virtual LogosMap refreshModules() = 0;
 
     // Queries
     virtual LogosList listModules(const std::string& filter) = 0;
@@ -54,8 +59,9 @@ public:
     std::string lastError() const override;
 
     LogosMap loadModule(const std::string& name) override;
-    LogosMap unloadModule(const std::string& name) override;
+    LogosMap unloadModule(const std::string& name, bool withDependents) override;
     LogosMap reloadModule(const std::string& name) override;
+    LogosMap refreshModules() override;
     LogosList listModules(const std::string& filter) override;
     LogosMap getStatus() override;
     LogosMap getModuleInfo(const std::string& name) override;
