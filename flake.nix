@@ -23,6 +23,13 @@
     # already on the fixed protocol.
     logos-liblogos.inputs.logos-protocol.follows = "logos-protocol";
     logos-capability-module.url = "github:logos-co/logos-capability-module";
+    # Bundled alongside capability_module so the CLI can manage packages
+    # itself: package_manager installs/uninstalls and owns the dependency
+    # graph, package_downloader owns the catalogs and downloads. Same pair
+    # Basecamp bundles (see logos-basecamp/flake.nix), so both frontends
+    # drive the identical module API.
+    logos-package-manager-module.url = "github:logos-co/logos-package-manager-module";
+    logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module";
     # Real test-module plugins (test_basic_module) used by the
     # daemon-backed integration tests in tests/test_integration.cpp.
     logos-test-modules.url = "github:logos-co/logos-test-modules";
@@ -31,7 +38,7 @@
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-qt-sdk, logos-liblogos, logos-capability-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
+  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-qt-sdk, logos-liblogos, logos-capability-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       # Build info baked into the logoscore binary so `--version` reports the
@@ -54,6 +61,8 @@
           { name = "logos-protocol"; commit = revOf logos-protocol; }
           { name = "logos-qt-sdk"; commit = revOf logos-qt-sdk; }
           { name = "logos-capability-module"; commit = revOf logos-capability-module; }
+          { name = "logos-package-manager-module"; commit = revOf logos-package-manager-module; }
+          { name = "logos-package-downloader-module"; commit = revOf logos-package-downloader-module; }
         ];
       };
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f {
@@ -66,6 +75,9 @@
         liblogosLib = logos-liblogos.packages.${system}.logos-liblogos-lib;
         liblogosPortable = logos-liblogos.packages.${system}.portable;
         capabilityModuleLib = logos-capability-module.packages.${system}.lib;
+        packageManagerModuleLib = logos-package-manager-module.packages.${system}.lib;
+        packageManagerModuleLibPortable = logos-package-manager-module.packages.${system}.lib-portable;
+        packageDownloaderModuleLib = logos-package-downloader-module.packages.${system}.lib;
         installDev = nix-bundle-logos-module-install.bundlers.${system}.dev;
         installPortable = nix-bundle-logos-module-install.bundlers.${system}.portable;
         dirBundler = nix-bundle-dir.bundlers.${system}.qtApp;
@@ -73,7 +85,7 @@
       });
     in
     {
-      packages = forAllSystems ({ pkgs, system, cppSdk, protocolPkg, qtSdk, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, installDev, installPortable, dirBundler, appBundler }:
+      packages = forAllSystems ({ pkgs, system, cppSdk, protocolPkg, qtSdk, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, installDev, installPortable, dirBundler, appBundler }:
         let
           pname = "logos-logoscore-cli";
           # VERSION is only present on release branches; dev branches use a placeholder.
@@ -91,16 +103,31 @@
             platforms = platforms.unix;
           };
 
-          # Install capability module (bundle + lgpm in one step)
-          capabilityInstall = installDev capabilityModuleLib;
+          # Bundled modules (bundle + lgpm install in one step each).
+          #
+          # capability_module    — the auth handshake every client needs.
+          # package_manager      — install/uninstall + the dependency graph.
+          # package_downloader   — catalogs, resolution, downloads.
+          #
+          # These land in $out/modules and are picked up at runtime as the
+          # read-only "embedded" directory (paths::bundledModulesDir(),
+          # <bin>/../modules). Mirrors logos-basecamp/flake.nix so the CLI
+          # and the GUI drive the same module surface.
+          bundledInstallsDev = map installDev [
+            capabilityModuleLib
+            packageManagerModuleLib
+            packageDownloaderModuleLib
+          ];
           modules = pkgs.runCommand "${pname}-modules-${version}"
             { inherit meta; }
             ''
               mkdir -p $out/modules
 
-              if [ -d "${capabilityInstall}/modules" ]; then
-                cp -r ${capabilityInstall}/modules/. $out/modules/
-              fi
+              for installed in ${pkgs.lib.escapeShellArgs bundledInstallsDev}; do
+                if [ -d "$installed/modules" ]; then
+                  cp -r "$installed"/modules/. $out/modules/
+                fi
+              done
 
               echo "Modules directory contents:"
               ls -laR $out/modules/
@@ -288,16 +315,25 @@
             '';
           };
 
-          # Portable modules: bundle + install capability module (portable variant)
-          capabilityInstallPortable = installPortable capabilityModuleLib;
+          # Portable modules — same set, portable variants. Only the package
+          # manager ships a distinct `lib-portable`; the other two are
+          # variant-agnostic and rely on installPortable to make the bundle
+          # self-contained (same split logos-basecamp uses).
+          bundledInstallsPortable = map installPortable [
+            capabilityModuleLib
+            packageManagerModuleLibPortable
+            packageDownloaderModuleLib
+          ];
           modulesPortable = pkgs.runCommand "${pname}-modules-portable-${version}"
             { inherit meta; }
             ''
               mkdir -p $out/modules
 
-              if [ -d "${capabilityInstallPortable}/modules" ]; then
-                cp -r ${capabilityInstallPortable}/modules/. $out/modules/
-              fi
+              for installed in ${pkgs.lib.escapeShellArgs bundledInstallsPortable}; do
+                if [ -d "$installed/modules" ]; then
+                  cp -r "$installed"/modules/. $out/modules/
+                fi
+              done
 
               echo "Modules directory contents:"
               ls -laR $out/modules/

@@ -1,0 +1,106 @@
+name: "What Ships Inside the logoscore Binary"
+output: logoscore-modules-bundle.md
+release: ""
+
+intro: |
+  `logoscore` is not just a client — it ships a small set of **bundled modules**
+  that make it self-sufficient. They live next to the binary (`<bin>/../modules`)
+  and are added to the daemon's module search path automatically, as a read-only
+  "embedded" directory that sits alongside the writable one in your session dir.
+
+  Three modules are bundled:
+
+  | Module | Why it ships |
+  |---|---|
+  | `capability_module` | The auth handshake every client performs before its first RPC. Without it, nothing connects. |
+  | `package_manager` | Installs and uninstalls packages, and owns the dependency graph. |
+  | `package_downloader` | Owns the catalogs: search, dependency resolution, downloads. |
+
+  This is the same trio [`logos-basecamp`](https://github.com/logos-co/logos-basecamp)
+  bundles, so the CLI and the desktop app drive an identical module surface — the
+  CLI is not a reduced-capability sibling.
+
+  This doc-test builds **this** commit and asserts all three are present.
+
+what_you_learn:
+  - Which modules ship inside the logoscore binary, and why each one is there
+  - Where bundled modules live on disk relative to the binary
+  - How the embedded module directory relates to your session's writable one
+
+prerequisites:
+  - |
+    **Nix** with flakes enabled. Install from [nixos.org](https://nixos.org/download.html), then enable flakes:
+
+    ```bash
+    mkdir -p ~/.config/nix
+    echo 'experimental-features = nix-command flakes' >> ~/.config/nix/nix.conf
+    ```
+
+    Verify: `nix flake --help >/dev/null 2>&1 && echo "Flakes enabled"`
+
+sections:
+  - title: "Build logoscore"
+    step: true
+    text: |
+      Build the CLI from this commit. The build bundles each module into an
+      `.lgx` package and installs it into the output's `modules/` directory, so
+      what you get is exactly what a released binary would ship.
+    steps:
+      - title: "Build the CLI"
+        run: 'nix build "github:logos-co/logos-logoscore-cli{release}" -o result'
+        code_block: "nix build github:logos-co/logos-logoscore-cli"
+        check_file: "result/bin/logoscore"
+
+  - title: "Confirm the bundled modules"
+    step: true
+    text: |
+      All three modules must be present. `capability_module` is load-bearing for
+      *any* client command; the two package modules are what let `logoscore`
+      install and manage packages on its own rather than shelling out to
+      separate tools.
+    steps:
+      - title: "List the bundled modules"
+        run: "ls result/modules"
+        code_block: "ls result/modules"
+        expect_contains:
+          - "capability_module"
+          - "package_manager"
+          - "package_downloader"
+
+      - title: "Each module is a real installed package"
+        text: |
+          The bundler runs the package manager at build time, so every entry is
+          a proper installed package — a `manifest.json`, a `variant` marker,
+          and the plugin binary — not a loose library dropped in a folder.
+        run: "ls result/modules/package_manager"
+        code_block: "ls result/modules/package_manager"
+        expect_contains:
+          - "manifest.json"
+
+  - title: "The daemon picks them up automatically"
+    step: true
+    text: |
+      Start a daemon with no module configuration at all. It still finds the
+      bundled modules, because `<bin>/../modules` is always on the search path
+      alongside your session's writable `modules/` directory.
+    steps:
+      - title: "Start the daemon"
+        run: |
+          ./result/bin/logoscore --config-dir ./session -D > daemon.log 2>&1 &
+          for _ in $(seq 1 60); do
+            ./result/bin/logoscore --config-dir ./session status --json 2>/dev/null | grep -q '"running"' && break
+            sleep 1
+          done
+        code_block: "logoscore --config-dir ./session -D &"
+
+      - title: "The bundled modules are discoverable"
+        run: "./result/bin/logoscore --config-dir ./session list-modules"
+        code_block: "logoscore list-modules"
+        expect_contains:
+          - "capability_module"
+          - "package_manager"
+          - "package_downloader"
+
+      - title: "Stop the daemon"
+        run: "./result/bin/logoscore --config-dir ./session stop"
+        code_block: "logoscore stop"
