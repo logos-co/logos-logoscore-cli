@@ -30,6 +30,22 @@ public:
     // client/config.json's `token_file` field.
     static std::string clientTokenPath(const std::string& filename);
 
+    // Session-owned tree. The config dir is the whole world for a session:
+    // besides daemon/ and client/ state it holds the packages installed into
+    // it, the trust material used to verify them, and the per-module
+    // persistence. Copying the directory carries all of that with it, so a
+    // session is portable and two sessions can hold different package sets
+    // and different trust assumptions.
+    //
+    // These are the *writable* halves. Their read-only counterparts ship
+    // beside the binary (paths::bundledModulesDir()); the package manager
+    // scans both and lets the writable copy win on a name collision.
+    static std::string modulesDir();   // <configDir>/modules
+    static std::string pluginsDir();   // <configDir>/plugins
+    static std::string keyringDir();   // <configDir>/keyring
+    static std::string dataDir();      // <configDir>/data   (module persistence)
+    static std::string cacheDir();     // <configDir>/cache  (downloaded .lgx)
+
     // Override the config dir for the lifetime of the process. Called from main
     // when --config-dir is passed, so daemon + client agree on a single config
     // tree and parallel logoscore instances can coexist with distinct trees.

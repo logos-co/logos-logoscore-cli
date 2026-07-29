@@ -7,6 +7,7 @@
 #include "logos_core.h"
 
 #include <logos_api.h>
+#include <logos_api_client.h>
 #include <logos_api_provider.h>
 #include <logos_socket_paths.h>
 #include <logos_transport_config.h>
@@ -155,6 +156,69 @@ std::vector<TransportInfo> toAdvertised(const LogosTransportSet& set)
     return out;
 }
 
+// Load the bundled package modules and point package_manager at this
+// session's directories. Best-effort throughout: a daemon that cannot manage
+// packages is still fully usable for loading and calling modules, so nothing
+// here is allowed to abort startup.
+void bootstrapPackageModules(LogosAPI* api,
+                             const std::string& bundledDir,
+                             bool verbose)
+{
+    for (const char* name : {"package_manager", "package_downloader"}) {
+        if (!logos_core_load_module(name, /*with_dependencies=*/true)) {
+            fprintf(stderr,
+                    "Warning: failed to load bundled module '%s'. Package "
+                    "commands will be unavailable in this session.\n", name);
+            return;
+        }
+        if (verbose)
+            fprintf(stderr, "Loaded bundled module: %s\n", name);
+    }
+
+    LogosAPIClient* pm = api ? api->getClient("package_manager") : nullptr;
+    if (!pm) {
+        fprintf(stderr,
+                "Warning: could not reach package_manager to configure its "
+                "directories. Package commands will not see this session's "
+                "installed packages.\n");
+        return;
+    }
+
+    // Embedded (read-only, ships with the binary) vs user (writable, this
+    // session). The manager scans both and lets the user copy win on a name
+    // collision, which is how a session can override a bundled module.
+    // bundledDir is <bin>/../modules; its plugins sibling is alongside it.
+    if (!bundledDir.empty()) {
+        const std::string bundledPlugins =
+            (std::filesystem::path(bundledDir).parent_path() / "plugins").string();
+        pm->invokeRemoteMethod("package_manager", "setEmbeddedModulesDirectory",
+                               nlohmann::json::array({bundledDir}));
+        pm->invokeRemoteMethod("package_manager", "setEmbeddedUiPluginsDirectory",
+                               nlohmann::json::array({bundledPlugins}));
+    }
+    pm->invokeRemoteMethod("package_manager", "setUserModulesDirectory",
+                           nlohmann::json::array({Config::modulesDir()}));
+    pm->invokeRemoteMethod("package_manager", "setUserUiPluginsDirectory",
+                           nlohmann::json::array({Config::pluginsDir()}));
+
+    // Trust is per-session: the keyring lives inside the config dir so that
+    // copying a session carries its trust assumptions with it, and two
+    // sessions can disagree about which signers they accept.
+    pm->invokeRemoteMethod("package_manager", "setKeyringDirectory",
+                           nlohmann::json::array({Config::keyringDir()}));
+
+    // A crash mid-dialog in a previous run can leave the module's single
+    // gated-operation slot occupied, which would reject every subsequent
+    // install. Basecamp clears it at startup for the same reason.
+    pm->invokeRemoteMethod("package_manager", "resetPendingAction",
+                           nlohmann::json::array());
+
+    if (verbose)
+        fprintf(stderr, "Configured package_manager: user=%s embedded=%s keyring=%s\n",
+                Config::modulesDir().c_str(), bundledDir.c_str(),
+                Config::keyringDir().c_str());
+}
+
 } // namespace
 
 int Daemon::start(int argc, char* argv[],
@@ -275,9 +339,27 @@ int Daemon::start(int argc, char* argv[],
             fprintf(stderr, "Added bundled modules directory: %s\n", bundledDir.c_str());
     }
 
+    // 3b. The session's own writable modules directory — where anything
+    //     installed into this session lands. Without it on the search path,
+    //     `install` would put a module on disk that the daemon could never
+    //     see, so install-then-load could not work at all. Created eagerly so
+    //     the package manager has somewhere to write on its very first
+    //     install rather than failing on a missing directory.
+    {
+        std::error_code ec;
+        for (const std::string& dir : {Config::modulesDir(), Config::pluginsDir(),
+                                       Config::keyringDir(), Config::cacheDir()}) {
+            std::filesystem::create_directories(dir, ec);
+        }
+        logos_core_add_modules_dir(Config::modulesDir().c_str());
+        if (verbose)
+            fprintf(stderr, "Added session modules directory: %s\n",
+                    Config::modulesDir().c_str());
+    }
+
     // 4. Set persistence base path for module instance data
     std::string persistenceBase = persistencePath.empty()
-        ? Config::configDir() + "/data"
+        ? Config::dataDir()
         : persistencePath;
     logos_core_set_persistence_base_path(persistenceBase.c_str());
 
@@ -391,6 +473,28 @@ int Daemon::start(int argc, char* argv[],
     const std::string autoTokenRaw = autoTokenOutcome.token;
 
     TokenManager::instance().saveToken("cli_client", autoTokenRaw);
+
+    // 8b. Bring up the bundled package modules and point them at this
+    //     session's directories.
+    //
+    //     These are loaded unconditionally, like basecamp does after
+    //     logos_core_start (app/main.cpp), because every package command is
+    //     an RPC into them — a client that had to load them first would pay
+    //     the cost on its first `package` command and race any concurrent
+    //     client doing the same.
+    //
+    //     The directory configuration is the same four calls basecamp makes
+    //     (PackageCoordinator::subscribeToPackageInstallationEvents): embedded
+    //     is the read-only tree beside the binary, user is the session's
+    //     writable tree. Without it the manager has no writable target and
+    //     scans nothing, so `package ls` would report an empty session even
+    //     after a successful install.
+    //
+    //     Failures here are logged, not fatal: a daemon that cannot manage
+    //     packages is still a perfectly good daemon for loading and calling
+    //     modules, and refusing to boot would turn a missing optional module
+    //     into total unavailability.
+    bootstrapPackageModules(coreServiceApi, bundledDir, verbose);
 
     // 9. Write the live-instance state file. Carries the resolved
     //    transport endpoints (post-bind, with real ports), instanceId/

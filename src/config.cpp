@@ -43,6 +43,12 @@ std::string Config::daemonTokensDir()  { return daemonDir() + "/tokens"; }
 std::string Config::clientDir()        { return configDir() + "/client"; }
 std::string Config::clientConfigPath() { return clientDir() + "/config.json"; }
 
+std::string Config::modulesDir()       { return configDir() + "/modules"; }
+std::string Config::pluginsDir()       { return configDir() + "/plugins"; }
+std::string Config::keyringDir()       { return configDir() + "/keyring"; }
+std::string Config::dataDir()          { return configDir() + "/data"; }
+std::string Config::cacheDir()         { return configDir() + "/cache"; }
+
 std::string Config::clientTokenPath(const std::string& filename)
 {
     // token_file is operator-influenced (--token-file / env / config.json); a
