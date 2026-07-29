@@ -47,8 +47,8 @@ sections:
       what you get is exactly what a released binary would ship.
     steps:
       - title: "Build the CLI"
-        run: 'nix build "github:logos-co/logos-logosctl-cli{release}" -o result'
-        code_block: "nix build github:logos-co/logos-logosctl-cli"
+        run: 'nix build "github:logos-co/logos-logoscore-cli{release}" -o result'
+        code_block: "nix build github:logos-co/logos-logoscore-cli"
         check_file: "result/bin/logosctl"
 
   - title: "Confirm the bundled modules"

@@ -79,12 +79,12 @@ sections:
           `PATH`.
         run: |
           { [ "$(uname -s)" = Linux ] && [ -d /run/systemd/system ] && sudo -n true 2>/dev/null; } || { echo "SKIP: needs Linux + systemd + passwordless sudo"; exit 0; }
-          nix build 'github:logos-co/logos-logosctl-cli{release}' --out-link ./logos
+          nix build 'github:logos-co/logos-logoscore-cli{release}' --out-link ./logos
           readlink -f ./logos/bin/logosctl > ./ls-path
           test -x "$(cat ./ls-path)" || { echo "logosctl not executable"; exit 1; }
           echo "logosctl: $(cat ./ls-path)"
         code_block: |
-          nix build 'github:logos-co/logos-logosctl-cli' --out-link ./logos
+          nix build 'github:logos-co/logos-logoscore-cli' --out-link ./logos
           readlink -f ./logos/bin/logosctl    # absolute path for ExecStart=
 
       - title: "Assemble the modules directory"

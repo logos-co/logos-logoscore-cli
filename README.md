@@ -1,9 +1,9 @@
-# logos-logosctl-cli
+# logos-logoscore-cli
 
 `logosctl` is the headless CLI runtime for the [Logos](https://github.com/logos-co) modular application platform. It loads Logos modules (Qt plugins) and lets you call their methods from the command line — no GUI needed.
 
-`logos-logosctl-cli` is one of two frontends for [logos-liblogos](https://github.com/logos-co/logos-liblogos):
-- **logos-logosctl-cli** (this repo) — headless CLI runtime for scripting, testing, and headless deployments
+`logos-logoscore-cli` is one of two frontends for [logos-liblogos](https://github.com/logos-co/logos-liblogos):
+- **logos-logoscore-cli** (this repo) — headless CLI runtime for scripting, testing, and headless deployments
 - **[logos-basecamp](https://github.com/logos-co/logos-basecamp)** — the desktop GUI application shell
 
 ## How to Build

@@ -87,7 +87,7 @@
     {
       packages = forAllSystems ({ pkgs, system, cppSdk, protocolPkg, qtSdk, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, installDev, installPortable, dirBundler, appBundler }:
         let
-          pname = "logos-logosctl-cli";
+          pname = "logos-logoscore-cli";
           # VERSION is only present on release branches; dev branches use a placeholder.
           version = if builtins.pathExists ./VERSION
             then nixpkgs.lib.removeSuffix "\n" (builtins.readFile ./VERSION)
@@ -462,14 +462,14 @@
           # installDev both expose a top-level `modules/` tree;
           # symlinkJoin (lndir) merges them into one scan dir.
           testModulesInstall = pkgs.symlinkJoin {
-            name = "logos-logosctl-cli-it-modules";
+            name = "logos-logoscore-cli-it-modules";
             paths = [
               (installDev capabilityModuleLib)
               logos-test-modules.modules.${system}.test_basic_module.install
             ];
           };
         in {
-          tests = pkgs.runCommand "logos-logosctl-cli-tests" {
+          tests = pkgs.runCommand "logos-logoscore-cli-tests" {
             nativeBuildInputs = [ testsPkg ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.qt6.qtbase ];
           } ''
             export QT_QPA_PLATFORM=offscreen
@@ -484,11 +484,11 @@
             export LOGOSCTL_TEST_MODULES_DIR=${testModulesInstall}/modules
             export LOGOS_HOST_PATH=${liblogos}/bin/logos_host
             mkdir -p $out
-            echo "Running logos-logosctl-cli unit tests..."
+            echo "Running logos-logoscore-cli unit tests..."
             ${testsPkg}/bin/unit_tests --gtest_output=xml:$out/unit-test-results.xml
-            echo "Running logos-logosctl-cli CLI tests..."
+            echo "Running logos-logoscore-cli CLI tests..."
             ${testsPkg}/bin/cli_tests --gtest_output=xml:$out/cli-test-results.xml
-            echo "Running logos-logosctl-cli integration tests..."
+            echo "Running logos-logoscore-cli integration tests..."
             ${testsPkg}/bin/integration_tests --gtest_output=xml:$out/integration-test-results.xml
           '';
         }

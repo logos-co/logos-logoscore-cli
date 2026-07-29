@@ -49,7 +49,7 @@ sections:
       `./logos/` for easy reference in the steps below.
     steps:
       - title: "Build the CLI"
-        run: "nix build 'github:logos-co/logos-logosctl-cli{release}' --out-link ./logos"
+        run: "nix build 'github:logos-co/logos-logoscore-cli{release}' --out-link ./logos"
         check_file: "logos/bin/logosctl"
         post_text: |
           The build produces `logos/bin/logosctl` plus bundled runtime libraries and
@@ -87,8 +87,8 @@ sections:
       - title: "Start the daemon"
         text: |
           Start logosctl in daemon mode in the background, capturing output to
-          `logs.txt`:
-        run: "sh -c './logos/bin/logosctl daemon start --detach'"
+          `session/daemon/daemon.log`:
+        run: "./logos/bin/logosctl daemon start --detach"
         code_block: "logosctl daemon start --detach"
 
       - run: "sleep 3"

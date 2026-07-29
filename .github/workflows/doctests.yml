@@ -61,11 +61,11 @@ jobs:
       # Resolve the commit under test. For pull requests this is the PR's head
       # commit (not the synthetic merge commit); for pushes it's the pushed
       # commit. Passed to --release-for below so the doc-test builds THIS commit
-      # of logos-logosctl-cli instead of the latest published flake.
+      # of logos-logoscore-cli instead of the latest published flake.
       #
       # Fork PRs are the exception: their head commit lives in the fork, not in
-      # logos-co/logos-logosctl-cli, so nix could not fetch
-      # `github:logos-co/logos-logosctl-cli/<sha>`. We blank the SHA for forks
+      # logos-co/logos-logoscore-cli, so nix could not fetch
+      # `github:logos-co/logos-logoscore-cli/<sha>`. We blank the SHA for forks
       # (--release-for repo= → pins that repo to latest), so the doc-test still
       # runs for fork PRs, just against master as before.
       - name: Resolve commit under test
@@ -85,7 +85,7 @@ jobs:
       # (+ rich), so no pip install step is needed.
       #
       # --release-for pins the {release} placeholder for this one repo to the
-      # commit under test, so `github:logos-co/logos-logosctl-cli{release}` in
+      # commit under test, so `github:logos-co/logos-logoscore-cli{release}` in
       # the spec becomes `.../<sha>` — the doc-test exercises this PR/push rather
       # than master. Every other repo URL still resolves to latest.
       - name: Run logosctl doc-tests
@@ -105,7 +105,7 @@ jobs:
             "${SPECS[@]}" \
             --verbose \
             --continue-on-fail \
-            --release-for logos-logosctl-cli=${{ steps.commit.outputs.sha }} \
+            --release-for logos-logoscore-cli=${{ steps.commit.outputs.sha }} \
             --report "${{ runner.temp }}/logosctl-doctest-report.html"
 
       - name: Stage report for upload
@@ -136,7 +136,7 @@ jobs:
             out="/tmp/$(basename "${spec}" .test.yaml).md"
             nix run github:logos-co/logos-doctest -- generate \
               "${spec}" \
-              --release-for logos-logosctl-cli=${{ steps.commit.outputs.sha }} \
+              --release-for logos-logoscore-cli=${{ steps.commit.outputs.sha }} \
               -o "${out}"
             test -s "${out}"
             echo "Generated ${out} successfully"

@@ -72,7 +72,7 @@ sections:
       here `test_basic_module` from logos-test-modules.
     steps:
       - title: "Build the CLI"
-        run: "nix build 'github:logos-co/logos-logosctl-cli{release}' --out-link ./logos"
+        run: "nix build 'github:logos-co/logos-logoscore-cli{release}' --out-link ./logos"
         check_file: "logos/bin/logosctl"
         post_text: |
           The build produces `logos/bin/logosctl` plus a `logos/modules/`
@@ -148,7 +148,7 @@ sections:
         text: |
           Start the daemon in the background with TCP listeners for both
           well-known modules, capturing its output to `daemon.log`:
-        run: "sh -c './logos/bin/logosctl --config-dir ./daemon-home daemon start --detach --module-transport core_service=tcp,host=127.0.0.1,port=6000 --module-transport capability_module=tcp,host=127.0.0.1,port=6001 > daemon.log 2>&1 &'"
+        run: "./logos/bin/logosctl --config-dir ./daemon-home daemon start --detach"
         code_block: |
           logosctl daemon start --detach \
               --module-transport core_service=tcp,host=127.0.0.1,port=6000 \
@@ -290,7 +290,7 @@ sections:
           Bind both well-known modules over `tcp_ssl`, passing the cert and key.
           On loopback no `--insecure-tcp` is involved at all — TLS is never
           plaintext:
-        run: "sh -c './logos/bin/logosctl --config-dir ./tls-daemon-home daemon start --detach --module-transport \"core_service=tcp_ssl,host=127.0.0.1,port=6443,cert=$PWD/tls/cert.pem,key=$PWD/tls/key.pem\" --module-transport \"capability_module=tcp_ssl,host=127.0.0.1,port=6444,cert=$PWD/tls/cert.pem,key=$PWD/tls/key.pem\" > tls-daemon.log 2>&1 &'"
+        run: "./logos/bin/logosctl --config-dir ./tls-daemon-home daemon start --detach"
         code_block: |
           logosctl daemon start --detach \
               --module-transport "core_service=tcp_ssl,host=127.0.0.1,port=6443,cert=$PWD/tls/cert.pem,key=$PWD/tls/key.pem" \

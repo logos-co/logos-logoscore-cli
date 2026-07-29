@@ -49,21 +49,21 @@ output_md_for() {
 }
 
 # Build the doc-tests against THIS repo's current commit rather than the latest
-# published flake. Each spec's `github:logos-co/logos-logosctl-cli{release}` URL
+# published flake. Each spec's `github:logos-co/logos-logoscore-cli{release}` URL
 # is pinned to $COMMIT via --release-for, so the run exercises exactly what's
 # checked out here. Override by exporting COMMIT (e.g. a tag), or set COMMIT=""
 # to fall back to latest.
 #
 # Note: nix fetches the commit from the GitHub remote, so $COMMIT must be pushed
-# to logos-co/logos-logosctl-cli. A local-only / uncommitted HEAD won't resolve;
+# to logos-co/logos-logoscore-cli. A local-only / uncommitted HEAD won't resolve;
 # export COMMIT="" (or push first) in that case.
 COMMIT="${COMMIT-$(git rev-parse HEAD)}"
 RELEASE_FOR=()
 if [ -n "${COMMIT}" ]; then
-  RELEASE_FOR=(--release-for "logos-logosctl-cli=${COMMIT}")
-  echo "==> Pinning logos-logosctl-cli to ${COMMIT}"
+  RELEASE_FOR=(--release-for "logos-logoscore-cli=${COMMIT}")
+  echo "==> Pinning logos-logoscore-cli to ${COMMIT}"
 else
-  echo "==> COMMIT empty; building logos-logosctl-cli from latest"
+  echo "==> COMMIT empty; building logos-logoscore-cli from latest"
 fi
 
 echo "==> Clearing previous ${OUTPUT_DIR}/"

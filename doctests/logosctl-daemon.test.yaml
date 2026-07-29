@@ -42,7 +42,7 @@ sections:
       `./logos/` for easy reference in the steps below.
     steps:
       - title: "Build the CLI"
-        run: "nix build 'github:logos-co/logos-logosctl-cli{release}' --out-link ./logos"
+        run: "nix build 'github:logos-co/logos-logoscore-cli{release}' --out-link ./logos"
         check_file: "logos/bin/logosctl"
         post_text: |
           The build produces `logos/bin/logosctl` plus bundled runtime libraries and
@@ -88,13 +88,13 @@ sections:
     step: true
     text: |
       Start the daemon in the background, then use client subcommands to interact
-      with it. Output from the daemon process is captured in `logs.txt`.
+      with it. Output from the daemon process is captured in `session/daemon/daemon.log`.
     steps:
       - title: "Start the daemon"
         text: |
           Start logosctl in daemon mode in the background, capturing output to
-          `logs.txt`:
-        run: "sh -c './logos/bin/logosctl --config-dir ./session daemon start --detach'"
+          `session/daemon/daemon.log`:
+        run: "./logos/bin/logosctl --config-dir ./session daemon start --detach"
         code_block: "logosctl daemon start --detach"
         post_text: |
           The `-D` flag starts the daemon. The client subcommands in the following
@@ -105,7 +105,7 @@ sections:
 
       - title: "Inspect the startup log"
         text: "Review the daemon's startup output:"
-        run: "cat logs.txt"
+        run: "cat session/daemon/daemon.log"
 
       - title: "Check daemon status"
         text: |
@@ -429,7 +429,7 @@ sections:
           echo "RESULT=$result"
         code_block: |
           # hard-kill the daemon; its module subprocess must exit on its own
-          logosctl daemon start --detach &      # (throwaway)
+          logosctl daemon start --detach        # (throwaway session)
           kill -9 "$(logosctl daemon status --json | jq .daemon.pid)"
         expect_contains:
           - "WORKER_CLEANED_UP"

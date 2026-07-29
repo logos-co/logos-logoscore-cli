@@ -3,7 +3,7 @@
 // Unlike test_cli.cpp (which only pokes the binary in no-daemon / inline
 // mode), these spin up a *real* logosctl daemon in the background against
 // a real test-module directory and drive it through the client subcommands
-// — the same shape as logos-logosctl-py's integration suite.
+// — the same shape as logos-logoscore-py's integration suite.
 //
 // Coverage:
 //   * Error paths (ErrorPathTest): unknown-module load, calling methods on
@@ -17,7 +17,7 @@
 //     `watch`, and many simultaneous clients hitting one daemon. The
 //     whole suite shares ONE daemon (SetUpTestSuite) with the module
 //     loaded once — per-test daemons made the check take many minutes.
-//     Mirrors logos-logosctl-py/tests/integration/test_basic_module_methods.py
+//     Mirrors logos-logoscore-py/tests/integration/test_basic_module_methods.py
 //     and logos-test-modules/test-basic-module — keep them in sync.
 //
 // Negative `call`/`module-info` cases: this CLI/SDK revision has no fast

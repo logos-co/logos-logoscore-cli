@@ -47,7 +47,7 @@ sections:
       Build the logosctl CLI from the published flake, symlinked to `./logos/`.
     steps:
       - title: "Build the CLI"
-        run: "nix build 'github:logos-co/logos-logosctl-cli{release}' --out-link ./logos"
+        run: "nix build 'github:logos-co/logos-logoscore-cli{release}' --out-link ./logos"
         check_file: "logos/bin/logosctl"
 
   - title: "Install the full_api module family"
@@ -78,7 +78,7 @@ sections:
       Start logosctl in daemon mode; it discovers every module under `./modules/`.
     steps:
       - title: "Start the daemon"
-        run: "sh -c './logos/bin/logosctl daemon start --detach'"
+        run: "./logos/bin/logosctl daemon start --detach"
         code_block: "logosctl daemon start --detach"
       - run: "sleep 3"
       - title: "Load the module family"
