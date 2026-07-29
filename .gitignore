@@ -1,4 +1,8 @@
+# Nix build outputs. `result` alone missed every suffixed out-link
+# (`nix build -o result-ctl`, `.#tests -o result-tests`, ...), so those got
+# picked up by `git add -A` and committed as symlinks into /nix/store.
 result
+result-*
 doctests/outputs/*
 !doctests/outputs/*.md
 
