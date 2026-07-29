@@ -131,7 +131,7 @@ picks which one (default `~/.logosctl`, also `LOGOSCTL_CONFIG_DIR`):
 ├── modules/            # core modules installed into this session
 ├── plugins/            # UI plugins installed into this session
 ├── keyring/            # trusted package-signing keys
-├── logs/               # daemon.log, rotated
+├── logs/               # daemon_<timestamp>.log, rotated
 ├── cache/downloads/    # fetched .lgx
 └── data/               # per-module persistence
 ```
@@ -196,6 +196,26 @@ logging:
   max_files: 5           # keep this many in total, oldest dropped
   console: true          # mirror to the terminal (ignored once detached)
 ```
+
+Each start writes a **new, timestamped file**, the same scheme Basecamp uses:
+
+```
+logs/
+├── daemon.log -> daemon_20260729_180411.log   # always the current session
+├── daemon_20260729_180404.log
+├── daemon_20260729_180409.log
+└── daemon_20260729_180411.log
+```
+
+`logging.file` names the log; the start time is inserted into the real file, and
+that exact name survives as a symlink to whichever file is current — so
+`tail -F logs/daemon.log` follows across restarts without anyone working out a
+stamp.
+
+`max_files` bounds the **directory**, not just one session's rotations: the
+oldest files are pruned at each start, so a daemon restarted a hundred times
+does not leave a hundred logs. (spdlog's own retention only prunes within a
+single sink's rotation set, which is why this is enforced separately.)
 
 Capture is **pipe-based**, not a file redirect, and that is the point: module
 hosts are separate processes holding inherited descriptors. Redirecting to a

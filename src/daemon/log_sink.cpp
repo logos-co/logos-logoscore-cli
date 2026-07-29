@@ -3,7 +3,9 @@
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <cstdio>
+#include <ctime>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -12,6 +14,67 @@
 #include <unistd.h>
 
 namespace fs = std::filesystem;
+
+namespace {
+
+// yyyymmdd_HHMMSS in local time, matching basecamp's session stamp so logs
+// from the two frontends sort and read the same way.
+std::string sessionStamp()
+{
+    const std::time_t t = std::time(nullptr);
+    std::tm tm{};
+    localtime_r(&t, &tm);
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &tm);
+    return buf;
+}
+
+struct NameParts { std::string stem, ext; };
+
+NameParts split(const std::string& file)
+{
+    const fs::path p(file);
+    return { p.stem().string(), p.extension().string() };
+}
+
+// Keep at most `keep` log files in `dir`, deleting the oldest first.
+//
+// spdlog's own max_files only prunes within one sink's rotation set, and each
+// daemon start opens a new stamped base name -- so without this a daemon
+// restarted a hundred times would leave a hundred logs behind. basecamp has
+// exactly that problem; retention here is meant to actually bound the
+// directory, so it prunes across sessions too.
+void pruneOldLogs(const std::string& dir, const NameParts& n, std::size_t keep)
+{
+    struct Entry { fs::path path; fs::file_time_type when; };
+    std::vector<Entry> found;
+
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+        if (ec) break;
+        if (!e.is_regular_file(ec)) continue;
+        const std::string name = e.path().filename().string();
+        // Only our own stamped files: "<stem>_..." . The stable symlink is
+        // "<stem><ext>" with no underscore, so it is never a candidate, and
+        // neither is anything else that happens to share the directory.
+        if (name.rfind(n.stem + "_", 0) != 0) continue;
+        if (!n.ext.empty() && e.path().extension().string() != n.ext) continue;
+        std::error_code tec;
+        const auto when = fs::last_write_time(e.path(), tec);
+        if (tec) continue;
+        found.push_back({ e.path(), when });
+    }
+
+    if (found.size() <= keep) return;
+    std::sort(found.begin(), found.end(),
+              [](const Entry& a, const Entry& b) { return a.when < b.when; });
+    for (std::size_t i = 0; i + keep < found.size(); ++i) {
+        std::error_code rec;
+        fs::remove(found[i].path, rec);
+    }
+}
+
+}  // namespace
 
 LogSink& LogSink::instance()
 {
@@ -36,8 +99,17 @@ bool LogSink::start(const Options& opts)
     if (ec)
         return false;
 
-    m_path = (fs::path(opts.dir) / opts.file).string();
-    m_console = opts.console;
+    const NameParts parts = split(opts.file);
+
+    // Make room before opening the new file, so the count after startup is the
+    // configured maximum rather than one over it.
+    if (opts.maxFiles > 0)
+        pruneOldLogs(opts.dir, parts, opts.maxFiles - 1);
+
+    const std::string stamped = parts.stem + "_" + sessionStamp() + parts.ext;
+    m_path     = (fs::path(opts.dir) / stamped).string();
+    m_linkPath = stablePath(opts.dir, opts.file);
+    m_console  = opts.console;
 
     try {
         // maxSizeMb == 0 means "never rotate": spdlog has no such mode, so
@@ -61,7 +133,18 @@ bool LogSink::start(const Options& opts)
         m_logger = logger;
     } catch (const std::exception&) {
         m_path.clear();
+        m_linkPath.clear();
         return false;
+    }
+
+    // Point the stable name at this session's file. Callers -- and anyone
+    // running `tail -F` -- get one path that is always current, instead of
+    // having to work out the stamp. Best-effort: a filesystem without symlinks
+    // costs the convenience, not the logging.
+    if (!m_linkPath.empty()) {
+        std::error_code lec;
+        fs::remove(m_linkPath, lec);
+        fs::create_symlink(stamped, m_linkPath, lec);
     }
 
     auto cleanup = [this]() {
@@ -182,7 +265,13 @@ void LogSink::stop()
 
     m_logger.reset();
     m_path.clear();
+    m_linkPath.clear();
     m_started = false;
+}
+
+std::string LogSink::stablePath(const std::string& dir, const std::string& file)
+{
+    return (fs::path(dir) / file).string();
 }
 
 std::string LogSink::currentFile() const

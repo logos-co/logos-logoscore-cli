@@ -20,6 +20,7 @@
 #include "paths.h"
 #include "daemon/daemon.h"
 #include "daemon/daemon_state.h"
+#include "daemon/log_sink.h"
 #include "client/client_state.h"
 #include "client/client.h"
 #include "client/output.h"
@@ -513,10 +514,10 @@ int main(int argc, char *argv[])
             // writes only after every transport has bound. Returning before
             // that would hand the caller a daemon that is not listening yet,
             // and the very next command would race it.
-            // Resolve where the child will actually log by reading the same
-            // config it will read. The parent prints this before the child has
-            // booted, so guessing the default would report the wrong path to
-            // anyone who redirected dirs.logs or renamed logging.file.
+            // Resolve where the child will log by reading the same config it
+            // will read. The real file carries a start-time stamp only the
+            // child knows, so report the stable symlink beside it -- always
+            // current, and printable before the child has booted.
             std::string logPath;
             {
                 LoggingConfig lg;
@@ -529,7 +530,7 @@ int main(int argc, char *argv[])
                     logPath = "(file logging disabled)";
                 } else {
                     Config::setSessionDirOverride(Config::SessionDir::Logs, sd.logs);
-                    logPath = Config::logsDir() + "/" + lg.file;
+                    logPath = LogSink::stablePath(Config::logsDir(), lg.file);
                     // Leave no override behind: the child re-applies it from
                     // config, and the parent is about to exit anyway.
                     Config::setSessionDirOverride(Config::SessionDir::Logs, "");

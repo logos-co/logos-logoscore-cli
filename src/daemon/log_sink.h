@@ -31,6 +31,10 @@ public:
     struct Options {
         bool        enabled  = true;
         std::string dir;                 // resolved logs directory
+        // Names the log. The real file gets a start-time stamp inserted --
+        // "daemon.log" becomes "daemon_20260729_163832.log" -- and this exact
+        // name survives as a symlink to whichever file is current, so
+        // `tail -F logs/daemon.log` keeps working across restarts.
         std::string file     = "daemon.log";
         // Rotate once the file passes this size, keeping `maxFiles` of them
         // (the live one plus maxFiles-1 older). 0 disables rotation.
@@ -51,8 +55,13 @@ public:
     // when never started.
     void stop();
 
-    // Path of the live log file, or empty when not started.
+    // Path of the live, timestamped log file, or empty when not started.
     std::string currentFile() const;
+
+    // The stable symlink that points at it (<dir>/<file>). Safe to print
+    // before the daemon has started, which is why --detach reports this
+    // rather than a filename it would have to guess the stamp for.
+    static std::string stablePath(const std::string& dir, const std::string& file);
 
     LogSink(const LogSink&) = delete;
     LogSink& operator=(const LogSink&) = delete;
@@ -66,7 +75,8 @@ private:
     struct Impl;
     std::shared_ptr<void> m_logger;   // spdlog::logger, type-erased to keep
                                       // spdlog out of this header
-    std::string m_path;
+    std::string m_path;      // timestamped file actually written
+    std::string m_linkPath;  // stable symlink pointing at it
 
     int m_readFd         = -1;
     int m_originalStdout = -1;
