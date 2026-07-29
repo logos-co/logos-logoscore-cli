@@ -16,4 +16,10 @@ std::string executablePath();
 // Returns "{executableDir}/../modules" if that directory exists, or empty.
 std::string bundledModulesDir();
 
+// The package modules (package_manager, package_downloader) bundled for
+// logosctl, kept in their own directory rather than alongside
+// capability_module. logoscore does not add this to its search path, so its
+// module list stays exactly what it reports today.
+std::string bundledPackageModulesDir();
+
 } // namespace paths

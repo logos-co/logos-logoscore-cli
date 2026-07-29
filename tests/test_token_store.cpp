@@ -23,6 +23,10 @@ protected:
     std::string origConfigDir;
 
     void SetUp() override {
+        // These tests describe the logosctl surface. The flavor defaults to
+        // Legacy so that anything which forgets to set it behaves like the
+        // tool that exists today, so say which one we mean.
+        Config::setFlavor(Config::Flavor::Modern);
         dir = fs::temp_directory_path() / ("tokenstore-" + std::to_string(::getpid()) +
                                            "-" + std::to_string(rand()));
         fs::create_directories(dir);

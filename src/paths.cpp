@@ -52,6 +52,25 @@ std::string executableDir()
     return {};
 }
 
+namespace {
+std::string siblingDir(const char* name)
+{
+    std::string binDir = executableDir();
+    if (binDir.empty())
+        return {};
+
+    fs::path candidate = fs::path(binDir) / ".." / name;
+    std::error_code ec;
+    auto resolved = fs::canonical(candidate, ec);
+    if (!ec && fs::is_directory(resolved, ec))
+        return resolved.string();
+
+    return {};
+}
+}  // namespace
+
+std::string bundledPackageModulesDir() { return siblingDir("modules-pkg"); }
+
 std::string bundledModulesDir()
 {
     std::string binDir = executableDir();

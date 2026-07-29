@@ -1,0 +1,200 @@
+name: "Installing and Removing Packages with logosctl"
+output: logosctl-packages.md
+release: ""
+
+intro: |
+  This is the capability that made `logosctl` worth merging: it installs
+  packages itself. Previously that took three binaries — `lgpd` to search a
+  catalog and download a `.lgx`, `lgpm` to install it, and `logoscore` to run
+  it — wired together by hand.
+
+  `logosctl` bundles the `package_manager` and `package_downloader` modules
+  (the same pair the Basecamp desktop app ships), so one tool covers the whole
+  loop: search a catalog, install with dependencies resolved, load, call, and
+  remove again.
+
+  Two rules shape everything below, and they are worth stating up front:
+
+  - **Installing does not load.** `install` puts files on disk; `module load`
+    activates them. They are separate acts because you may well want to stage
+    a package without starting it.
+  - **The daemon does not need restarting.** After an install it re-scans, so a
+    freshly installed module is loadable immediately. Only modules that were
+    *already running* and had to be stopped get restarted.
+
+  This doc-test runs against the **live** module catalog, so it needs network
+  access.
+
+what_you_build: "A logosctl session with a real package installed from the public catalog, loaded, called, and then removed along with everything that depended on it."
+
+what_you_learn:
+  - How a logosctl session holds its own packages, and why that makes it portable
+  - How to search the catalog and preview an install with `--dry-run`
+  - Why `install` deliberately leaves the package unloaded
+  - How dependencies are resolved on install, and dependents removed on uninstall
+  - Why a destructive command with no `-y` and no terminal is refused rather than assumed
+
+prerequisites:
+  - |
+    **Nix** with flakes enabled. Install from [nixos.org](https://nixos.org/download.html), then enable flakes:
+
+    ```bash
+    mkdir -p ~/.config/nix
+    echo 'experimental-features = nix-command flakes' >> ~/.config/nix/nix.conf
+    ```
+
+    Verify: `nix flake --help >/dev/null 2>&1 && echo "Flakes enabled"`
+  - "**Network access.** The catalog and the packages are fetched from the public module release repository."
+
+sections:
+  - title: "Build the portable logosctl bundle"
+    step: true
+    text: |
+      Packages in the public catalog ship **portable** variants, so this
+      doc-test uses the portable bundle rather than the dev build. A dev build
+      looks for `-dev` variants and would correctly refuse to install a
+      released package — that mismatch is a feature, not a failure.
+    steps:
+      - title: "Build the bundle"
+        run: 'nix build "github:logos-co/logos-logoscore-cli{release}#cli-bundle-dir" -o result-portable'
+        code_block: "nix build 'github:logos-co/logos-logoscore-cli#cli-bundle-dir' -o result-portable"
+        check_file: "result-portable/bin/logosctl"
+
+  - title: "Start a session"
+    step: true
+    text: |
+      A **session** is one directory holding everything: config, the packages
+      installed into it, per-module persistence, and the keyring used to verify
+      signatures. `--config-dir` picks which one. Nothing here touches
+      `~/.logosctl`, and nothing touches a `logoscore` deployment either — the
+      two tools share no state.
+    steps:
+      - title: "Start the daemon"
+        text: |
+          `--detach` returns only once the daemon is actually accepting
+          commands, so the next command cannot race the boot.
+        run: "./result-portable/bin/logosctl --config-dir ./session daemon start --detach"
+        code_block: "logosctl --config-dir ./session daemon start --detach"
+        expect_contains:
+          - "Daemon started"
+
+      - title: "The package modules come up with it"
+        text: |
+          `package_manager` and `package_downloader` are bundled and loaded at
+          boot, because every package command is a call into them.
+        run: "./result-portable/bin/logosctl --config-dir ./session module ls"
+        code_block: "logosctl module ls"
+        expect_contains:
+          - "package_manager"
+          - "package_downloader"
+          - "capability_module"
+
+  - title: "Find something to install"
+    step: true
+    text: |
+      The catalog is the merged view over every enabled source. One ships by
+      default; `logosctl catalog add <url>` adds more.
+    steps:
+      - title: "List the configured catalogs"
+        run: "./result-portable/bin/logosctl --config-dir ./session catalog ls"
+        code_block: "logosctl catalog ls"
+        expect_contains:
+          - "logos-modules-official"
+
+      - title: "Search it"
+        run: "./result-portable/bin/logosctl --config-dir ./session package search openmetrics"
+        code_block: "logosctl search openmetrics"
+        expect_contains:
+          - "openmetrics"
+
+  - title: "Preview, then install"
+    step: true
+    text: |
+      `--dry-run` resolves everything and prints exactly what would change —
+      including which running modules would be stopped and restarted — without
+      writing anything.
+    steps:
+      - title: "Preview the install"
+        run: "./result-portable/bin/logosctl --config-dir ./session install openmetrics --dry-run"
+        code_block: "logosctl install openmetrics --dry-run"
+        expect_contains:
+          - "openmetrics"
+          - "dry run"
+
+      - title: "Install for real"
+        text: |
+          `-y` skips the confirmation. Without it, and with no terminal to ask
+          on, the command is **refused** rather than assumed — a script that
+          forgot `--yes` should fail loudly, not quietly install things.
+        run: "./result-portable/bin/logosctl --config-dir ./session install openmetrics -y"
+        code_block: "logosctl install openmetrics -y"
+        expect_contains:
+          - "Installed:"
+
+      - title: "It landed in the session, not the bundle"
+        text: |
+          `SOURCE` distinguishes the read-only modules shipped beside the
+          binary (`embedded`) from what this session installed (`user`).
+        run: "./result-portable/bin/logosctl --config-dir ./session package ls"
+        code_block: "logosctl package ls"
+        expect_contains:
+          - "openmetrics"
+          - "user"
+
+  - title: "Installed is not loaded"
+    step: true
+    text: |
+      The package is on disk and the daemon has already re-scanned, so it is
+      discoverable — but it is not running. That separation is deliberate.
+    steps:
+      - title: "Discoverable, not loaded"
+        run: "./result-portable/bin/logosctl --config-dir ./session module ls"
+        code_block: "logosctl module ls"
+        expect_contains:
+          - "openmetrics"
+          - "not_loaded"
+
+      - title: "Load it — no daemon restart needed"
+        run: "./result-portable/bin/logosctl --config-dir ./session module load openmetrics"
+        code_block: "logosctl module load openmetrics"
+        expect_contains:
+          - "openmetrics"
+
+      - title: "Confirm it is running"
+        run: "./result-portable/bin/logosctl --config-dir ./session module ls --loaded"
+        code_block: "logosctl module ls --loaded"
+        expect_contains:
+          - "openmetrics"
+
+  - title: "Remove it"
+    step: true
+    text: |
+      Removal is the mirror image of install: it takes **dependents** with it by
+      default, because leaving a module running against a package that no longer
+      exists is the more surprising outcome. `--no-dependents` opts out.
+    steps:
+      - title: "Preview the removal"
+        text: |
+          Note that it reports the running module it will stop. Nothing here is
+          restarted afterwards — it is being removed.
+        run: "./result-portable/bin/logosctl --config-dir ./session package remove openmetrics --dry-run"
+        code_block: "logosctl package remove openmetrics --dry-run"
+        expect_contains:
+          - "openmetrics"
+          - "dry run"
+
+      - title: "Remove for real"
+        run: "./result-portable/bin/logosctl --config-dir ./session package remove openmetrics -y"
+        code_block: "logosctl package remove openmetrics -y"
+        expect_contains:
+          - "Removed:"
+
+      - title: "Gone from the session"
+        run: "./result-portable/bin/logosctl --config-dir ./session package ls"
+        code_block: "logosctl package ls"
+        expect_not_contains:
+          - "openmetrics"
+
+      - title: "Stop the daemon"
+        run: "./result-portable/bin/logosctl --config-dir ./session daemon stop"
+        code_block: "logosctl daemon stop"

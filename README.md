@@ -1,5 +1,20 @@
 # logos-logoscore-cli
 
+> **Two binaries ship from this repo.**
+>
+> | | |
+> |---|---|
+> | **`logoscore`** | The tool that exists today. Its commands, flags, config format and `~/.logoscore` directory are **unchanged**. Keep using it. |
+> | **`logosctl`** | The merged CLI — `logoscore` + `lgpd` + `lgpm` in one tool, with package management built in. New surface, own `~/.logosctl` session directory. **Being validated; not yet the default.** |
+>
+> They share the runtime but no state, so a logosctl session cannot disturb a
+> logoscore deployment. `logoscore` will be removed only once `logosctl` has
+> been properly validated in real use.
+>
+> **Everything below documents `logosctl`.** For `logoscore`, see the doc-tests
+> under `doctests/logoscore-*.test.yaml`, which are unchanged.
+
+
 `logosctl` is the headless CLI runtime for the [Logos](https://github.com/logos-co) modular application platform. It loads Logos modules (Qt plugins) and lets you call their methods from the command line — no GUI needed.
 
 `logos-logoscore-cli` is one of two frontends for [logos-liblogos](https://github.com/logos-co/logos-liblogos):

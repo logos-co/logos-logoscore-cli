@@ -17,6 +17,10 @@ protected:
     std::string testDir;
 
     void SetUp() override {
+        // These tests describe the logosctl surface. The flavor defaults to
+        // Legacy so that anything which forgets to set it behaves like the
+        // tool that exists today, so say which one we mean.
+        Config::setFlavor(Config::Flavor::Modern);
         testDir = getTempDir() + "/logosctl_test_config_" + std::to_string(getpid());
         std::filesystem::create_directories(testDir + "/.logosctl");
 
@@ -154,4 +158,34 @@ TEST_F(ConfigTest, ConfigDir_ClearingSetterFallsBackToEnv)
 
     Config::setConfigDir("");
     EXPECT_EQ(Config::configDir(), envDir);
+}
+
+// The two binaries must not share a byte of state: a bad logosctl session
+// cannot be allowed to disturb a working logoscore deployment. That isolation
+// is the whole reason `logoscore` can keep shipping unchanged while logosctl
+// is validated, so pin it down.
+TEST_F(ConfigTest, LegacyAndModernFlavorsShareNothing)
+{
+    Config::setConfigDir("");   // fall back to the per-flavor default
+
+    Config::setFlavor(Config::Flavor::Legacy);
+    const std::string legacyDir  = Config::configDir();
+    const std::string legacyCfg  = Config::daemonConfigPath();
+    const std::string legacyClnt = Config::clientConfigPath();
+
+    Config::setFlavor(Config::Flavor::Modern);
+    const std::string modernDir  = Config::configDir();
+    const std::string modernCfg  = Config::daemonConfigPath();
+    const std::string modernClnt = Config::clientConfigPath();
+
+    EXPECT_NE(legacyDir, modernDir);
+    EXPECT_NE(std::string::npos, legacyDir.find(".logoscore"));
+    EXPECT_NE(std::string::npos, modernDir.find(".logosctl"));
+
+    // logoscore keeps writing JSON so an existing deployment's config stays
+    // readable by the tool that wrote it; logosctl writes YAML.
+    EXPECT_NE(std::string::npos, legacyCfg.find("config.json"));
+    EXPECT_NE(std::string::npos, modernCfg.find("config.yaml"));
+    EXPECT_NE(std::string::npos, legacyClnt.find("config.json"));
+    EXPECT_NE(std::string::npos, modernClnt.find("config.yaml"));
 }

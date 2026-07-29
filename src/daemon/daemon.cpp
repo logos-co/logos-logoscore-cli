@@ -224,6 +224,7 @@ void bootstrapPackageModules(LogosAPI* api,
 int Daemon::start(int argc, char* argv[],
                   const DaemonConfig& cfg,
                   const std::string& configSource,
+                  bool persistConfig,
                   bool verbose)
 {
     const auto& modulesDirs      = cfg.modulesDirs;
@@ -344,13 +345,19 @@ int Daemon::start(int argc, char* argv[],
     //     see, so install-then-load could not work at all. Created eagerly so
     //     the package manager has somewhere to write on its very first
     //     install rather than failing on a missing directory.
-    {
+    const bool modern = (Config::flavor() == Config::Flavor::Modern);
+    if (modern) {
         std::error_code ec;
         for (const std::string& dir : {Config::modulesDir(), Config::pluginsDir(),
                                        Config::keyringDir(), Config::cacheDir()}) {
             std::filesystem::create_directories(dir, ec);
         }
         logos_core_add_modules_dir(Config::modulesDir().c_str());
+        // The bundled package modules live in their own directory so that
+        // logoscore's module list is byte-identical to what it reports today.
+        const std::string pkgDir = paths::bundledPackageModulesDir();
+        if (!pkgDir.empty())
+            logos_core_add_modules_dir(pkgDir.c_str());
         if (verbose)
             fprintf(stderr, "Added session modules directory: %s\n",
                     Config::modulesDir().c_str());
@@ -493,7 +500,8 @@ int Daemon::start(int argc, char* argv[],
     //     packages is still a perfectly good daemon for loading and calling
     //     modules, and refusing to boot would turn a missing optional module
     //     into total unavailability.
-    bootstrapPackageModules(coreServiceApi, bundledDir, verbose);
+    if (modern)
+        bootstrapPackageModules(coreServiceApi, paths::bundledPackageModulesDir(), verbose);
 
     // 9. Write the live-instance state file. Carries the resolved
     //    transport endpoints (post-bind, with real ports), instanceId/
@@ -520,6 +528,19 @@ int Daemon::start(int argc, char* argv[],
         fprintf(stderr, "Failed to write daemon state file: %s\n",
                 DaemonRuntimeStateFile::filePath().c_str());
         return 1;
+    }
+
+    // Persist operator preferences only if asked (legacy front-end only).
+    // Done after state.json is on disk so a config that fails earlier (e.g. a
+    // bind failure) doesn't pollute config.json.
+    if (persistConfig) {
+        if (DaemonConfigFile::write(cfg)) {
+            fprintf(stdout, "Persisted config: %s\n",
+                    DaemonConfigFile::filePath().c_str());
+        } else {
+            fprintf(stderr, "Warning: failed to persist config to %s\n",
+                    DaemonConfigFile::filePath().c_str());
+        }
     }
 
     // 10. Generate the local-client convenience artifacts (client/config.json

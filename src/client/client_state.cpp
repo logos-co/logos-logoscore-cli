@@ -163,7 +163,9 @@ bool ClientStateFile::write(const ClientState& state)
 
     std::ofstream ofs(path, std::ios::trunc);
     if (!ofs) return false;
-    ofs << yaml_json::dump(obj);
+    ofs << (Config::flavor() == Config::Flavor::Modern
+                ? yaml_json::dump(obj)
+                : obj.dump(4) + "\n");
     return ofs.good();
 }
 

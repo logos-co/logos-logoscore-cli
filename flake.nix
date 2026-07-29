@@ -113,8 +113,11 @@
           # read-only "embedded" directory (paths::bundledModulesDir(),
           # <bin>/../modules). Mirrors logos-basecamp/flake.nix so the CLI
           # and the GUI drive the same module surface.
-          bundledInstallsDev = map installDev [
-            capabilityModuleLib
+          bundledInstallsDev = map installDev [ capabilityModuleLib ];
+          # Kept out of modules/ deliberately: logoscore scans that directory
+          # and its doc-tests assert the exact module list, so anything extra
+          # there would change what it reports.
+          pkgInstallsDev = map installDev [
             packageManagerModuleLib
             packageDownloaderModuleLib
           ];
@@ -123,9 +126,17 @@
             ''
               mkdir -p $out/modules
 
+              mkdir -p $out/modules-pkg
+
               for installed in ${pkgs.lib.escapeShellArgs bundledInstallsDev}; do
                 if [ -d "$installed/modules" ]; then
                   cp -r "$installed"/modules/. $out/modules/
+                fi
+              done
+
+              for installed in ${pkgs.lib.escapeShellArgs pkgInstallsDev}; do
+                if [ -d "$installed/modules" ]; then
+                  cp -r "$installed"/modules/. $out/modules-pkg/
                 fi
               done
 
@@ -215,7 +226,7 @@
             installPhase = ''
               runHook preInstall
 
-              mkdir -p $out/bin $out/lib $out/modules
+              mkdir -p $out/bin $out/lib $out/modules $out/modules-pkg
 
               cp -r ${build}/bin/* $out/bin/
               chmod -R +w $out/bin
@@ -228,6 +239,9 @@
 
               if [ -d ${modules}/modules ]; then
                 cp -r ${modules}/modules/* $out/modules/
+              fi
+              if [ -d ${modules}/modules-pkg ]; then
+                cp -r ${modules}/modules-pkg/* $out/modules-pkg/
               fi
 
               ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
@@ -321,8 +335,8 @@
           # manager ships a distinct `lib-portable`; the other two are
           # variant-agnostic and rely on installPortable to make the bundle
           # self-contained (same split logos-basecamp uses).
-          bundledInstallsPortable = map installPortable [
-            capabilityModuleLib
+          bundledInstallsPortable = map installPortable [ capabilityModuleLib ];
+          pkgInstallsPortable = map installPortable [
             packageManagerModuleLibPortable
             packageDownloaderModuleLib
           ];
@@ -331,9 +345,17 @@
             ''
               mkdir -p $out/modules
 
+              mkdir -p $out/modules-pkg
+
               for installed in ${pkgs.lib.escapeShellArgs bundledInstallsPortable}; do
                 if [ -d "$installed/modules" ]; then
                   cp -r "$installed"/modules/. $out/modules/
+                fi
+              done
+
+              for installed in ${pkgs.lib.escapeShellArgs pkgInstallsPortable}; do
+                if [ -d "$installed/modules" ]; then
+                  cp -r "$installed"/modules/. $out/modules-pkg/
                 fi
               done
 
@@ -403,7 +425,7 @@
               pkgs.qt6.qtremoteobjects
             ];
 
-            passthru = { extraDirs = [ "modules" ]; };
+            passthru = { extraDirs = [ "modules" "modules-pkg" ]; };
 
             qtWrapperArgs = [
               "--unset LD_LIBRARY_PATH"
@@ -412,7 +434,7 @@
             installPhase = ''
               runHook preInstall
 
-              mkdir -p $out/bin $out/lib $out/modules
+              mkdir -p $out/bin $out/lib $out/modules $out/modules-pkg
 
               # Binaries from portable build
               cp -r ${buildPortable}/bin/* $out/bin/
@@ -424,6 +446,7 @@
 
               # Portable modules
               cp -r ${modulesPortable}/modules/* $out/modules/ 2>/dev/null || true
+              cp -r ${modulesPortable}/modules-pkg/* $out/modules-pkg/ 2>/dev/null || true
 
               runHook postInstall
             '';

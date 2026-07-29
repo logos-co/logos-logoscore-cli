@@ -1,5 +1,5 @@
 name: "Concurrent Clients Against a Blocking Module Method"
-output: logosctl-concurrent-blocking.md
+output: logoscore-concurrent-blocking.md
 release: ""
 
 intro: |
@@ -9,7 +9,7 @@ intro: |
   so while one call is in flight, the module can do nothing else.
 
   We start a daemon, load the module, then fire **five independent client
-  processes at once** (each backgrounded `logosctl call` is its own process —
+  processes at once** (each backgrounded `logoscore call` is its own process —
   the same as running the command in five separate terminals simultaneously),
   every one of them invoking the 2-second blocking call. Because the module is
   single-threaded, the daemon serializes the five requests: they run one after
@@ -42,17 +42,17 @@ prerequisites:
     Verify: `nix flake --help >/dev/null 2>&1 && echo "Flakes enabled"`
 
 sections:
-  - title: "Build logosctl"
+  - title: "Build logoscore"
     step: true
     text: |
-      Build the logosctl CLI from the published flake. The result is symlinked to
+      Build the logoscore CLI from the published flake. The result is symlinked to
       `./logos/` for easy reference in the steps below.
     steps:
       - title: "Build the CLI"
         run: "nix build 'github:logos-co/logos-logoscore-cli{release}' --out-link ./logos"
-        check_file: "logos/bin/logosctl"
+        check_file: "logos/bin/logoscore"
         post_text: |
-          The build produces `logos/bin/logosctl` plus bundled runtime libraries and
+          The build produces `logos/bin/logoscore` plus bundled runtime libraries and
           a `logos/modules/` directory containing the built-in `capability_module`.
 
   - title: "Prepare a modules directory"
@@ -86,17 +86,17 @@ sections:
     steps:
       - title: "Start the daemon"
         text: |
-          Start logosctl in daemon mode in the background, capturing output to
-          `session/daemon/daemon.log`:
-        run: "./logos/bin/logosctl daemon start --detach"
-        code_block: "logosctl daemon start --detach"
+          Start logoscore in daemon mode in the background, capturing output to
+          `logs.txt`:
+        run: "sh -c './logos/bin/logoscore -D -m ./modules > logs.txt 2>&1 &'"
+        code_block: "logoscore -D -m ./modules > logs.txt &"
 
       - run: "sleep 3"
 
       - title: "Load the module"
         text: "Load `test_basic_module` into the running daemon:"
-        run: "./logos/bin/logosctl module load test_basic_module"
-        code_block: "logosctl module load test_basic_module"
+        run: "./logos/bin/logoscore load-module test_basic_module"
+        code_block: "logoscore load-module test_basic_module"
         expect_contains:
           - "test_basic_module"
           - '"status":"ok"'
@@ -105,8 +105,8 @@ sections:
         text: |
           A single call to `echoWithDelay` blocks for the requested time and echoes
           its first argument back. Here we sleep 500 ms and get `warmup` returned:
-        run: "./logos/bin/logosctl call test_basic_module echoWithDelay warmup 500"
-        code_block: "logosctl call test_basic_module echoWithDelay warmup 500"
+        run: "./logos/bin/logoscore call test_basic_module echoWithDelay warmup 500"
+        code_block: "logoscore call test_basic_module echoWithDelay warmup 500"
         expect_contains:
           - '"result":"warmup"'
 
@@ -114,7 +114,7 @@ sections:
     step: true
     text: |
       Now launch **five client processes at once**, each calling the 2-second
-      blocking method. Each `( logosctl call … ) &` is an independent process —
+      blocking method. Each `( logoscore call … ) &` is an independent process —
       equivalent to running the command in five separate shells simultaneously.
       We time the whole burst and capture each client's reply to its own file.
     steps:
@@ -128,7 +128,7 @@ sections:
         run: |
           START=$(date +%s)
           for i in 1 2 3 4 5; do
-            ( ./logos/bin/logosctl call test_basic_module echoWithDelay "client-$i" 2000 > "call-$i.out" 2>&1 ) &
+            ( ./logos/bin/logoscore call test_basic_module echoWithDelay "client-$i" 2000 > "call-$i.out" 2>&1 ) &
           done
           wait
           END=$(date +%s)
@@ -142,7 +142,7 @@ sections:
         code_block: |
           # Five independent client processes, each a 2-second blocking call.
           for i in 1 2 3 4 5; do
-            logosctl call test_basic_module echoWithDelay "client-$i" 2000 &
+            logoscore call test_basic_module echoWithDelay "client-$i" 2000 &
           done
           wait
         expect_contains:
@@ -176,8 +176,8 @@ sections:
     steps:
       - title: "Daemon and module are still healthy"
         text: "The daemon is still `running`, the module still `loaded`, nothing crashed:"
-        run: "./logos/bin/logosctl daemon status"
-        code_block: "logosctl daemon status"
+        run: "./logos/bin/logoscore status"
+        code_block: "logoscore status"
         expect_contains:
           - '"status":"running"'
           - "test_basic_module"
@@ -185,15 +185,15 @@ sections:
 
       - title: "Ordinary calls still work"
         text: "A normal, non-blocking call succeeds after the storm:"
-        run: "./logos/bin/logosctl call test_basic_module addInts 40 2"
-        code_block: "logosctl call test_basic_module addInts 40 2"
+        run: "./logos/bin/logoscore call test_basic_module addInts 40 2"
+        code_block: "logoscore call test_basic_module addInts 40 2"
         expect_contains:
           - '"result":42'
 
       - title: "Stop the daemon"
         text: "Shut down the daemon cleanly:"
-        run: "./logos/bin/logosctl daemon stop"
-        code_block: "logosctl daemon stop"
+        run: "./logos/bin/logoscore stop"
+        code_block: "logoscore stop"
 
       - run: "sleep 2"
 
@@ -202,7 +202,7 @@ sections:
           A final `status` confirms the shutdown — with no daemon running the client
           reports `not_running` (and exits non-zero, so we add `|| true` to let the
           doc-test assert on the output):
-        run: "./logos/bin/logosctl daemon status || true"
-        code_block: "logosctl daemon status"
+        run: "./logos/bin/logoscore status || true"
+        code_block: "logoscore status"
         expect_contains:
           - '"status":"not_running"'

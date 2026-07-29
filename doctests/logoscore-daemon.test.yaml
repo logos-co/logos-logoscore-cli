@@ -1,0 +1,430 @@
+name: "Running Modules with the logoscore Daemon"
+output: logoscore-daemon.md
+release: ""
+
+intro: |
+  This doc-test walks through the **daemon mode** of `logoscore`: start a long-running
+  process, inspect its status, load a module, introspect and call it, watch its
+  resource usage, unload and reload it, and finally shut the daemon down — verifying
+  at each stage that the command had the effect we expect.
+
+  `logoscore` is the headless CLI frontend for the Logos platform. In daemon mode
+  (`-D`), it runs in the background and exposes client subcommands (`status`,
+  `list-modules`, `load-module`, `module-info`, `stats`, `call`, `unload-module`,
+  `reload-module`, `stop`, …) that connect over a local RPC channel.
+
+what_you_learn:
+  - How to build and run the logoscore CLI
+  - How to prepare a modules directory for the daemon to scan
+  - How to start the daemon in the background and capture its logs
+  - How to inspect the daemon and the modules it has discovered
+  - How to load a module, introspect it with `module-info`, and call its methods
+  - How to read per-module resource usage with `stats`
+  - How `status` reflects the module lifecycle as you load, unload, and reload
+  - How to stop the daemon and confirm it has actually exited
+
+prerequisites:
+  - |
+    **Nix** with flakes enabled. Install from [nixos.org](https://nixos.org/download.html), then enable flakes:
+
+    ```bash
+    mkdir -p ~/.config/nix
+    echo 'experimental-features = nix-command flakes' >> ~/.config/nix/nix.conf
+    ```
+
+    Verify: `nix flake --help >/dev/null 2>&1 && echo "Flakes enabled"`
+
+sections:
+  - title: "Build logoscore"
+    step: true
+    text: |
+      Build the logoscore CLI from the published flake. The result is symlinked to
+      `./logos/` for easy reference in the steps below.
+    steps:
+      - title: "Build the CLI"
+        run: "nix build 'github:logos-co/logos-logoscore-cli{release}' --out-link ./logos"
+        check_file: "logos/bin/logoscore"
+        post_text: |
+          The build produces `logos/bin/logoscore` plus bundled runtime libraries and
+          a `logos/modules/` directory containing the built-in `capability_module`.
+
+  - title: "Prepare a modules directory"
+    step: true
+    text: |
+      `logoscore -m ./modules` scans `./modules/` for subdirectories containing
+      `manifest.json`. We install `test_basic_module` from logos-test-modules and
+      copy the bundled `capability_module` (required for auth when loading modules).
+    steps:
+      - title: "Install a module to load"
+        text: |
+          Build `test_basic_module` and merge it with the bundled capability module
+          into `./modules/`:
+        run: |
+          SYSTEM=$(nix eval --impure --raw --expr 'builtins.currentSystem')
+          nix build "github:logos-co/logos-test-modules#modules.$SYSTEM.test_basic_module.install" --out-link ./result-module
+          mkdir -p modules
+          cp -RL ./logos/modules/. ./modules/
+          cp -RL ./result-module/modules/. ./modules/
+        check_file: "modules/test_basic_module/manifest.json"
+        post_text: |
+          The modules directory now contains:
+
+          ```
+          modules/
+          ├── capability_module/
+          │   ├── manifest.json
+          │   └── capability_module_plugin.{so,dylib}
+          └── test_basic_module/
+              ├── manifest.json
+              └── test_basic_module_plugin.{so,dylib}
+          ```
+
+  - title: "Run the daemon and call a module"
+    step: true
+    text: |
+      Start the daemon in the background, then use client subcommands to interact
+      with it. Output from the daemon process is captured in `logs.txt`.
+    steps:
+      - title: "Start the daemon"
+        text: |
+          Start logoscore in daemon mode in the background, capturing output to
+          `logs.txt`:
+        run: "sh -c './logos/bin/logoscore -D -m ./modules > logs.txt 2>&1 &'"
+        code_block: "logoscore -D -m ./modules > logs.txt &"
+        post_text: |
+          The `-D` flag starts the daemon. The client subcommands in the following
+          steps connect to this running process via the config written under
+          `~/.logoscore/`.
+
+      - run: "sleep 3"
+
+      - title: "Inspect the startup log"
+        text: "Review the daemon's startup output:"
+        run: "cat logs.txt"
+
+      - title: "Check daemon status"
+        text: |
+          Verify the daemon is running and inspect its health. Every client
+          command renders a human-readable form on a terminal and JSON when its
+          output is piped; `--human` and `--json` force either form explicitly:
+        run: |
+          ./logos/bin/logoscore status --human
+          echo '# --- JSON ---'
+          ./logos/bin/logoscore status --json
+        code_block: |
+          logoscore status            # human-readable (default on a TTY)
+          logoscore status --json     # JSON (default when piped)
+        post_text: |
+          Human-readable form:
+
+          ```text
+          Logoscore Daemon
+            Status:       running
+            PID:          12345
+            Uptime:       6s
+            Version:      v0.2.0
+
+          Modules: 1 loaded, 0 crashed, 1 not loaded
+            test_basic_module  v1.0.0  not_loaded  -
+            capability_module  v1.0.0  loaded      6s
+          ```
+
+          JSON form:
+
+          ```json
+          {"daemon":{"status":"running","pid":12345,"uptime_seconds":6,"version":"0.2.0"},
+           "modules_summary":{"loaded":1,"crashed":0,"not_loaded":1},
+           "modules":[{"name":"capability_module","status":"loaded","uptime_seconds":6,"version":"1.0.0"},
+                      {"name":"test_basic_module","status":"not_loaded","version":"1.0.0"}]}
+          ```
+
+      - title: "List discovered modules"
+        text: "List modules visible in the scan directory, in both forms:"
+        run: |
+          ./logos/bin/logoscore list-modules --human
+          echo '# --- JSON ---'
+          ./logos/bin/logoscore list-modules --json
+        code_block: |
+          logoscore list-modules            # human-readable table
+          logoscore list-modules --json     # JSON
+        expect_contains:
+          - "test_basic_module"
+          # Version comes from each module's metadata.json, so it is present
+          # even before the module is loaded — in the table and the JSON.
+          - "VERSION"
+          - "v1.0.0"
+          - '"version":"1.0.0"'
+        post_text: |
+          Human-readable table (the `NAME`/`VERSION` columns size to fit):
+
+          ```text
+          NAME               VERSION  STATUS      UPTIME
+          test_basic_module  v1.0.0   not_loaded  -
+          capability_module  v1.0.0   loaded      6s
+          ```
+
+          The same data as JSON — `version` is present even for `not_loaded`
+          modules (it comes from each module's metadata, not the running process):
+
+          ```json
+          [{"name":"test_basic_module","status":"not_loaded","version":"1.0.0"},
+           {"name":"capability_module","status":"loaded","uptime_seconds":6,"version":"1.0.0"}]
+          ```
+
+      - title: "Load the module"
+        text: "Load `test_basic_module` into the running daemon:"
+        run: "./logos/bin/logoscore load-module test_basic_module"
+        code_block: "logoscore load-module test_basic_module"
+        expect_contains:
+          - "test_basic_module"
+
+      - title: "Confirm the module is now loaded"
+        text: |
+          Re-run `status`. The module that was `not_loaded` before now reports
+          `loaded`, and once loaded it carries an uptime (shown in both forms):
+        run: |
+          ./logos/bin/logoscore status --human
+          echo '# --- JSON ---'
+          ./logos/bin/logoscore status --json
+        code_block: |
+          logoscore status
+          logoscore status --json
+        expect_contains:
+          - "test_basic_module"
+          - "loaded"
+          - '"status":"loaded"'
+
+      - title: "Module subprocesses are isolated from the launcher's process group"
+        text: |
+          With a module loaded, the daemon is running it in its own subprocess
+          (`logos_host`). The daemon itself stays in the **foreground**, in its
+          launcher's process group, so a shell, `systemd`, or Docker manages it
+          normally — but each `logos_host` must lead its **own** process group, not
+          stay in the daemon's (i.e. the launcher's). Otherwise tearing the module
+          tree down on shutdown, or any process-group signal aimed at the daemon,
+          leaks into the launcher and can kill the shell driving it (a teardown
+          step dying with exit `-15` on Linux).
+
+          We take a module subprocess (a `logos_host` child of the daemon) and
+          assert it is its **own** process-group leader (`pgid == pid`) and is
+          **not** in the daemon's group.
+        run: |
+          dpid=$(./logos/bin/logoscore status --json | python3 -c "import json,sys;print(json.load(sys.stdin)['daemon']['pid'])")
+          dpgid=$(ps -o pgid= -p "$dpid" | tr -d ' ')
+          result=NO_MODULE_SUBPROCESS
+          for hp in $(pgrep -f logos_host); do
+            [ "$(ps -o ppid= -p "$hp" | tr -d ' ')" = "$dpid" ] || continue
+            hpgid=$(ps -o pgid= -p "$hp" | tr -d ' ')
+            if [ "$hp" = "$hpgid" ] && [ "$hpgid" != "$dpgid" ]; then
+              result=MODULE_SUBPROCESS_ISOLATED; break
+            else
+              result=MODULE_SUBPROCESS_SHARES_LAUNCHER_GROUP
+            fi
+          done
+          echo "daemon_pid=$dpid daemon_pgid=$dpgid -> $result"
+        code_block: |
+          # a module subprocess must lead its own group: pgid == pid, != daemon
+          dpid=$(logoscore status --json | jq .daemon.pid)
+          host=$(pgrep -P "$dpid" -f logos_host | head -1)
+          [ "$host" = "$(ps -o pgid= -p "$host" | tr -d ' ')" ] && echo ISOLATED
+        expect_contains:
+          - "MODULE_SUBPROCESS_ISOLATED"
+
+      - title: "Inspect the module with module-info"
+        text: |
+          `module-info` shows a single module's status and the `Q_INVOKABLE`
+          methods it exposes — the same methods you can `call`:
+        run: |
+          ./logos/bin/logoscore module-info test_basic_module --human
+          echo '# --- JSON ---'
+          ./logos/bin/logoscore module-info test_basic_module --json
+        code_block: |
+          logoscore module-info test_basic_module
+          logoscore module-info test_basic_module --json
+        expect_contains:
+          - "test_basic_module"
+          - '"status":"loaded"'
+          - "Version:       v1.0.0"
+          - '"version":"1.0.0"'
+          - "returnTrue"
+          - "addInts"
+        post_text: |
+          Human-readable form (methods list trimmed):
+
+          ```text
+          Name:          test_basic_module
+          Version:       v1.0.0
+          Status:        loaded
+          Uptime:        6s
+
+          Methods:
+            returnTrue() -> bool
+            addInts(a: int, b: int) -> int
+            ...
+          ```
+
+          JSON form — version, dependencies, dependents, uptime, and the full
+          method/event interface in one object:
+
+          ```json
+          {"name":"test_basic_module","version":"1.0.0","status":"loaded",
+           "uptime_seconds":6,"dependencies":[],"dependents":[],
+           "methods":[{"name":"returnTrue","returnType":"bool","signature":"returnTrue()"}, ...],
+           "events":[]}
+          ```
+
+      - title: "Check resource usage with stats"
+        text: |
+          `stats` reports per-module resource usage (process id, CPU, memory) for
+          the modules the daemon is running:
+        run: |
+          ./logos/bin/logoscore stats --human
+          echo '# --- JSON ---'
+          ./logos/bin/logoscore stats --json
+        code_block: |
+          logoscore stats
+          logoscore stats --json
+        expect_contains:
+          - "test_basic_module"
+        post_text: |
+          Human-readable table:
+
+          ```text
+          MODULE             PID     CPU%    MEMORY
+          test_basic_module  12350   0.0%    18.9 MB
+          capability_module  12340   4.6%    19.5 MB
+          ```
+
+          JSON form:
+
+          ```json
+          [{"name":"test_basic_module","cpu_percent":0.0,"cpu_time_seconds":1.02,"memory_mb":18.9},
+           {"name":"capability_module","cpu_percent":4.6,"cpu_time_seconds":1.10,"memory_mb":19.5}]
+          ```
+
+      - title: "Call methods"
+        text: "Invoke methods on the loaded module, in both forms:"
+        run: |
+          ./logos/bin/logoscore call test_basic_module returnTrue --human
+          echo '# --- JSON ---'
+          ./logos/bin/logoscore call test_basic_module returnTrue --json
+        code_block: |
+          logoscore call test_basic_module returnTrue
+          logoscore call test_basic_module returnTrue --json
+        expect_contains:
+          - '"result":true'
+        post_text: |
+          The human-readable form prints just the return value:
+
+          ```text
+          true
+          ```
+
+          The JSON form wraps it with the call's metadata:
+
+          ```json
+          {"status":"ok","module":"test_basic_module","method":"returnTrue","result":true}
+          ```
+
+      - run: "./logos/bin/logoscore call test_basic_module addInts 2 3"
+        code_block: "logoscore call test_basic_module addInts 2 3"
+        expect_contains:
+          - '"result":5'
+
+      - run: "./logos/bin/logoscore call test_basic_module echo hello"
+        code_block: "logoscore call test_basic_module echo hello"
+        expect_contains:
+          - "hello"
+
+      - run: "./logos/bin/logoscore call test_basic_module returnString"
+        code_block: "logoscore call test_basic_module returnString"
+        expect_contains:
+          - "test_basic_module"
+
+      - title: "Unload the module"
+        text: "Remove `test_basic_module` from the daemon:"
+        run: "./logos/bin/logoscore unload-module test_basic_module"
+        code_block: "logoscore unload-module test_basic_module"
+        expect_contains:
+          - "test_basic_module"
+          - '"status":"ok"'
+
+      - title: "Confirm the unload took effect"
+        text: |
+          A `call` against the now-unloaded module is rejected — the daemon reports
+          that it is not loaded:
+        run: "./logos/bin/logoscore call test_basic_module returnTrue || true"
+        code_block: "logoscore call test_basic_module returnTrue"
+        post_text: |
+          > The trailing `|| true` lets the doc-test continue past the expected
+          > non-zero exit code so we can assert on the error message.
+        expect_contains:
+          - "error"
+
+      - title: "Reload the module"
+        text: |
+          `reload-module` unloads and re-loads a module in one step (handy after
+          rebuilding it). The module is loaded and callable again afterwards:
+        run: "./logos/bin/logoscore reload-module test_basic_module"
+        code_block: "logoscore reload-module test_basic_module"
+        expect_contains:
+          - "test_basic_module"
+          - '"status":"loaded"'
+
+      - run: "./logos/bin/logoscore call test_basic_module addInts 40 2"
+        code_block: "logoscore call test_basic_module addInts 40 2"
+        expect_contains:
+          - '"result":42'
+
+      - title: "Stop the daemon"
+        text: "Shut down the daemon cleanly:"
+        run: "./logos/bin/logoscore stop"
+        code_block: "logoscore stop"
+        post_text: |
+          The daemon removes its state file and exits. You can also stop it with
+          `Ctrl+C` if running in the foreground, or by sending `SIGTERM` to the
+          daemon PID shown in `logoscore status`.
+
+      - run: "sleep 2"
+
+      - title: "Confirm the daemon has stopped"
+        text: |
+          A final `status` confirms the shutdown. With no daemon running, the
+          client reports `not_running` instead of connecting (and exits non-zero,
+          so we add `|| true` to let the doc-test assert on the output):
+        run: "./logos/bin/logoscore status || true"
+        code_block: "logoscore status"
+        expect_contains:
+          - '"status":"not_running"'
+
+      - title: "A worker is not orphaned if the daemon crashes"
+        text: |
+          The flip side of detaching workers into their own process group: a
+          module subprocess must not be left **running** if the daemon dies
+          *without* cleaning it up. We start a throwaway daemon, **hard-kill** it
+          (`SIGKILL`, so no graceful teardown runs), and confirm its module
+          subprocess exits on its own — via `PR_SET_PDEATHSIG` on Linux and a
+          `getppid` watchdog on other platforms. (Graceful shutdown, above, still
+          reaps workers per-PID; this covers the crash path.)
+        run: |
+          ./logos/bin/logoscore -D --config-dir ./crashcfg -m ./modules > crash.log 2>&1 &
+          sleep 5
+          dpid=$(./logos/bin/logoscore --config-dir ./crashcfg status --json | python3 -c "import json,sys;print(json.load(sys.stdin)['daemon']['pid'])")
+          worker=""
+          for h in $(pgrep -f logos_host); do
+            [ "$(ps -o ppid= -p "$h" | tr -d ' ')" = "$dpid" ] && { worker="$h"; break; }
+          done
+          echo "daemon=$dpid worker=$worker"
+          kill -9 "$dpid"
+          result=LEAKED
+          for i in $(seq 1 10); do
+            kill -0 "$worker" 2>/dev/null || { result=WORKER_CLEANED_UP; break; }
+            sleep 1
+          done
+          echo "RESULT=$result"
+        code_block: |
+          # hard-kill the daemon; its module subprocess must exit on its own
+          logoscore -D -m ./modules &      # (throwaway)
+          kill -9 "$(logoscore status --json | jq .daemon.pid)"
+        expect_contains:
+          - "WORKER_CLEANED_UP"

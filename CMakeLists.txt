@@ -101,8 +101,7 @@ else()
 endif()
 
 # ── logosctl executable ──────────────────────────────────────────────────────
-set(CLI_SOURCES
-    src/main.cpp
+set(SHARED_SOURCES
     src/config.cpp
     src/paths.cpp
     src/yaml_json.cpp
@@ -141,9 +140,15 @@ set(CLI_SOURCES
     src/core_service/package_ops.cpp
 )
 
-add_executable(logosctl ${CLI_SOURCES})
+# Two front-ends over one shared runtime. logoscore is the tool that exists
+# today, kept building unchanged while logosctl is validated; logosctl is the
+# merged CLI. They differ only in main.cpp and the Config flavor it sets --
+# everything below src/daemon, src/client and src/core_service is shared.
+add_executable(logosctl  src/main.cpp        ${SHARED_SOURCES})
+add_executable(logoscore src/main_legacy.cpp ${SHARED_SOURCES})
 
-target_link_libraries(logosctl PRIVATE
+foreach(_tgt logosctl logoscore)
+target_link_libraries(${_tgt} PRIVATE
     logos_core
     nlohmann_json::nlohmann_json
     stduuid
@@ -157,9 +162,9 @@ target_link_libraries(logosctl PRIVATE
 
 # Link the SDK stack (provides LogosProviderObject, bridge helpers,
 # logos::transportSetToJsonString, and other symbols needed by core_service).
-target_link_libraries(logosctl PRIVATE logos-qt-sdk::logos_qt_sdk)
+target_link_libraries(${_tgt} PRIVATE logos-qt-sdk::logos_qt_sdk)
 
-target_include_directories(logosctl PRIVATE
+target_include_directories(${_tgt} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${LOGOS_CPP_SDK_ROOT}/include/cpp
     ${LOGOS_QT_SDK_ROOT}/include
@@ -178,14 +183,16 @@ if(APPLE)
         list(APPEND _rpath "${_qt_lib_dir}")
     endif()
     list(REMOVE_DUPLICATES _rpath)
-    set_target_properties(logosctl PROPERTIES
+    set_target_properties(${_tgt} PROPERTIES
         INSTALL_RPATH "${_rpath}"
         BUILD_WITH_INSTALL_RPATH TRUE)
 else()
-    set_target_properties(logosctl PROPERTIES
+    set_target_properties(${_tgt} PROPERTIES
         INSTALL_RPATH "$ORIGIN/../lib"
         BUILD_WITH_INSTALL_RPATH TRUE)
 endif()
+
+endforeach()
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 find_package(GTest QUIET)
@@ -207,6 +214,7 @@ include(GoogleTest)
 add_subdirectory(tests)
 
 # ── Install ───────────────────────────────────────────────────────────────────
-install(TARGETS logosctl
+
+install(TARGETS logosctl logoscore
     RUNTIME DESTINATION bin
 )

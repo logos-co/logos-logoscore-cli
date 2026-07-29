@@ -184,6 +184,10 @@ static std::vector<std::string> normalizeGroupVerbs(int argc, char* argv[])
 
 int main(int argc, char *argv[])
 {
+    // This binary is logosctl: new surface, own session directory,
+    // YAML config. Set before any Config::* call.
+    Config::setFlavor(Config::Flavor::Modern);
+
     // Pre-scan argv for `--config-dir` so the override applies before
     // any Config::* call. The CLI11 parse below picks the same flag up
     // again and re-applies it, but we need it earlier than that —

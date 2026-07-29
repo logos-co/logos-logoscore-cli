@@ -17,6 +17,20 @@ void Config::setConfigDir(const std::string& path)
     configDirOverride() = path;
 }
 
+namespace {
+// Default Legacy: a caller that never sets a flavor gets today's behaviour.
+Config::Flavor& flavorSlot()
+{
+    static Config::Flavor f = Config::Flavor::Legacy;
+    return f;
+}
+}  // namespace
+
+void Config::setFlavor(Config::Flavor f) { flavorSlot() = f; }
+Config::Flavor Config::flavor()          { return flavorSlot(); }
+
+static bool isModern() { return Config::flavor() == Config::Flavor::Modern; }
+
 std::string Config::configDir()
 {
     // Precedence: explicit setter (from --config-dir) → LOGOSCTL_CONFIG_DIR
@@ -26,22 +40,26 @@ std::string Config::configDir()
     if (!override.empty())
         return override;
 
-    const char* envDir = std::getenv("LOGOSCTL_CONFIG_DIR");
+    // Each tool reads its own env var, so exporting one in a shell cannot
+    // silently redirect the other.
+    const char* envDir = std::getenv(isModern() ? "LOGOSCTL_CONFIG_DIR"
+                                                : "LOGOSCORE_CONFIG_DIR");
     if (envDir && *envDir)
         return std::string(envDir);
 
     const char* home = std::getenv("HOME");
-    return std::string(home ? home : "/tmp") + "/.logosctl";
+    return std::string(home ? home : "/tmp")
+         + (isModern() ? "/.logosctl" : "/.logoscore");
 }
 
 std::string Config::daemonDir()        { return configDir() + "/daemon"; }
-std::string Config::daemonConfigPath() { return daemonDir() + "/config.yaml"; }
+std::string Config::daemonConfigPath() { return daemonDir() + (isModern() ? "/config.yaml" : "/config.json"); }
 std::string Config::daemonStatePath()  { return daemonDir() + "/state.json"; }
 std::string Config::daemonTokensPath() { return daemonDir() + "/tokens.json"; }
 std::string Config::daemonTokensDir()  { return daemonDir() + "/tokens"; }
 
 std::string Config::clientDir()        { return configDir() + "/client"; }
-std::string Config::clientConfigPath() { return clientDir() + "/config.yaml"; }
+std::string Config::clientConfigPath() { return clientDir() + (isModern() ? "/config.yaml" : "/config.json"); }
 
 std::string Config::modulesDir()       { return configDir() + "/modules"; }
 std::string Config::pluginsDir()       { return configDir() + "/plugins"; }
@@ -66,7 +84,7 @@ std::string Config::clientTokenPath(const std::string& filename)
 
 std::string Config::tokenFromEnv()
 {
-    const char* token = std::getenv("LOGOSCTL_TOKEN");
+    const char* token = std::getenv(isModern() ? "LOGOSCTL_TOKEN" : "LOGOSCORE_TOKEN");
     return token ? std::string(token) : std::string();
 }
 

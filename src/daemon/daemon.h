@@ -27,9 +27,13 @@ public:
     // "defaults") recorded into state.json's `config_source` field
     // so operators can tell at a glance where the running daemon's
     // config came from.
+    // `persistConfig` writes the merged config back to disk. Only the legacy
+    // logoscore front-end passes it: logosctl has no merge layer to persist,
+    // since its config file *is* the source of truth.
     static int start(int argc, char* argv[],
                      const DaemonConfig& cfg,
                      const std::string& configSource,
+                     bool persistConfig = false,
                      bool verbose = false);
 
 private:

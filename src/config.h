@@ -5,6 +5,19 @@
 
 class Config {
 public:
+    // Which CLI is running. The two binaries ship side by side and must not
+    // share a byte of state: `logosctl` is the new surface and is still being
+    // validated, so a bad session of it must not be able to disturb a working
+    // `logoscore` deployment. The flavor therefore selects the default config
+    // directory, the env var consulted for an override, the config file names,
+    // and the format they are written in.
+    //
+    // Legacy is the default so that anything which forgets to set it behaves
+    // like the tool that exists today.
+    enum class Flavor { Legacy, Modern };
+    static void setFlavor(Flavor f);
+    static Flavor flavor();
+
     static std::string getToken();
     static std::string configDir();
 
@@ -16,7 +29,8 @@ public:
     //   tokens.json  — hashed-at-rest token array (survives daemon restarts)
     //   tokens/      — raw, operator-copyable per-token files (0600)
     static std::string daemonDir();
-    static std::string daemonConfigPath();   // <configDir>/daemon/config.yaml
+    // config.json for logoscore, config.yaml for logosctl.
+    static std::string daemonConfigPath();
     static std::string daemonStatePath();    // <configDir>/daemon/state.json
     static std::string daemonTokensPath();   // <configDir>/daemon/tokens.json
     static std::string daemonTokensDir();    // <configDir>/daemon/tokens
@@ -24,7 +38,7 @@ public:
     // Client-owned tree: <configDir>/client/{config.json, <token_file>}.
     // The client never reads anything outside client/.
     static std::string clientDir();
-    static std::string clientConfigPath();   // <configDir>/client/config.yaml
+    static std::string clientConfigPath();
     // Path to the raw-token file inside client/, given its filename
     // (e.g. "auto.json"). Caller is expected to read the filename from
     // client/config.json's `token_file` field.
