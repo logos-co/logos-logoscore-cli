@@ -133,7 +133,7 @@ public:
     // Emit <configDir>/client/config.json + <configDir>/client/auto.json
     // populated as a same-host dial spec for the daemon we just bound.
     // Called by the daemon at boot after auto-issuing the `auto` token;
-    // allows `logoscore status` (and friends) to work out of the box
+    // allows `logosctl status` (and friends) to work out of the box
     // from the same machine without hand-writing a client config.
     //
     // The emitted client/config.json mirrors the daemon's resolved
@@ -169,7 +169,7 @@ public:
     //     hand-written remote-client config is never clobbered — with
     //     one exception: a file carrying an `instance_id` that doesn't
     //     match this daemon is a stale copy of *our own* generated
-    //     artifact (a persisted ~/.logoscore whose daemon was replaced,
+    //     artifact (a persisted ~/.logosctl whose daemon was replaced,
     //     e.g. a restarting container) and is refreshed in place so
     //     co-resident clients don't dial a dead instance forever. An
     //     operator-authored remote config has no `instance_id`, so it

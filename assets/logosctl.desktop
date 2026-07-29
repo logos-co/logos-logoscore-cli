@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=Logoscore
-Exec=logoscore
-Icon=logoscore
+Name=Logosctl
+Exec=logosctl
+Icon=logosctl
 Terminal=true
 Categories=Utility;

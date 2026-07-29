@@ -29,14 +29,14 @@ protected:
         // Route TokensFile (which TokenStore persists into) at our
         // temp dir. TokenStore's ctor takes a configDir but the
         // underlying file uses Config::daemonTokensPath().
-        const char* cd = std::getenv("LOGOSCORE_CONFIG_DIR");
+        const char* cd = std::getenv("LOGOSCTL_CONFIG_DIR");
         origConfigDir = cd ? cd : "";
-        setenv("LOGOSCORE_CONFIG_DIR", dir.string().c_str(), 1);
+        setenv("LOGOSCTL_CONFIG_DIR", dir.string().c_str(), 1);
         Config::setConfigDir("");
     }
     void TearDown() override {
-        if (origConfigDir.empty()) unsetenv("LOGOSCORE_CONFIG_DIR");
-        else setenv("LOGOSCORE_CONFIG_DIR", origConfigDir.c_str(), 1);
+        if (origConfigDir.empty()) unsetenv("LOGOSCTL_CONFIG_DIR");
+        else setenv("LOGOSCTL_CONFIG_DIR", origConfigDir.c_str(), 1);
         std::error_code ec;
         fs::remove_all(dir, ec);
     }

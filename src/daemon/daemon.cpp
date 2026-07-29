@@ -280,7 +280,7 @@ int Daemon::start(int argc, char* argv[],
         if (existing.fileOk && existing.pid > 0
             && ::kill(static_cast<pid_t>(existing.pid), 0) == 0) {
             fprintf(stderr,
-                    "Error: a logoscore daemon is already running in this config dir "
+                    "Error: a logosctl daemon is already running in this config dir "
                     "(pid %lld, instance %s). Refusing to start a second one — use "
                     "--config-dir for a parallel instance.\n",
                     static_cast<long long>(existing.pid),
@@ -427,7 +427,7 @@ int Daemon::start(int argc, char* argv[],
     coreServiceImpl->init(coreServiceApi);
     auto* provider = coreServiceApi->getProvider();
 
-    // Make operator-issued tokens (`logoscore issue-token --name alice`) actually
+    // Make operator-issued tokens (`logosctl token issue --name alice`) actually
     // authorize core_service calls. The built-in ModuleProxy scan only knows the
     // boot `auto` token and capability-minted tokens; this validator adds the
     // persisted token store, so a named token in daemon/tokens.json is accepted —
@@ -544,7 +544,7 @@ int Daemon::start(int argc, char* argv[],
                 Config::clientDir().c_str());
     }
 
-    fprintf(stdout, "Logoscore daemon started (pid %lld, instance %s)\n",
+    fprintf(stdout, "Logosctl daemon started (pid %lld, instance %s)\n",
             static_cast<long long>(pid), instanceId.c_str());
     fprintf(stdout, "Daemon state: %s\n", DaemonRuntimeStateFile::filePath().c_str());
     fprintf(stdout, "Local client config: %s\n",
@@ -567,7 +567,7 @@ int Daemon::start(int argc, char* argv[],
     int result = QCoreApplication::exec();
 
     // 10. Cleanup
-    fprintf(stdout, "Shutting down logoscore daemon...\n");
+    fprintf(stdout, "Shutting down logosctl daemon...\n");
     fflush(stdout);
 
     logos_core_cleanup();
@@ -576,7 +576,7 @@ int Daemon::start(int argc, char* argv[],
     delete coreServiceImpl;
     delete coreServiceApi;
 
-    fprintf(stdout, "Logoscore daemon stopped.\n");
+    fprintf(stdout, "Logosctl daemon stopped.\n");
     fflush(stdout);
 
     return result;

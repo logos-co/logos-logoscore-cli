@@ -16,7 +16,7 @@ class MockClient : public Client {
 public:
     // Control mock behavior
     bool shouldConnect = true;
-    std::string connectError = "No running logoscore daemon. Start one with: logoscore -D";
+    std::string connectError = "No running logosctl daemon. Start one with: logosctl -D";
     LogosMap  loadModuleResult;
     LogosMap  unloadModuleResult;
     LogosMap  reloadModuleResult;
@@ -710,7 +710,7 @@ TEST_F(CommandTest, Call_JsonPrefixParsesNestedAndScalars)
 
 TEST_F(CommandTest, Call_JsonPrefixFromFile)
 {
-    const std::string path = testing::TempDir() + "logoscore_call_json_arg.json";
+    const std::string path = testing::TempDir() + "logosctl_call_json_arg.json";
     { std::ofstream f(path); f << "[10, 20, 30]"; }
     mockClient.callMethodResult = LogosMap{{"status", "ok"}};
     auto cmd = createCommand("call", mockClient, output);
@@ -740,7 +740,7 @@ TEST_F(CommandTest, Call_JsonPrefixMissingFileErrors)
     auto cmd = createCommand("call", mockClient, output);
     int exitCode = 0;
     captureOutput([&]() {
-        exitCode = cmd->execute({"m", "f", "json:@/no/such/logoscore/file.json"});
+        exitCode = cmd->execute({"m", "f", "json:@/no/such/logosctl/file.json"});
     });
     EXPECT_EQ(exitCode, 1);
     EXPECT_NE(mockClient.lastCallMethod, "f");
@@ -783,7 +783,7 @@ TEST_F(CommandTest, Call_EmptyFileYieldsEmptyStringNotError)
     // A readable-but-empty @file is a successful read of "", distinct from an
     // unreadable file (which errors). Regression guard for resolveFileParam's
     // couldn't-open vs read-but-empty distinction.
-    const std::string path = testing::TempDir() + "logoscore_call_empty_arg";
+    const std::string path = testing::TempDir() + "logosctl_call_empty_arg";
     { std::ofstream f(path); }  // create empty
     mockClient.callMethodResult = LogosMap{{"status", "ok"}};
     auto cmd = createCommand("call", mockClient, output);
@@ -803,7 +803,7 @@ TEST_F(CommandTest, Call_MissingFileErrors)
     auto cmd = createCommand("call", mockClient, output);
     int exitCode = 0;
     captureOutput([&]() {
-        exitCode = cmd->execute({"m", "f", "@/no/such/logoscore/file.txt"});
+        exitCode = cmd->execute({"m", "f", "@/no/such/logosctl/file.txt"});
     });
     EXPECT_EQ(exitCode, 1);
     EXPECT_NE(mockClient.lastCallMethod, "f");

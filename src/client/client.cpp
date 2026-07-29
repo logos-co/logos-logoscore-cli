@@ -51,9 +51,9 @@ bool RpcClient::connect()
     if (!d->clientState.fileOk) {
         m_lastError = "No client config at " +
             ClientStateFile::filePath() +
-            ". Either run the daemon locally first (it auto-emits a "
-            "config), pass client flags + --persist-config, or write "
-            "client/config.json + the matching token file by hand.";
+            ". Start a daemon in this session (it writes one on boot), or "
+            "install a dial spec with `logosctl client config set FILE` "
+            "alongside the matching token file.";
         return false;
     }
 
@@ -64,7 +64,7 @@ bool RpcClient::connect()
 
     if (d->token.empty()) {
         m_lastError = fmt::format(
-            "No authentication token. Expected at {} or in $LOGOSCORE_TOKEN.",
+            "No authentication token. Expected at {} or in $LOGOSCTL_TOKEN.",
             Config::clientTokenPath(d->clientState.tokenFile));
         return false;
     }
@@ -100,7 +100,7 @@ bool RpcClient::connect()
     // core_service is mandatory.
     auto coreIt = d->clientState.daemon.find("core_service");
     if (coreIt == d->clientState.daemon.end()) {
-        m_lastError = "client/config.json: 'daemon.core_service' is required.";
+        m_lastError = ClientStateFile::filePath() + ": 'daemon.core_service' is required.";
         return false;
     }
     const LogosTransportConfig coreServiceCfg = toCfg(coreIt->second);

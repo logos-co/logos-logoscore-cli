@@ -195,13 +195,13 @@ void Output::printStatus(const LogosMap& status)
     LogosMap daemon = status.value("daemon", LogosMap::object());
     std::string daemonStatus = daemon.value("status", std::string{});
 
-    std::cout << "Logoscore Daemon" << std::endl;
+    std::cout << "Logosctl Daemon" << std::endl;
     std::cout << "  Status:       " << daemonStatus << std::endl;
 
     if (daemonStatus == "not_running") {
         std::cout << std::endl;
         std::cout << "No daemon found." << std::endl;
-        std::cout << "Run \"logoscore -D\" to start the daemon." << std::endl;
+        std::cout << "Run \"logosctl -D\" to start the daemon." << std::endl;
         return;
     }
 

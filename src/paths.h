@@ -8,6 +8,11 @@ namespace paths {
 // APIs (no Qt). Returns an empty string if the platform call fails.
 std::string executableDir();
 
+// Absolute path of the running binary. Used by --detach to re-exec itself:
+// macOS forbids continuing to run a forked process that has already
+// initialised CoreFoundation, so the child must exec() rather than carry on.
+std::string executablePath();
+
 // Returns "{executableDir}/../modules" if that directory exists, or empty.
 std::string bundledModulesDir();
 

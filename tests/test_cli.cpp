@@ -37,36 +37,36 @@ static fs::path getExecutableDir() {
 
 class CLITest : public ::testing::Test {
 protected:
-    fs::path logoscoreBinary;
+    fs::path logosctlBinary;
 
     void SetUp() override {
-        // Check for LOGOSCORE_BINARY environment variable first
-        const char* envBinary = std::getenv("LOGOSCORE_BINARY");
+        // Check for LOGOSCTL_BINARY environment variable first
+        const char* envBinary = std::getenv("LOGOSCTL_BINARY");
         if (envBinary && fs::exists(envBinary)) {
-            logoscoreBinary = envBinary;
+            logosctlBinary = envBinary;
             return;
         }
 
         // Get the directory where the test executable is located
         fs::path execDir = getExecutableDir();
 
-        // Find the logoscore binary - try multiple locations
+        // Find the logosctl binary - try multiple locations
         std::vector<fs::path> searchPaths;
 
         // First, check in the same directory as the test executable (Nix builds)
         if (!execDir.empty()) {
-            searchPaths.push_back(execDir / "logoscore");
+            searchPaths.push_back(execDir / "logosctl");
         }
 
         // Then try paths relative to current working directory
-        searchPaths.push_back(fs::current_path() / ".." / "bin" / "logoscore");
-        searchPaths.push_back(fs::current_path() / "bin" / "logoscore");
-        searchPaths.push_back(fs::current_path() / ".." / ".." / "bin" / "logoscore");
-        searchPaths.push_back(fs::current_path().parent_path() / "logoscore");
+        searchPaths.push_back(fs::current_path() / ".." / "bin" / "logosctl");
+        searchPaths.push_back(fs::current_path() / "bin" / "logosctl");
+        searchPaths.push_back(fs::current_path() / ".." / ".." / "bin" / "logosctl");
+        searchPaths.push_back(fs::current_path().parent_path() / "logosctl");
 
         for (const auto& path : searchPaths) {
             if (fs::exists(path)) {
-                logoscoreBinary = fs::canonical(path);
+                logosctlBinary = fs::canonical(path);
                 return;
             }
         }
@@ -77,13 +77,13 @@ protected:
             if (i > 0) triedPaths += ", ";
             triedPaths += "\"" + searchPaths[i].string() + "\"";
         }
-        GTEST_SKIP() << "logoscore binary not found. Set LOGOSCORE_BINARY env var or build the binary first. Tried: "
+        GTEST_SKIP() << "logosctl binary not found. Set LOGOSCTL_BINARY env var or build the binary first. Tried: "
                      << triedPaths;
     }
 
-    // Helper to run logoscore command
-    int runLogoscore(const std::string& args, std::string* output = nullptr) {
-        std::string cmd = logoscoreBinary.string() + " " + args;
+    // Helper to run logosctl command
+    int runLogosctl(const std::string& args, std::string* output = nullptr) {
+        std::string cmd = logosctlBinary.string() + " " + args;
         if (output) {
             cmd += " 2>&1";
             FILE* pipe = popen(cmd.c_str(), "r");
@@ -101,9 +101,9 @@ protected:
         }
     }
 
-    // Helper to run logoscore with timeout (for commands that run event loop)
-    int runLogoscoreWithTimeout(const std::string& args, std::string* output, int timeoutSecs = 2) {
-        std::string cmd = "timeout " + std::to_string(timeoutSecs) + " " + logoscoreBinary.string() + " " + args + " 2>&1";
+    // Helper to run logosctl with timeout (for commands that run event loop)
+    int runLogosctlWithTimeout(const std::string& args, std::string* output, int timeoutSecs = 2) {
+        std::string cmd = "timeout " + std::to_string(timeoutSecs) + " " + logosctlBinary.string() + " " + args + " 2>&1";
         FILE* pipe = popen(cmd.c_str(), "r");
         if (!pipe) return -1;
 
@@ -122,13 +122,18 @@ protected:
 
 TEST_F(CLITest, HelpCommand) {
     std::string output;
-    int exitCode = runLogoscore("--help", &output);
+    int exitCode = runLogosctl("--help", &output);
 
     EXPECT_EQ(exitCode, 0);
     // New help text includes subcommands
-    EXPECT_NE(output.find("logoscore"), std::string::npos) << "Help should contain app name";
+    EXPECT_NE(output.find("logosctl"), std::string::npos) << "Help should contain app name";
     EXPECT_NE(output.find("status"), std::string::npos) << "Help should list status command";
-    EXPECT_NE(output.find("load-module"), std::string::npos) << "Help should list load-module command";
+    // Help lists the groups, not the internal hyphenated dispatch tokens.
+    EXPECT_NE(output.find("module"), std::string::npos) << "Help should list the module group";
+    EXPECT_NE(output.find("package"), std::string::npos) << "Help should list the package group";
+    EXPECT_NE(output.find("catalog"), std::string::npos) << "Help should list the catalog group";
+    EXPECT_EQ(output.find("load-module"), std::string::npos)
+        << "load-module is an internal dispatch token and must stay out of help";
     EXPECT_NE(output.find("call"), std::string::npos) << "Help should list call command";
     EXPECT_NE(output.find("watch"), std::string::npos) << "Help should list watch command";
     EXPECT_NE(output.find("--json"), std::string::npos) << "Help should document --json flag";
@@ -136,27 +141,27 @@ TEST_F(CLITest, HelpCommand) {
 
 TEST_F(CLITest, HelpShortFlag) {
     std::string output;
-    int exitCode = runLogoscore("-h", &output);
+    int exitCode = runLogosctl("-h", &output);
     EXPECT_EQ(exitCode, 0);
-    EXPECT_NE(output.find("logoscore"), std::string::npos);
+    EXPECT_NE(output.find("logosctl"), std::string::npos);
 }
 
 TEST_F(CLITest, VersionCommand) {
     std::string output;
-    int exitCode = runLogoscore("--version", &output);
+    int exitCode = runLogosctl("--version", &output);
 
     EXPECT_EQ(exitCode, 0);
     // The version string is build-derived (release version / pre-release sha /
     // "dev"), so assert on the stable tool-name prefix rather than a literal
     // version number.
-    EXPECT_NE(output.find("logoscore version"), std::string::npos) << "Version output should identify logoscore";
+    EXPECT_NE(output.find("logosctl version"), std::string::npos) << "Version output should identify logosctl";
 }
 
 TEST_F(CLITest, NoArgs_ShowsHelp) {
     std::string output;
-    int exitCode = runLogoscore("", &output);
+    int exitCode = runLogosctl("", &output);
     EXPECT_EQ(exitCode, 0);
-    EXPECT_NE(output.find("logoscore"), std::string::npos) << "No args should show help";
+    EXPECT_NE(output.find("logosctl"), std::string::npos) << "No args should show help";
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -165,32 +170,32 @@ TEST_F(CLITest, NoArgs_ShowsHelp) {
 
 TEST_F(CLITest, Status_NoDaemon) {
     std::string output;
-    int exitCode = runLogoscore("status --json", &output);
+    int exitCode = runLogosctl("status --json", &output);
     // Should report not_running (exit 1) or connection error (exit 2)
     EXPECT_NE(exitCode, 0);
 }
 
 TEST_F(CLITest, ListModules_NoDaemon) {
     std::string output;
-    int exitCode = runLogoscore("list-modules --json", &output);
+    int exitCode = runLogosctl("list-modules --json", &output);
     EXPECT_NE(exitCode, 0);
 }
 
 TEST_F(CLITest, LoadModule_NoDaemon) {
     std::string output;
-    int exitCode = runLogoscore("load-module waku --json", &output);
+    int exitCode = runLogosctl("load-module waku --json", &output);
     EXPECT_NE(exitCode, 0);
 }
 
 TEST_F(CLITest, ModuleInfo_NoDaemon) {
     std::string output;
-    int exitCode = runLogoscore("module-info chat --json", &output);
+    int exitCode = runLogosctl("module-info chat --json", &output);
     EXPECT_NE(exitCode, 0);
 }
 
 TEST_F(CLITest, Stats_NoDaemon) {
     std::string output;
-    int exitCode = runLogoscore("stats --json", &output);
+    int exitCode = runLogosctl("stats --json", &output);
     EXPECT_NE(exitCode, 0);
 }
 
@@ -203,7 +208,7 @@ TEST_F(CLITest, Stats_NoDaemon) {
 TEST_F(CLITest, Status_NoDaemon_ReturnsFast) {
     auto start = std::chrono::steady_clock::now();
     std::string output;
-    int exitCode = runLogoscore("status --json", &output);
+    int exitCode = runLogosctl("status --json", &output);
     auto elapsed = std::chrono::steady_clock::now() - start;
 
     auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
@@ -215,7 +220,7 @@ TEST_F(CLITest, Status_NoDaemon_ReturnsFast) {
 TEST_F(CLITest, LoadModule_NoDaemon_ReturnsFast) {
     auto start = std::chrono::steady_clock::now();
     std::string output;
-    int exitCode = runLogoscore("load-module test --json", &output);
+    int exitCode = runLogosctl("load-module test --json", &output);
     auto elapsed = std::chrono::steady_clock::now() - start;
 
     auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
@@ -226,7 +231,7 @@ TEST_F(CLITest, LoadModule_NoDaemon_ReturnsFast) {
 TEST_F(CLITest, Stop_NoDaemon_ReturnsFast) {
     auto start = std::chrono::steady_clock::now();
     std::string output;
-    int exitCode = runLogoscore("stop --json", &output);
+    int exitCode = runLogosctl("stop --json", &output);
     auto elapsed = std::chrono::steady_clock::now() - start;
 
     auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
@@ -246,7 +251,7 @@ TEST_F(CLITest, Stop_NoDaemon_ReturnsFast) {
 
 TEST_F(CLITest, Help_ShowsOnlyTheSurvivingGlobalFlags) {
     std::string output;
-    int exitCode = runLogoscore("--help", &output);
+    int exitCode = runLogosctl("--help", &output);
     EXPECT_EQ(exitCode, 0);
 
     // --config-dir survives because it selects *which* session to act on, so
@@ -268,7 +273,7 @@ TEST_F(CLITest, RemovedFlags_AreRejectedNotIgnored) {
     // Silently accepting a flag that no longer does anything would leave the
     // operator's intent unapplied with nothing to explain it.
     std::string output;
-    int exitCode = runLogoscoreWithTimeout("-D --modules-dir /tmp/x", &output, 5);
+    int exitCode = runLogosctlWithTimeout("-D --modules-dir /tmp/x", &output, 5);
     EXPECT_EQ(exitCode, 109)
         << "A removed flag must be a parse error, not ignored (and must not "
            "start a daemon -- 124 would mean it did). Output:\n" << output;
@@ -276,13 +281,13 @@ TEST_F(CLITest, RemovedFlags_AreRejectedNotIgnored) {
 
 TEST_F(CLITest, DaemonConfigSet_RejectsMalformedYaml) {
     const fs::path cfgDir = fs::temp_directory_path() /
-        ("logoscore_cli_badyaml_" + std::to_string(::getpid()));
+        ("logosctl_cli_badyaml_" + std::to_string(::getpid()));
     fs::create_directories(cfgDir);
     const fs::path doc = cfgDir / "bad.yaml";
     { std::ofstream ofs(doc, std::ios::trunc); ofs << "modules:\n  - [unclosed\n"; }
 
     std::string output;
-    int exitCode = runLogoscoreWithTimeout(
+    int exitCode = runLogosctlWithTimeout(
         "--config-dir " + cfgDir.string() + " daemon config set " + doc.string(),
         &output, 5);
     EXPECT_EQ(exitCode, 1) << "Output:\n" << output;
@@ -297,13 +302,13 @@ TEST_F(CLITest, DaemonConfigSet_RejectsUnknownKeys) {
     // unrecognised keys, so without this check the daemon would boot with the
     // operator's intent silently dropped.
     const fs::path cfgDir = fs::temp_directory_path() /
-        ("logoscore_cli_badkey_" + std::to_string(::getpid()));
+        ("logosctl_cli_badkey_" + std::to_string(::getpid()));
     fs::create_directories(cfgDir);
     const fs::path doc = cfgDir / "typo.yaml";
     { std::ofstream ofs(doc, std::ios::trunc); ofs << "insecureTcp: true\n"; }
 
     std::string output;
-    int exitCode = runLogoscoreWithTimeout(
+    int exitCode = runLogosctlWithTimeout(
         "--config-dir " + cfgDir.string() + " daemon config set " + doc.string(),
         &output, 5);
     EXPECT_EQ(exitCode, 1) << "Output:\n" << output;
@@ -314,7 +319,7 @@ TEST_F(CLITest, DaemonConfigSet_RejectsUnknownKeys) {
 
 TEST_F(CLITest, DaemonConfigSet_RoundTripsThroughShow) {
     const fs::path cfgDir = fs::temp_directory_path() /
-        ("logoscore_cli_rt_" + std::to_string(::getpid()));
+        ("logosctl_cli_rt_" + std::to_string(::getpid()));
     fs::create_directories(cfgDir);
     const fs::path doc = cfgDir / "node.yaml";
     {
@@ -328,13 +333,13 @@ TEST_F(CLITest, DaemonConfigSet_RoundTripsThroughShow) {
     }
 
     std::string output;
-    int exitCode = runLogoscoreWithTimeout(
+    int exitCode = runLogosctlWithTimeout(
         "--config-dir " + cfgDir.string() + " daemon config set " + doc.string(),
         &output, 5);
     ASSERT_EQ(exitCode, 0) << "Output:\n" << output;
 
     std::string shown;
-    exitCode = runLogoscoreWithTimeout(
+    exitCode = runLogosctlWithTimeout(
         "--config-dir " + cfgDir.string() + " daemon config show --human", &shown, 5);
     EXPECT_EQ(exitCode, 0) << "Output:\n" << shown;
     EXPECT_NE(shown.find("8645"), std::string::npos) << "Output:\n" << shown;
@@ -345,10 +350,10 @@ TEST_F(CLITest, DaemonConfigSet_RoundTripsThroughShow) {
 TEST_F(CLITest, DaemonConfigShow_AbsentIsNotAnError) {
     // A session with no config runs on defaults; that is a normal state.
     const fs::path cfgDir = fs::temp_directory_path() /
-        ("logoscore_cli_absent_" + std::to_string(::getpid()));
+        ("logosctl_cli_absent_" + std::to_string(::getpid()));
     fs::create_directories(cfgDir);
     std::string output;
-    int exitCode = runLogoscoreWithTimeout(
+    int exitCode = runLogosctlWithTimeout(
         "--config-dir " + cfgDir.string() + " daemon config show --human", &output, 5);
     EXPECT_EQ(exitCode, 0) << "Output:\n" << output;
     fs::remove_all(cfgDir);

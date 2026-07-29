@@ -1,5 +1,5 @@
-#ifndef LOGOSCORE_TOKEN_STORE_H
-#define LOGOSCORE_TOKEN_STORE_H
+#ifndef LOGOSCTL_TOKEN_STORE_H
+#define LOGOSCTL_TOKEN_STORE_H
 
 #include <cstdint>
 #include <optional>
@@ -7,7 +7,7 @@
 #include <vector>
 
 // -----------------------------------------------------------------------------
-// TokenStore — per-config-dir token management for logoscore clients.
+// TokenStore — per-config-dir token management for logosctl clients.
 //
 // On disk, two pieces under $CONFIG_DIR/daemon/:
 //   - tokens.json         — authoritative array of {name, hash, issued_at,
@@ -94,7 +94,7 @@ public:
     // TokensFile already routes through Config::*, so divergence
     // between the two would silently split raw files from hashes
     // into different trees. Tests can still isolate state by setting
-    // LOGOSCORE_CONFIG_DIR or calling Config::setConfigDir() in
+    // LOGOSCTL_CONFIG_DIR or calling Config::setConfigDir() in
     // their fixtures.
     TokenStore();
 
@@ -174,4 +174,4 @@ public:
 
 };
 
-#endif // LOGOSCORE_TOKEN_STORE_H
+#endif // LOGOSCTL_TOKEN_STORE_H

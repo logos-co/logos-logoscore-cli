@@ -48,7 +48,7 @@ public:
 
     // Override the config dir for the lifetime of the process. Called from main
     // when --config-dir is passed, so daemon + client agree on a single config
-    // tree and parallel logoscore instances can coexist with distinct trees.
+    // tree and parallel logosctl instances can coexist with distinct trees.
     // Pass an empty string to clear the override (tests).
     static void setConfigDir(const std::string& path);
 

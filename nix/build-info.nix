@@ -1,4 +1,4 @@
-# Generates logos_build_info.h — baked into the logoscore binary so `--version`
+# Generates logos_build_info.h — baked into the logosctl binary so `--version`
 # can report the release version, this repo's commit (with a "-dirty" marker
 # when the checkout is dirty), and the locked commit of each flake input.
 # See flake.nix's `buildInfo` for how the values are resolved.

@@ -1,5 +1,5 @@
 {
-  description = "Logos logoscore CLI - headless module runtime";
+  description = "Logos logosctl CLI - headless module runtime";
 
   inputs = {
     logos-nix.url = "github:logos-co/logos-nix";
@@ -41,7 +41,7 @@
   outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-qt-sdk, logos-liblogos, logos-capability-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
-      # Build info baked into the logoscore binary so `--version` reports the
+      # Build info baked into the logosctl binary so `--version` reports the
       # release version, this repo's commit, and the locked commits of the SDK
       # stack. `revOf` yields the input's locked rev, a "<sha>-dirty" marker for
       # a dirty checkout, or "dirty" for a path override.
@@ -87,7 +87,7 @@
     {
       packages = forAllSystems ({ pkgs, system, cppSdk, protocolPkg, qtSdk, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, installDev, installPortable, dirBundler, appBundler }:
         let
-          pname = "logos-logoscore-cli";
+          pname = "logos-logosctl-cli";
           # VERSION is only present on release branches; dev branches use a placeholder.
           version = if builtins.pathExists ./VERSION
             then nixpkgs.lib.removeSuffix "\n" (builtins.readFile ./VERSION)
@@ -99,7 +99,7 @@
           buildInfoHeader = import ./nix/build-info.nix { inherit pkgs buildInfo; };
 
           meta = with pkgs.lib; {
-            description = "Logos logoscore headless module runtime CLI";
+            description = "Logos logosctl headless module runtime CLI";
             platforms = platforms.unix;
           };
 
@@ -133,7 +133,7 @@
               ls -laR $out/modules/
             '';
 
-          # Build the logoscore binary against logos-liblogos
+          # Build the logosctl binary against logos-liblogos
           build = pkgs.stdenv.mkDerivation {
             inherit pname version src meta;
 
@@ -180,7 +180,7 @@
               "-GNinja"
               "-DLOGOS_LIBLOGOS_ROOT=${liblogos}"
               # Direct path to the SDK: CMake's find_package(logos-cpp-sdk)
-              # picks up the imported target so logoscore can link
+              # picks up the imported target so logosctl can link
               # logos_sdk explicitly (needed for symbols like
               # logos::transportSetToJsonString which liblogos doesn't
               # itself reference and would otherwise be dead-stripped).
@@ -190,7 +190,7 @@
             ];
           };
 
-          # Package the logoscore binary with its runtime deps
+          # Package the logosctl binary with its runtime deps
           bin = pkgs.stdenvNoCC.mkDerivation {
             pname = "${pname}-bin";
             inherit version meta;
@@ -220,7 +220,7 @@
               cp -r ${build}/bin/* $out/bin/
               chmod -R +w $out/bin
 
-              # Copy liblogos_core so logoscore can link at runtime
+              # Copy liblogos_core so logosctl can link at runtime
               if [ -d ${liblogosLib}/lib ]; then
                 cp -r ${liblogosLib}/lib/* $out/lib/
                 chmod -R +w $out/lib
@@ -247,7 +247,7 @@
             '';
           };
 
-          # Tests derivation: builds cli_tests + logoscore binary for integration tests
+          # Tests derivation: builds cli_tests + logosctl binary for integration tests
           tests = pkgs.stdenv.mkDerivation {
             pname = "${pname}-tests";
             inherit version src meta;
@@ -296,14 +296,14 @@
               cp bin/cli_tests $out/bin/
               cp bin/unit_tests $out/bin/
               cp bin/integration_tests $out/bin/
-              cp bin/logoscore $out/bin/
+              cp bin/logosctl $out/bin/
 
               if [ -d ${liblogosLib}/lib ]; then
                 cp -r ${liblogosLib}/lib/* $out/lib/ || true
               fi
 
               ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
-                for binary in $out/bin/cli_tests $out/bin/unit_tests $out/bin/integration_tests $out/bin/logoscore; do
+                for binary in $out/bin/cli_tests $out/bin/unit_tests $out/bin/integration_tests $out/bin/logosctl; do
                   for dylib in $out/lib/*.dylib; do
                     if [ -f "$dylib" ]; then
                       libname=$(basename $dylib)
@@ -374,6 +374,7 @@
               pkgs.stduuid
               pkgs.cli11
               pkgs.fmt
+              pkgs.yaml-cpp
             ];
 
             cmakeFlags = [
@@ -428,23 +429,23 @@
             '';
           };
 
-          logoscoreCli = pkgs.symlinkJoin {
+          logosctlCli = pkgs.symlinkJoin {
             name = pname;
             paths = [ bin ];
           };
         in
         {
-          cli = logoscoreCli;
+          cli = logosctlCli;
           tests = tests;
           cli-bundle-dir = dirBundler binPortable;
           cli-appimage = appBundler {
             drv = binPortable;
-            name = "logoscore";
+            name = "logosctl";
             bundle = dirBundler binPortable;
-            desktopFile = ./assets/logoscore.desktop;
-            icon = ./assets/logoscore.png;
+            desktopFile = ./assets/logosctl.desktop;
+            icon = ./assets/logosctl.png;
           };
-          default = logoscoreCli;
+          default = logosctlCli;
         }
       );
 
@@ -461,14 +462,14 @@
           # installDev both expose a top-level `modules/` tree;
           # symlinkJoin (lndir) merges them into one scan dir.
           testModulesInstall = pkgs.symlinkJoin {
-            name = "logos-logoscore-cli-it-modules";
+            name = "logos-logosctl-cli-it-modules";
             paths = [
               (installDev capabilityModuleLib)
               logos-test-modules.modules.${system}.test_basic_module.install
             ];
           };
         in {
-          tests = pkgs.runCommand "logos-logoscore-cli-tests" {
+          tests = pkgs.runCommand "logos-logosctl-cli-tests" {
             nativeBuildInputs = [ testsPkg ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.qt6.qtbase ];
           } ''
             export QT_QPA_PLATFORM=offscreen
@@ -476,18 +477,18 @@
             ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
               export QT_PLUGIN_PATH="${pkgs.qt6.qtbase}/${pkgs.qt6.qtbase.qtPluginPrefix}"
             ''}
-            export LOGOSCORE_BINARY=${testsPkg}/bin/logoscore
+            export LOGOSCTL_BINARY=${testsPkg}/bin/logosctl
             # Daemon-backed integration tests (tests/test_integration.cpp)
             # read these. Absent ⇒ those tests GTEST_SKIP, so the rest of
             # the suite still runs in environments without test modules.
-            export LOGOSCORE_TEST_MODULES_DIR=${testModulesInstall}/modules
+            export LOGOSCTL_TEST_MODULES_DIR=${testModulesInstall}/modules
             export LOGOS_HOST_PATH=${liblogos}/bin/logos_host
             mkdir -p $out
-            echo "Running logos-logoscore-cli unit tests..."
+            echo "Running logos-logosctl-cli unit tests..."
             ${testsPkg}/bin/unit_tests --gtest_output=xml:$out/unit-test-results.xml
-            echo "Running logos-logoscore-cli CLI tests..."
+            echo "Running logos-logosctl-cli CLI tests..."
             ${testsPkg}/bin/cli_tests --gtest_output=xml:$out/cli-test-results.xml
-            echo "Running logos-logoscore-cli integration tests..."
+            echo "Running logos-logosctl-cli integration tests..."
             ${testsPkg}/bin/integration_tests --gtest_output=xml:$out/integration-test-results.xml
           '';
         }
@@ -508,6 +509,7 @@
             pkgs.cli11
             pkgs.gtest
             pkgs.fmt
+            pkgs.yaml-cpp
           ];
           shellHook = ''
             export LOGOS_LIBLOGOS_ROOT="${liblogos}"

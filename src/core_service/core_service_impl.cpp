@@ -435,7 +435,7 @@ StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
     if (!moduleClient) {
         result["status"] = "error";
         result["code"] = "MODULE_NOT_LOADED";
-        result["message"] = "Module '" + module + "' is not loaded. Load it with: logoscore load-module " + module;
+        result["message"] = "Module '" + module + "' is not loaded. Load it with: logosctl module load " + module;
         return {false, result, "Module '" + module + "' is not loaded."};
     }
 

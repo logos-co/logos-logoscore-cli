@@ -3,7 +3,7 @@
 
 #include "command.h"
 
-// `logoscore revoke-token NAME` — removes the token from
+// `logosctl token revoke NAME` — removes the token from
 // daemon/tokens.json and deletes daemon/tokens/<name>.json. Exit 3
 // if no token with that name exists.
 class RevokeTokenCommand : public Command {

@@ -13,7 +13,7 @@ int LoadModuleCommand::execute(const std::vector<std::string>& args)
         auto argsCopy = args;
         cli.parse(argsCopy);
     } catch (const CLI::ParseError&) {
-        output().printError("INVALID_ARGS", "Usage: logoscore load-module <name>");
+        output().printError("INVALID_ARGS", "Usage: logosctl module load <name>");
         return 1;
     }
 

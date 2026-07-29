@@ -96,7 +96,7 @@ int IssueTokenCommand::execute(const std::vector<std::string>& args)
         cli.parse(argsCopy);
     } catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS",
-            "Usage: logoscore issue-token --name NAME [--expires DUR] [--replace] [--local-only]");
+            "Usage: logosctl token issue --name NAME [--expires DUR] [--replace] [--local-only]");
         return 1;
     }
 

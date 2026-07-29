@@ -13,6 +13,25 @@ namespace fs = std::filesystem;
 
 namespace paths {
 
+std::string executablePath()
+{
+#ifdef __APPLE__
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    std::string buf(size, '\0');
+    if (_NSGetExecutablePath(buf.data(), &size) == 0)
+        return fs::path(buf.c_str()).string();
+#elif defined(__linux__)
+    char buf[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (len > 0) {
+        buf[len] = '\0';
+        return std::string(buf);
+    }
+#endif
+    return {};
+}
+
 std::string executableDir()
 {
 #ifdef __APPLE__

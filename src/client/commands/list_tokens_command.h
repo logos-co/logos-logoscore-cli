@@ -3,7 +3,7 @@
 
 #include "command.h"
 
-// `logoscore list-tokens` — names + issued_at timestamps from
+// `logosctl token ls` — names + issued_at timestamps from
 // daemon/tokens.json. Raw tokens are never shown (they're only
 // persisted in daemon/tokens/<name>.json on issuance; afterwards
 // they only exist hashed in tokens.json).

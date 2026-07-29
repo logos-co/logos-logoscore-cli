@@ -1,9 +1,9 @@
 // Daemon-backed integration tests.
 //
 // Unlike test_cli.cpp (which only pokes the binary in no-daemon / inline
-// mode), these spin up a *real* logoscore daemon in the background against
+// mode), these spin up a *real* logosctl daemon in the background against
 // a real test-module directory and drive it through the client subcommands
-// — the same shape as logos-logoscore-py's integration suite.
+// — the same shape as logos-logosctl-py's integration suite.
 //
 // Coverage:
 //   * Error paths (ErrorPathTest): unknown-module load, calling methods on
@@ -17,7 +17,7 @@
 //     `watch`, and many simultaneous clients hitting one daemon. The
 //     whole suite shares ONE daemon (SetUpTestSuite) with the module
 //     loaded once — per-test daemons made the check take many minutes.
-//     Mirrors logos-logoscore-py/tests/integration/test_basic_module_methods.py
+//     Mirrors logos-logosctl-py/tests/integration/test_basic_module_methods.py
 //     and logos-test-modules/test-basic-module — keep them in sync.
 //
 // Negative `call`/`module-info` cases: this CLI/SDK revision has no fast
@@ -26,7 +26,7 @@
 // stable across revisions). So those are `timeout`-bounded and asserted
 // as "must not succeed" rather than waiting ~100s for an exact code.
 //
-// Requires LOGOSCORE_BINARY + LOGOSCORE_TEST_MODULES_DIR (the flake's
+// Requires LOGOSCTL_BINARY + LOGOSCTL_TEST_MODULES_DIR (the flake's
 // `tests` check wires both, plus LOGOS_HOST_PATH so modules can load).
 // Absent ⇒ everything GTEST_SKIPs so the suite stays green locally.
 
@@ -88,23 +88,23 @@ nlohmann::json lastJsonObject(const std::string& out)
     return nlohmann::json::object();
 }
 
-// A real logoscore daemon in an isolated config/HOME, plus helpers to
+// A real logosctl daemon in an isolated config/HOME, plus helpers to
 // drive clients against it. Not a gtest fixture so it can be owned
 // per-test (error paths) or once per suite (the API/concurrency matrix).
-class LogoscoreDaemon {
+class LogosctlDaemon {
 public:
     bool envReady(std::string& why) {
-        const char* b = std::getenv("LOGOSCORE_BINARY");
-        const char* m = std::getenv("LOGOSCORE_TEST_MODULES_DIR");
-        if (!b || !fs::exists(b)) { why = "LOGOSCORE_BINARY not set/found"; return false; }
-        if (!m || !fs::exists(m)) { why = "LOGOSCORE_TEST_MODULES_DIR not set/found"; return false; }
+        const char* b = std::getenv("LOGOSCTL_BINARY");
+        const char* m = std::getenv("LOGOSCTL_TEST_MODULES_DIR");
+        if (!b || !fs::exists(b)) { why = "LOGOSCTL_BINARY not set/found"; return false; }
+        if (!m || !fs::exists(m)) { why = "LOGOSCTL_TEST_MODULES_DIR not set/found"; return false; }
         binary     = fs::canonical(b);
         modulesDir = fs::canonical(m);
         return true;
     }
 
     void start(const std::string& tag) {
-        base      = fs::temp_directory_path() / ("logoscore_it_" + tag + "_" + std::to_string(getpid()));
+        base      = fs::temp_directory_path() / ("logosctl_it_" + tag + "_" + std::to_string(getpid()));
         configDir = base / "config";
         homeDir   = base / "home";
         daemonLog = base / "daemon.log";
@@ -114,7 +114,7 @@ public:
         pid = spawnBg({"daemon", "-m", modulesDir.string()}, daemonLog);
     }
 
-    // fork + setsid + exec a logoscore subprocess (daemon or watch) with
+    // fork + setsid + exec a logosctl subprocess (daemon or watch) with
     // this daemon's isolated env; stdout+stderr → logFile, stdin
     // detached. setsid ⇒ the pid leads a process group so the whole
     // tree (incl. logos_host children) tears down together.
@@ -123,7 +123,7 @@ public:
         if (p < 0) return -1;
         if (p == 0) {
             setsid();
-            setenv("LOGOSCORE_CONFIG_DIR", configDir.c_str(), 1);
+            setenv("LOGOSCTL_CONFIG_DIR", configDir.c_str(), 1);
             setenv("HOME", homeDir.c_str(), 1);
             // QLocalServer resolves a bare server name against QDir::tempPath(),
             // which honours $TMPDIR — so this decides where the node's sockets
@@ -136,7 +136,7 @@ public:
             int dn = open("/dev/null", O_RDONLY);
             if (dn >= 0) dup2(dn, STDIN_FILENO);
             std::vector<char*> argv;
-            argv.push_back(const_cast<char*>("logoscore"));
+            argv.push_back(const_cast<char*>("logosctl"));
             for (const auto& a : cliArgs) argv.push_back(const_cast<char*>(a.c_str()));
             argv.push_back(nullptr);
             execv(binary.c_str(), argv.data());
@@ -160,13 +160,13 @@ public:
         return false;
     }
 
-    // Run `logoscore <args> --json` against this daemon. timeoutSecs>0
+    // Run `logosctl <args> --json` against this daemon. timeoutSecs>0
     // wraps it in coreutils `timeout` (exit 124 if it fires). Safe to
     // call concurrently from multiple threads — each call is its own
     // process and FILE*, sharing no mutable state on this object.
     int run(const std::string& args, std::string* out, int timeoutSecs = 0) const {
         std::string cmd =
-            "LOGOSCORE_CONFIG_DIR='" + configDir.string() + "' " +
+            "LOGOSCTL_CONFIG_DIR='" + configDir.string() + "' " +
             "HOME='" + homeDir.string() + "' ";
         // The client dials the same bare socket name, so it must resolve
         // QDir::tempPath() to the same place the daemon bound in.
@@ -277,7 +277,7 @@ int bindListen(const fs::path& p)
 // including a fatal gtest assertion that `return`s out of the test —
 // so background watchers can't leak past the test.
 struct ProcGuard {
-    LogoscoreDaemon* d;
+    LogosctlDaemon* d;
     pid_t pid;
     ~ProcGuard() { if (d && pid > 0) d->killGroup(pid); }
 };
@@ -292,7 +292,7 @@ constexpr int kNegativeBudgetSecs = 12;
 
 class ErrorPathTest : public ::testing::Test {
 protected:
-    LogoscoreDaemon d;
+    LogosctlDaemon d;
 
     void SetUp() override {
         std::string why;
@@ -400,7 +400,7 @@ TEST_F(ErrorPathTest, UnknownMethodOnLoadedModule) {
 
 // Crash-isolation: modules run in a separate logos_host subprocess
 // (logos_core_start spawns it in remote mode). A faulty module that
-// SIGSEGVs must take down only that host process — the logoscore
+// SIGSEGVs must take down only that host process — the logosctl
 // daemon itself must keep answering clients. Uses test_basic_module's
 // crashOnDemand() (a null-pointer deref). Fresh-daemon-per-test
 // because killing the host pollutes shared state for everything else.
@@ -559,12 +559,12 @@ TEST_F(ErrorPathTest, ClientAuthenticatesToCoreService) {
 
 class LoadedModuleTest : public ::testing::Test {
 protected:
-    static LogoscoreDaemon* s_d;
+    static LogosctlDaemon* s_d;
     static bool s_skip;
     static std::string s_skipWhy;
 
     static void SetUpTestSuite() {
-        s_d = new LogoscoreDaemon();
+        s_d = new LogosctlDaemon();
         if (!s_d->envReady(s_skipWhy)) { s_skip = true; return; }
         s_d->start("loaded_suite");
         ASSERT_TRUE(s_d->waitReady())
@@ -608,7 +608,7 @@ protected:
     }
 };
 
-LogoscoreDaemon* LoadedModuleTest::s_d = nullptr;
+LogosctlDaemon* LoadedModuleTest::s_d = nullptr;
 bool LoadedModuleTest::s_skip = false;
 std::string LoadedModuleTest::s_skipWhy;
 
@@ -775,7 +775,7 @@ TEST_F(LoadedModuleTest, EmitMultiArgEvent) {
 }
 
 // ── Concurrency: many independent clients hitting one daemon at once ─────────
-// Each thread is its own `logoscore call` process. Worker threads do NO
+// Each thread is its own `logosctl call` process. Worker threads do NO
 // gtest assertions (not thread-safe) — they record (ok, detail) into
 // private slots; the main thread asserts after join.
 
@@ -872,7 +872,7 @@ TEST_F(LoadedModuleTest, ConcurrentMixedMethodsFromManyClients) {
 
 class SocketLifecycleTest : public ::testing::Test {
 protected:
-    LogoscoreDaemon d;
+    LogosctlDaemon d;
 
     void SetUp() override {
         std::string why;

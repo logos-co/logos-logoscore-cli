@@ -45,14 +45,14 @@ int ConfigCommand::execute(const std::vector<std::string>& args)
     const std::string group = m_daemonSide ? "daemon" : "client";
     if (args.empty()) {
         output().printError("INVALID_ARGS",
-            "Usage: logoscore " + group + " config <show|set FILE>");
+            "Usage: logosctl " + group + " config <show|set FILE>");
         return 1;
     }
     if (args[0] == "show") return show();
     if (args[0] == "set") {
         if (args.size() < 2) {
             output().printError("INVALID_ARGS",
-                "Usage: logoscore " + group + " config set <FILE|@FILE|->");
+                "Usage: logosctl " + group + " config set <FILE|@FILE|->");
             return 1;
         }
         return set({args.begin() + 1, args.end()});

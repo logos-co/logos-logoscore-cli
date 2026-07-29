@@ -17,30 +17,30 @@ protected:
     std::string testDir;
 
     void SetUp() override {
-        testDir = getTempDir() + "/logoscore_test_config_" + std::to_string(getpid());
-        std::filesystem::create_directories(testDir + "/.logoscore");
+        testDir = getTempDir() + "/logosctl_test_config_" + std::to_string(getpid());
+        std::filesystem::create_directories(testDir + "/.logosctl");
 
         const char* h = std::getenv("HOME");
         origHome = h ? std::string(h) : "";
         setenv("HOME", testDir.c_str(), 1);
 
-        unsetenv("LOGOSCORE_TOKEN");
-        unsetenv("LOGOSCORE_CONFIG_DIR");
+        unsetenv("LOGOSCTL_TOKEN");
+        unsetenv("LOGOSCTL_CONFIG_DIR");
         Config::setConfigDir("");
     }
 
     void TearDown() override {
         setenv("HOME", origHome.c_str(), 1);
-        unsetenv("LOGOSCORE_CONFIG_DIR");
+        unsetenv("LOGOSCTL_CONFIG_DIR");
         Config::setConfigDir("");
         std::filesystem::remove_all(testDir);
     }
 };
 
-TEST_F(ConfigTest, ConfigDir_ReturnsHomeLogoscore)
+TEST_F(ConfigTest, ConfigDir_ReturnsHomeLogosctl)
 {
     std::string dir = Config::configDir();
-    const std::string suffix = "/.logoscore";
+    const std::string suffix = "/.logosctl";
     EXPECT_TRUE(dir.size() > suffix.size() &&
                 dir.substr(dir.size() - suffix.size()) == suffix);
 }
@@ -51,7 +51,7 @@ TEST_F(ConfigTest, ConfigDir_ReturnsHomeLogoscore)
 
 TEST_F(ConfigTest, GetToken_EnvVarReturned)
 {
-    setenv("LOGOSCORE_TOKEN", "env-token", 1);
+    setenv("LOGOSCTL_TOKEN", "env-token", 1);
     EXPECT_EQ(Config::getToken(), "env-token");
 }
 
@@ -120,7 +120,7 @@ TEST_F(ConfigTest, ConfigDir_EnvVarOverridesHome)
 {
     const std::string alt = testDir + "/alt-config";
     std::filesystem::create_directories(alt);
-    setenv("LOGOSCORE_CONFIG_DIR", alt.c_str(), 1);
+    setenv("LOGOSCTL_CONFIG_DIR", alt.c_str(), 1);
 
     EXPECT_EQ(Config::configDir(), alt);
     EXPECT_EQ(Config::daemonConfigPath().substr(0, alt.size()), alt);
@@ -134,7 +134,7 @@ TEST_F(ConfigTest, ConfigDir_SetterOverridesEnvVar)
     std::filesystem::create_directories(envDir);
     std::filesystem::create_directories(setterDir);
 
-    setenv("LOGOSCORE_CONFIG_DIR", envDir.c_str(), 1);
+    setenv("LOGOSCTL_CONFIG_DIR", envDir.c_str(), 1);
     Config::setConfigDir(setterDir);
 
     EXPECT_EQ(Config::configDir(), setterDir)
@@ -148,7 +148,7 @@ TEST_F(ConfigTest, ConfigDir_ClearingSetterFallsBackToEnv)
     std::filesystem::create_directories(envDir);
     std::filesystem::create_directories(setterDir);
 
-    setenv("LOGOSCORE_CONFIG_DIR", envDir.c_str(), 1);
+    setenv("LOGOSCTL_CONFIG_DIR", envDir.c_str(), 1);
     Config::setConfigDir(setterDir);
     ASSERT_EQ(Config::configDir(), setterDir);
 

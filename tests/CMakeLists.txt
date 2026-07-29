@@ -28,12 +28,12 @@ set(TEST_LIB_SOURCES
     ${CMAKE_SOURCE_DIR}/src/client/commands/config_command.cpp
 )
 
-add_library(logoscore_testlib STATIC ${TEST_LIB_SOURCES})
-target_include_directories(logoscore_testlib PUBLIC
+add_library(logosctl_testlib STATIC ${TEST_LIB_SOURCES})
+target_include_directories(logosctl_testlib PUBLIC
     ${CMAKE_SOURCE_DIR}/src
     ${LOGOS_LIBLOGOS_ROOT}/include
 )
-target_link_libraries(logoscore_testlib PUBLIC
+target_link_libraries(logosctl_testlib PUBLIC
     CLI11::CLI11
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::RemoteObjects
@@ -59,14 +59,14 @@ target_include_directories(unit_tests PRIVATE
 )
 
 target_link_libraries(unit_tests PRIVATE
-    logoscore_testlib
+    logosctl_testlib
     GTest::gtest_main
     Qt${QT_VERSION_MAJOR}::Core
 )
 
 gtest_discover_tests(unit_tests)
 
-# ── CLI integration tests (require compiled logoscore binary) ─────────────────
+# ── CLI integration tests (require compiled logosctl binary) ─────────────────
 
 add_executable(cli_tests
     test_cli.cpp

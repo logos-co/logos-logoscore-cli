@@ -51,7 +51,7 @@ int PackageCommand::execute(const std::vector<std::string>& args)
 {
     if (args.empty()) {
         output().printError("INVALID_ARGS",
-            "Usage: logoscore package <install|upgrade|remove|ls|show|deps|search|download> ...");
+            "Usage: logosctl package <install|upgrade|remove|ls|show|deps|search|download> ...");
         return 1;
     }
 
@@ -96,7 +96,7 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
         cli.parse(argsCopy);
     } catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS",
-            "Usage: logoscore package " + op + " <name...> [--version V] [-y] [--dry-run]");
+            "Usage: logosctl package " + op + " <name...> [--version V] [-y] [--dry-run]");
         return 1;
     }
 
@@ -239,7 +239,7 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
     // happened to install ahead of it.
     if (!installed.empty()) {
         const std::string hint = names.empty() ? installed.front() : names.front();
-        output().printRaw(fmt::format("Load with: logoscore load-module {}", hint));
+        output().printRaw(fmt::format("Load with: logosctl module load {}", hint));
     }
     return 0;
 }
@@ -254,7 +254,7 @@ int PackageCommand::list(const std::vector<std::string>& args)
     cli.add_option("--type", type, "Filter by type: core | ui");
     try { auto c = args; cli.parse(c); }
     catch (const CLI::ParseError&) {
-        output().printError("INVALID_ARGS", "Usage: logoscore package ls [--type core|ui]");
+        output().printError("INVALID_ARGS", "Usage: logosctl package ls [--type core|ui]");
         return 1;
     }
 
@@ -294,7 +294,7 @@ int PackageCommand::list(const std::vector<std::string>& args)
 int PackageCommand::show(const std::vector<std::string>& args)
 {
     if (args.empty()) {
-        output().printError("INVALID_ARGS", "Usage: logoscore package show <name|file.lgx>");
+        output().printError("INVALID_ARGS", "Usage: logosctl package show <name|file.lgx>");
         return 1;
     }
     const std::string target = args[0];
@@ -367,7 +367,7 @@ int PackageCommand::deps(const std::vector<std::string>& args)
     try { auto c = args; cli.parse(c); }
     catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS",
-            "Usage: logoscore package deps <name> [-r] [--reverse]");
+            "Usage: logosctl package deps <name> [-r] [--reverse]");
         return 1;
     }
 
@@ -410,7 +410,7 @@ int PackageCommand::search(const std::vector<std::string>& args)
     try { auto c = args; cli.parse(c); }
     catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS",
-            "Usage: logoscore package search [query] [--category C] [--catalog C]");
+            "Usage: logosctl package search [query] [--category C] [--catalog C]");
         return 1;
     }
 
@@ -481,7 +481,7 @@ int PackageCommand::download(const std::vector<std::string>& args)
     try { auto c = args; cli.parse(c); }
     catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS",
-            "Usage: logoscore package download <name> [--version V] [-o DIR]");
+            "Usage: logosctl package download <name> [--version V] [-o DIR]");
         return 1;
     }
 

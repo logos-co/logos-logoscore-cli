@@ -27,7 +27,7 @@ int CallCommand::execute(const std::vector<std::string>& args)
 
     if (args.empty()) {
         output().printError("INVALID_ARGS",
-                            "Usage: logoscore call <module> <method> [args...]");
+                            "Usage: logosctl call <module> <method> [args...]");
         return 1;
     }
 
@@ -39,7 +39,7 @@ int CallCommand::execute(const std::vector<std::string>& args)
     } else {
         if (args.size() < 2) {
             output().printError("INVALID_ARGS",
-                                "Usage: logoscore call <module> <method> [args...]");
+                                "Usage: logosctl call <module> <method> [args...]");
             return 1;
         }
         moduleName = args[0];
@@ -50,7 +50,7 @@ int CallCommand::execute(const std::vector<std::string>& args)
 
     if (moduleName.empty() || methodName.empty()) {
         output().printError("INVALID_ARGS",
-                            "Usage: logoscore call <module> <method> [args...]");
+                            "Usage: logosctl call <module> <method> [args...]");
         return 1;
     }
 

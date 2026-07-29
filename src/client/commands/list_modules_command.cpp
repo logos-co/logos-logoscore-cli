@@ -11,7 +11,7 @@ int ListModulesCommand::execute(const std::vector<std::string>& args)
         auto argsCopy = args;
         cli.parse(argsCopy);
     } catch (const CLI::ParseError&) {
-        output().printError("INVALID_ARGS", "Usage: logoscore list-modules [--loaded]");
+        output().printError("INVALID_ARGS", "Usage: logosctl module ls [--loaded]");
         return 1;
     }
 

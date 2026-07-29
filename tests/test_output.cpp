@@ -375,6 +375,6 @@ TEST_F(OutputTest, PrintError_Human)
 {
     CaptureStderr cap;
     Output out(false);
-    out.printError("NO_DAEMON", "No running logoscore daemon.");
+    out.printError("NO_DAEMON", "No running logosctl daemon.");
     // Just verify it doesn't crash; actual output depends on TTY detection
 }

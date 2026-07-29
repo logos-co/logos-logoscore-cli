@@ -17,7 +17,7 @@ int WatchCommand::execute(const std::vector<std::string>& args)
         cli.parse(argsCopy);
     } catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS",
-                            "Usage: logoscore watch <module> [--event <event>]");
+                            "Usage: logosctl watch <module> [--event <event>]");
         return 1;
     }
 

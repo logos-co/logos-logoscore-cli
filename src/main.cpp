@@ -9,6 +9,10 @@
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <map>
 #include <sstream>
 #include <string>
 
@@ -118,23 +122,60 @@ static std::optional<std::string> resolveAccessPolicy(const std::string& arg)
 //     daemon start   ...  ->  daemon ...
 //     daemon stop    ...  ->  stop ...
 //     daemon status  ...  ->  status ...
+//     module load    ...  ->  load-module ...
+//     token issue    ...  ->  issue-token ...
+//     ... and so on for the rest of the module/token verbs.
 //
-// Doing this in argv rather than with nested CLI11 subcommands avoids a
-// collision with daemonSub->fallthrough(): a nested subcommand's unmatched
-// arguments fall through to the parent and then to the top level, which
-// rejects them ("The following argument was not expected: show").
+// The hyphenated names on the right are internal dispatch tokens, hidden from
+// --help; the groups are the surface. Doing the mapping in argv rather than
+// with nested CLI11 subcommands avoids a collision with
+// daemonSub->fallthrough(): a nested subcommand's unmatched arguments fall
+// through to the parent and then to the top level, which rejects them
+// ("The following argument was not expected: show").
 static std::vector<std::string> normalizeGroupVerbs(int argc, char* argv[])
 {
+    // group -> verb -> internal subcommand
+    static const std::map<std::string, std::map<std::string, std::string>> kGroups = {
+        {"daemon", {
+            {"config", "daemon-config"},
+            {"start",  "daemon"},
+            {"stop",   "stop"},
+            {"status", "status"},
+        }},
+        {"client", {
+            {"config", "client-config"},
+        }},
+        {"module", {
+            {"ls",     "list-modules"},
+            {"list",   "list-modules"},
+            {"show",   "module-info"},
+            {"info",   "module-info"},
+            {"load",   "load-module"},
+            {"unload", "unload-module"},
+            {"reload", "reload-module"},
+            {"stats",  "stats"},
+        }},
+        {"token", {
+            {"issue",  "issue-token"},
+            {"ls",     "list-tokens"},
+            {"list",   "list-tokens"},
+            {"revoke", "revoke-token"},
+        }},
+    };
+
     std::vector<std::string> out;
     out.reserve(static_cast<size_t>(argc));
     for (int i = 0; i < argc; ++i) {
         const std::string a = argv[i];
-        const std::string next = (i + 1 < argc) ? argv[i + 1] : std::string{};
-        if (a == "daemon" || a == "client") {
-            if (next == "config") { out.push_back(a + "-config"); ++i; continue; }
-            if (a == "daemon" && next == "start")  { out.push_back("daemon"); ++i; continue; }
-            if (a == "daemon" && next == "stop")   { out.push_back("stop");   ++i; continue; }
-            if (a == "daemon" && next == "status") { out.push_back("status"); ++i; continue; }
+        auto g = kGroups.find(a);
+        // argv[0] is the program path; only look for a group from argv[1] on.
+        if (i > 0 && g != kGroups.end() && i + 1 < argc) {
+            auto v = g->second.find(argv[i + 1]);
+            if (v != g->second.end()) {
+                out.push_back(v->second);
+                ++i;
+                continue;
+            }
         }
         out.push_back(a);
     }
@@ -167,8 +208,8 @@ int main(int argc, char *argv[])
     // CLI flags merge over disk via per-flag Option::count() detection.
 
     // ── CLI11 setup ──────────────────────────────────────────────────────────
-    CLI::App app{"logoscore - Logos Core runtime CLI"};
-    app.set_version_flag("--version", logoscore_version::versionString());
+    CLI::App app{"logosctl - Logos Core runtime CLI"};
+    app.set_version_flag("--version", logosctl_version::versionString());
     app.set_help_flag("-h,--help", "Show this help");
 
     // Global flags
@@ -190,6 +231,15 @@ int main(int argc, char *argv[])
     bool daemonFlag = false;
     app.add_flag("-D", daemonFlag, "Start the daemon process");
 
+    // Detach after the daemon is actually up. Backgrounding with `&` returns
+    // immediately, before the transports bind, so the very next client command
+    // races the boot and fails with "no daemon". --detach waits for the state
+    // file to appear and only then lets the parent exit, which makes
+    // `daemon start --detach && module ls` reliable in scripts and doctests.
+    bool detach = false;
+    app.add_flag("-d,--detach", detach,
+                 "Fork into the background and return once the daemon is accepting commands");
+
     // Everything that used to be a flag here -- module directories, the
     // persistence path, per-module transports, the access policy and group,
     // the plaintext-TCP opt-in, and the seven client dial-spec flags -- now
@@ -207,7 +257,7 @@ int main(int argc, char *argv[])
     // selects *which* session to act on, so it cannot itself live inside one.
     std::string configDirStr;
     app.add_option("--config-dir", configDirStr,
-        "Session directory to use (default: ~/.logoscore; also LOGOSCORE_CONFIG_DIR). "
+        "Session directory to use (default: ~/.logosctl; also LOGOSCTL_CONFIG_DIR). "
         "Holds this session's config, modules, plugins, keyring and data.");
 
     // ── Client subcommands ───────────────────────────────────────────────────
@@ -243,7 +293,6 @@ int main(int argc, char *argv[])
     auto* moduleInfoSub    = app.add_subcommand("module-info", "Show detailed module information");
     auto* infoSub          = app.add_subcommand("info", "Alias for module-info");
     auto* callSub          = app.add_subcommand("call", "Call a method on a loaded module");
-    auto* moduleSub        = app.add_subcommand("module", "Call a method (verbose syntax)");
     auto* watchSub         = app.add_subcommand("watch", "Watch events from a module");
     auto* statsSub         = app.add_subcommand("stats", "Show module resource usage");
     auto* stopSub          = app.add_subcommand("stop", "Stop the daemon");
@@ -267,6 +316,18 @@ int main(int argc, char *argv[])
         "Manage the package catalogs this session pulls from");
     auto* keySub           = app.add_subcommand("key",
         "Manage trusted package-signing keys");
+    // Declared so `--help` lists them; their verbs are collapsed in argv by
+    // normalizeGroupVerbs before CLI11 ever sees them, so reaching these
+    // means the user typed a group with a missing or unknown verb.
+    auto* moduleGroupSub   = app.add_subcommand("module",
+        "Runtime modules: ls | show NAME | load NAME | unload NAME | reload NAME | stats");
+    auto* tokenGroupSub    = app.add_subcommand("token",
+        "Client tokens: issue --name N | ls | revoke NAME");
+    auto* clientGroupSub   = app.add_subcommand("client",
+        "Client-side configuration: config show | config set FILE");
+    moduleGroupSub->allow_extras();
+    tokenGroupSub->allow_extras();
+    clientGroupSub->allow_extras();
     // Top-level shortcuts for the two package verbs that have no
     // runtime-module meaning, so they cannot be confused with `module ...`.
     auto* installSub       = app.add_subcommand("install",
@@ -274,10 +335,20 @@ int main(int argc, char *argv[])
     auto* searchSub        = app.add_subcommand("search",
         "Alias for 'package search'");
 
+    // The hyphenated names are internal dispatch tokens, not surface: the
+    // groups above are what users type and what --help lists. Hiding them
+    // keeps a ~20-entry flat list from competing with the grouped one.
+    for (auto* sub : {loadModuleSub, unloadModuleSub, reloadModuleSub,
+                      listModulesSub, moduleInfoSub, infoSub,
+                      issueTokenSub, revokeTokenSub, listTokensSub,
+                      daemonConfigSub, clientConfigSub, stopSub}) {
+        sub->group("");
+    }
+
     // Allow extras on all client subcommands so their positional args and
     // command-specific flags pass through to the Command objects unchanged
     for (auto* sub : {statusSub, loadModuleSub, unloadModuleSub, reloadModuleSub,
-                      listModulesSub, moduleInfoSub, infoSub, callSub, moduleSub,
+                      listModulesSub, moduleInfoSub, infoSub, callSub,
                       watchSub, statsSub, stopSub,
                       issueTokenSub, revokeTokenSub, listTokensSub,
                       packageSub, catalogSub, keySub, installSub, searchSub}) {
@@ -318,7 +389,7 @@ int main(int argc, char *argv[])
             return 1;
         }
         Config::setConfigDir(absCfgPath.string());
-        setenv("LOGOSCORE_CONFIG_DIR", absCfgPath.string().c_str(), 1);
+        setenv("LOGOSCTL_CONFIG_DIR", absCfgPath.string().c_str(), 1);
     }
 
     // ── `daemon <verb>` / `client <verb>` routing ────────────────────────────
@@ -335,8 +406,8 @@ int main(int argc, char *argv[])
                 else                                          extras.push_back(r);
             }
             QCoreApplication qapp(argc, argv);
-            qapp.setApplicationName("logoscore");
-            qapp.setApplicationVersion(QString::fromStdString(logoscore_version::version()));
+            qapp.setApplicationName("logosctl");
+            qapp.setApplicationVersion(QString::fromStdString(logosctl_version::version()));
             Output output(jsonMode);
             if (humanMode) output.setHumanMode(true);
             RpcClient rpcClient;
@@ -350,13 +421,119 @@ int main(int argc, char *argv[])
 
         if (daemonConfigSub->parsed()) return runManagementCommand("daemon-config", daemonConfigSub);
         if (clientConfigSub->parsed()) return runManagementCommand("client-config", clientConfigSub);
+
+        // Reaching a bare group means normalizeGroupVerbs found no verb to
+        // collapse, i.e. the verb was missing or misspelled.
+        if (moduleGroupSub->parsed()) {
+            fprintf(stderr, "Error: usage: logosctl module "
+                            "<ls|show|load|unload|reload|stats> [name]\n");
+            return 1;
+        }
+        if (tokenGroupSub->parsed()) {
+            fprintf(stderr, "Error: usage: logosctl token "
+                            "<issue --name N|ls|revoke NAME>\n");
+            return 1;
+        }
+        if (clientGroupSub->parsed()) {
+            fprintf(stderr, "Error: usage: logosctl client config "
+                            "<show|set FILE>\n");
+            return 1;
+        }
     }
 
     // ── Daemon mode ──────────────────────────────────────────────────────────
     if (daemonFlag || daemonSub->parsed()) {
+        if (detach) {
+            // Re-exec rather than simply carrying on in the forked child.
+            // macOS refuses to let a process that has already initialised
+            // CoreFoundation (which the Qt/liblogos link pulls in before main)
+            // keep running after fork() -- it aborts with
+            // "you MUST exec()". So the child execs a fresh copy of this
+            // binary with --detach stripped, and that copy runs the daemon
+            // normally.
+            const std::string self = paths::executablePath();
+            if (self.empty()) {
+                fprintf(stderr, "Error: could not resolve own path for --detach.\n");
+                return 1;
+            }
+
+            std::vector<std::string> childArgs;
+            childArgs.push_back(self);
+            for (int i = 1; i < argc; ++i) {
+                const std::string a = argv[i];
+                if (a == "-d" || a == "--detach") continue;
+                childArgs.push_back(a);
+            }
+            // The session must be explicit in the child: it no longer shares
+            // this process's environment-derived default if the caller used
+            // --config-dir, and an inherited-but-different session would be a
+            // very confusing bug.
+            setenv("LOGOSCTL_CONFIG_DIR", Config::configDir().c_str(), 1);
+
+            const std::string statePath = Config::daemonStatePath();
+            // A stale state file from a previous run would make the readiness
+            // check pass instantly against a daemon that never started.
+            {
+                std::error_code ec;
+                std::filesystem::remove(statePath, ec);
+                std::filesystem::create_directories(Config::daemonDir(), ec);
+            }
+
+            const pid_t child = fork();
+            if (child < 0) {
+                perror("Error: could not fork for --detach");
+                return 1;
+            }
+            if (child == 0) {
+                // Between fork and exec only async-signal-safe calls are used.
+                setsid();
+                const std::string logPath = Config::daemonDir() + "/daemon.log";
+                int fd = ::open(logPath.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0600);
+                if (fd >= 0) {
+                    ::dup2(fd, STDOUT_FILENO);
+                    ::dup2(fd, STDERR_FILENO);
+                    if (fd > STDERR_FILENO) ::close(fd);
+                }
+                int devnull = ::open("/dev/null", O_RDONLY);
+                if (devnull >= 0) {
+                    ::dup2(devnull, STDIN_FILENO);
+                    if (devnull > STDERR_FILENO) ::close(devnull);
+                }
+                std::vector<char*> cargv;
+                for (auto& a : childArgs) cargv.push_back(const_cast<char*>(a.c_str()));
+                cargv.push_back(nullptr);
+                execv(self.c_str(), cargv.data());
+                _exit(127);  // exec failed
+            }
+
+            // Parent: wait for the child to publish state.json, which it
+            // writes only after every transport has bound. Returning before
+            // that would hand the caller a daemon that is not listening yet,
+            // and the very next command would race it.
+            const std::string logPath = Config::daemonDir() + "/daemon.log";
+            for (int i = 0; i < 600; ++i) {
+                std::error_code ec;
+                if (std::filesystem::exists(statePath, ec)) {
+                    fprintf(stdout, "Daemon started (pid %ld)\nLogs: %s\n",
+                            static_cast<long>(child), logPath.c_str());
+                    return 0;
+                }
+                int status = 0;
+                if (waitpid(child, &status, WNOHANG) == child) {
+                    fprintf(stderr, "Error: daemon exited during startup. See %s\n",
+                            logPath.c_str());
+                    return 1;
+                }
+                usleep(100 * 1000);
+            }
+            fprintf(stderr, "Error: daemon did not become ready in 60s. See %s\n",
+                    logPath.c_str());
+            return 1;
+        }
+
         QCoreApplication qapp(argc, argv);
-        qapp.setApplicationName("logoscore");
-        qapp.setApplicationVersion(QString::fromStdString(logoscore_version::version()));
+        qapp.setApplicationName("logosctl");
+        qapp.setApplicationVersion(QString::fromStdString(logosctl_version::version()));
 
         // Plaintext-TCP guard: a `tcp` listener on a non-loopback host
         // sends tokens in cleartext. Refuse to start unless the
@@ -378,7 +555,7 @@ int main(int argc, char *argv[])
         }
 
         // Make sure the well-known modules at least *have* an entry,
-        // so a bare `logoscore -D` (no transport flags) still boots
+        // so a bare `logosctl daemon start` (no transport flags) still boots
         // with listeners. The local-prepend below populates them.
         for (const std::string& wellKnown : {"core_service", "capability_module"}) {
             (void)mergedCfg.modules[wellKnown];  // default-construct empty
@@ -468,7 +645,6 @@ int main(int argc, char *argv[])
         {moduleInfoSub,   "module-info"},
         {infoSub,         "info"},
         {callSub,         "call"},
-        {moduleSub,       "module"},
         {watchSub,        "watch"},
         {statsSub,        "stats"},
         {stopSub,         "stop"},
@@ -487,8 +663,8 @@ int main(int argc, char *argv[])
             continue;
 
         QCoreApplication qapp(argc, argv);
-        qapp.setApplicationName("logoscore");
-        qapp.setApplicationVersion(QString::fromStdString(logoscore_version::version()));
+        qapp.setApplicationName("logosctl");
+        qapp.setApplicationVersion(QString::fromStdString(logosctl_version::version()));
 
         // Collect remaining args from the subcommand, extracting global flags
         // (global flags placed after the subcommand end up in remaining())
@@ -507,7 +683,7 @@ int main(int argc, char *argv[])
         }
 
         // Top-level aliases are the same command with its subcommand
-        // pre-supplied: `logoscore install X` is `logoscore package install X`.
+        // pre-supplied: `logosctl install X` is `logosctl package install X`.
         // Only verbs with no runtime-module meaning are aliased this way —
         // `ls`/`show`/`info` would be ambiguous between a package and a
         // loaded module, so they stay inside their groups.
@@ -525,7 +701,7 @@ int main(int argc, char *argv[])
         auto cmd = createCommand(commandName, rpcClient, output);
         if (!cmd) {
             output.printError("INVALID_ARGS",
-                              "Unknown command: " + name + ". Run 'logoscore --help' for usage.");
+                              "Unknown command: " + name + ". Run 'logosctl --help' for usage.");
             return 1;
         }
 

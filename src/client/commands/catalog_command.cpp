@@ -14,7 +14,7 @@ int CatalogCommand::execute(const std::vector<std::string>& args)
 {
     if (args.empty()) {
         output().printError("INVALID_ARGS",
-            "Usage: logoscore catalog <ls|add|remove|enable|disable|refresh> [url]");
+            "Usage: logosctl catalog <ls|add|remove|enable|disable|refresh> [url]");
         return 1;
     }
 
@@ -25,7 +25,7 @@ int CatalogCommand::execute(const std::vector<std::string>& args)
                            sub == "enable" || sub == "disable");
     if (needsUrl && url.empty()) {
         output().printError("INVALID_ARGS",
-            "Usage: logoscore catalog " + sub + " <url>");
+            "Usage: logosctl catalog " + sub + " <url>");
         return 1;
     }
 
@@ -97,7 +97,7 @@ int KeyCommand::execute(const std::vector<std::string>& args)
 {
     if (args.empty()) {
         output().printError("INVALID_ARGS",
-            "Usage: logoscore key <ls|add|remove> ...");
+            "Usage: logosctl key <ls|add|remove> ...");
         return 1;
     }
 
@@ -138,7 +138,7 @@ int KeyCommand::execute(const std::vector<std::string>& args)
         }
         if (keyName.empty() || did.empty()) {
             output().printError("INVALID_ARGS",
-                "Usage: logoscore key add <name> --did <did:jwk:...> "
+                "Usage: logosctl key add <name> --did <did:jwk:...> "
                 "[--display-name N] [--url U]");
             return 1;
         }
@@ -161,7 +161,7 @@ int KeyCommand::execute(const std::vector<std::string>& args)
 
     if (sub == "remove") {
         if (args.size() < 2) {
-            output().printError("INVALID_ARGS", "Usage: logoscore key remove <name>");
+            output().printError("INVALID_ARGS", "Usage: logosctl key remove <name>");
             return 1;
         }
         LogosMap r = client().callModuleMethod(kPm, "removeTrustedKey", LogosList{args[1]});

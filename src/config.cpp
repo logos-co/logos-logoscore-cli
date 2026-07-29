@@ -19,19 +19,19 @@ void Config::setConfigDir(const std::string& path)
 
 std::string Config::configDir()
 {
-    // Precedence: explicit setter (from --config-dir) → LOGOSCORE_CONFIG_DIR
-    // env var → ~/.logoscore. Parallel logoscore instances pick distinct
+    // Precedence: explicit setter (from --config-dir) → LOGOSCTL_CONFIG_DIR
+    // env var → ~/.logosctl. Parallel logosctl instances pick distinct
     // config trees so their daemon/ and client/ subdirs don't clash.
     const std::string& override = configDirOverride();
     if (!override.empty())
         return override;
 
-    const char* envDir = std::getenv("LOGOSCORE_CONFIG_DIR");
+    const char* envDir = std::getenv("LOGOSCTL_CONFIG_DIR");
     if (envDir && *envDir)
         return std::string(envDir);
 
     const char* home = std::getenv("HOME");
-    return std::string(home ? home : "/tmp") + "/.logoscore";
+    return std::string(home ? home : "/tmp") + "/.logosctl";
 }
 
 std::string Config::daemonDir()        { return configDir() + "/daemon"; }
@@ -66,7 +66,7 @@ std::string Config::clientTokenPath(const std::string& filename)
 
 std::string Config::tokenFromEnv()
 {
-    const char* token = std::getenv("LOGOSCORE_TOKEN");
+    const char* token = std::getenv("LOGOSCTL_TOKEN");
     return token ? std::string(token) : std::string();
 }
 

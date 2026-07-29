@@ -20,7 +20,7 @@ int UnloadModuleCommand::execute(const std::vector<std::string>& args)
         cli.parse(argsCopy);
     } catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS",
-                            "Usage: logoscore unload-module <name> [--no-dependents]");
+                            "Usage: logosctl module unload <name> [--no-dependents]");
         return 1;
     }
 

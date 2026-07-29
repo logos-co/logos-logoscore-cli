@@ -20,19 +20,19 @@ protected:
     std::string testDir;
 
     void SetUp() override {
-        testDir = (fs::temp_directory_path() / ("logoscore_test_state_" + std::to_string(getpid()))).string();
-        fs::create_directories(testDir + "/.logoscore");
+        testDir = (fs::temp_directory_path() / ("logosctl_test_state_" + std::to_string(getpid()))).string();
+        fs::create_directories(testDir + "/.logosctl");
 
         // Cover all three layers Config::configDir() consults so the
-        // tests can never escape into the user's real ~/.logoscore.
+        // tests can never escape into the user's real ~/.logosctl.
         const char* home = std::getenv("HOME");
         origHome = home ? home : "";
         setenv("HOME", testDir.c_str(), 1);
 
-        const char* cd = std::getenv("LOGOSCORE_CONFIG_DIR");
+        const char* cd = std::getenv("LOGOSCTL_CONFIG_DIR");
         origConfigDirSet = cd != nullptr;
         origConfigDir = origConfigDirSet ? cd : "";
-        unsetenv("LOGOSCORE_CONFIG_DIR");
+        unsetenv("LOGOSCTL_CONFIG_DIR");
 
         Config::setConfigDir("");
     }
@@ -40,9 +40,9 @@ protected:
     void TearDown() override {
         setenv("HOME", origHome.c_str(), 1);
         if (origConfigDirSet)
-            setenv("LOGOSCORE_CONFIG_DIR", origConfigDir.c_str(), 1);
+            setenv("LOGOSCTL_CONFIG_DIR", origConfigDir.c_str(), 1);
         else
-            unsetenv("LOGOSCORE_CONFIG_DIR");
+            unsetenv("LOGOSCTL_CONFIG_DIR");
         Config::setConfigDir("");
         std::error_code ec;
         fs::remove_all(testDir, ec);
@@ -66,7 +66,7 @@ DaemonConfig sampleConfig()
 {
     DaemonConfig cfg;
     cfg.modulesDirs     = {"/path/a", "/path/b"};
-    cfg.persistencePath = "/var/lib/logoscore";
+    cfg.persistencePath = "/var/lib/logosctl";
     cfg.modules["core_service"]      = {{"local"}, {"tcp", "127.0.0.1", 6001, "", true, "json"}};
     cfg.modules["capability_module"] = {{"local"}};
     cfg.sslCert = "/etc/ssl/cert.pem";
@@ -93,7 +93,7 @@ TEST_F(DaemonStateTest, RuntimeState_RoundTripsResolvedFields)
 {
     DaemonRuntimeState s = minimalState("inst123", {"/path/a", "/path/b"});
     s.configSource = "cli";
-    s.resolved.persistencePath = "/var/lib/logoscore";
+    s.resolved.persistencePath = "/var/lib/logosctl";
     ASSERT_TRUE(DaemonRuntimeStateFile::write(s));
 
     DaemonRuntimeState got = DaemonRuntimeStateFile::read();
@@ -104,7 +104,7 @@ TEST_F(DaemonStateTest, RuntimeState_RoundTripsResolvedFields)
     EXPECT_EQ(got.configSource, "cli");
     EXPECT_EQ(got.resolved.modulesDirs.size(), 2u);
     EXPECT_EQ(got.resolved.modulesDirs[0], "/path/a");
-    EXPECT_EQ(got.resolved.persistencePath, "/var/lib/logoscore");
+    EXPECT_EQ(got.resolved.persistencePath, "/var/lib/logosctl");
     EXPECT_FALSE(got.startedAt.empty());
 }
 
@@ -181,7 +181,7 @@ TEST_F(DaemonStateTest, Config_RoundTripsEveryField)
     auto got = DaemonConfigFile::read();
     ASSERT_TRUE(got.has_value());
     EXPECT_EQ(got->modulesDirs.size(), 2u);
-    EXPECT_EQ(got->persistencePath, "/var/lib/logoscore");
+    EXPECT_EQ(got->persistencePath, "/var/lib/logosctl");
     EXPECT_EQ(got->modules.size(), 2u);
     EXPECT_EQ(got->modules.at("core_service").back().port, 6001);
     EXPECT_EQ(got->sslCert, "/etc/ssl/cert.pem");

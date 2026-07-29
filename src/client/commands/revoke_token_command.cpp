@@ -8,7 +8,7 @@
 int RevokeTokenCommand::execute(const std::vector<std::string>& args)
 {
     if (args.empty()) {
-        output().printError("INVALID_ARGS", "Usage: logoscore revoke-token NAME");
+        output().printError("INVALID_ARGS", "Usage: logosctl token revoke NAME");
         return 1;
     }
     const std::string name = args[0];

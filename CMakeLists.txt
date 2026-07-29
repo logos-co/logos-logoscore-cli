@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(LogoscoreCLI LANGUAGES CXX)
+project(LogosctlCLI LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -100,7 +100,7 @@ else()
     message(STATUS "Using system CLI11")
 endif()
 
-# ── logoscore executable ──────────────────────────────────────────────────────
+# ── logosctl executable ──────────────────────────────────────────────────────
 set(CLI_SOURCES
     src/main.cpp
     src/config.cpp
@@ -141,9 +141,9 @@ set(CLI_SOURCES
     src/core_service/package_ops.cpp
 )
 
-add_executable(logoscore ${CLI_SOURCES})
+add_executable(logosctl ${CLI_SOURCES})
 
-target_link_libraries(logoscore PRIVATE
+target_link_libraries(logosctl PRIVATE
     logos_core
     nlohmann_json::nlohmann_json
     stduuid
@@ -157,9 +157,9 @@ target_link_libraries(logoscore PRIVATE
 
 # Link the SDK stack (provides LogosProviderObject, bridge helpers,
 # logos::transportSetToJsonString, and other symbols needed by core_service).
-target_link_libraries(logoscore PRIVATE logos-qt-sdk::logos_qt_sdk)
+target_link_libraries(logosctl PRIVATE logos-qt-sdk::logos_qt_sdk)
 
-target_include_directories(logoscore PRIVATE
+target_include_directories(logosctl PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${LOGOS_CPP_SDK_ROOT}/include/cpp
     ${LOGOS_QT_SDK_ROOT}/include
@@ -178,11 +178,11 @@ if(APPLE)
         list(APPEND _rpath "${_qt_lib_dir}")
     endif()
     list(REMOVE_DUPLICATES _rpath)
-    set_target_properties(logoscore PROPERTIES
+    set_target_properties(logosctl PROPERTIES
         INSTALL_RPATH "${_rpath}"
         BUILD_WITH_INSTALL_RPATH TRUE)
 else()
-    set_target_properties(logoscore PROPERTIES
+    set_target_properties(logosctl PROPERTIES
         INSTALL_RPATH "$ORIGIN/../lib"
         BUILD_WITH_INSTALL_RPATH TRUE)
 endif()
@@ -207,6 +207,6 @@ include(GoogleTest)
 add_subdirectory(tests)
 
 # ── Install ───────────────────────────────────────────────────────────────────
-install(TARGETS logoscore
+install(TARGETS logosctl
     RUNTIME DESTINATION bin
 )

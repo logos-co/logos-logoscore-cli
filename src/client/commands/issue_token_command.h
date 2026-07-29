@@ -3,7 +3,7 @@
 
 #include "command.h"
 
-// `logoscore issue-token --name NAME [--replace]`
+// `logosctl token issue --name NAME [--replace]`
 //
 // Operates directly on $CONFIG_DIR — doesn't require a running daemon.
 // Adds {name → hashed_token} to daemon/tokens.json and writes
