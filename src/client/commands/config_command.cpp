@@ -91,7 +91,7 @@ int ConfigCommand::set(const std::vector<std::string>& args)
     {
         static const std::set<std::string> kDaemonKeys{
             "version", "modules", "modules_dirs", "persistence_path", "ssl",
-            "insecure_tcp", "access_policy", "access_group", "dirs",
+            "insecure_tcp", "access_policy", "access_group", "dirs", "logging",
             "signature_policy",
         };
         static const std::set<std::string> kClientKeys{

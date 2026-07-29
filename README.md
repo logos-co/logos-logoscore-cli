@@ -131,6 +131,7 @@ picks which one (default `~/.logosctl`, also `LOGOSCTL_CONFIG_DIR`):
 ├── modules/            # core modules installed into this session
 ├── plugins/            # UI plugins installed into this session
 ├── keyring/            # trusted package-signing keys
+├── logs/               # daemon.log, rotated
 ├── cache/downloads/    # fetched .lgx
 └── data/               # per-module persistence
 ```
@@ -149,6 +150,7 @@ dirs:
   modules: /opt/logos/modules             # a tree something else manages
   plugins: plugins-custom                 # relative -> stays inside the session
   data: /var/lib/logos/data
+  logs: /var/log/logos                    # ship logs where your collector looks
 ```
 
 How a value is written decides whether portability survives:
@@ -178,8 +180,34 @@ logosctl daemon stop
 
 `--detach` is not the same as `&`: backgrounding returns immediately, before the
 transports have bound, so the next command races the boot. `--detach` returns
-only after the daemon has published `daemon/state.json`, and sends the daemon's
-output to `daemon/daemon.log`.
+only after the daemon has published `daemon/state.json`, and tells you where it
+is logging.
+
+#### Logs
+
+Everything the daemon and its module subprocesses write goes to a rotating file
+under `logs/`:
+
+```yaml
+logging:
+  enabled: true          # false -> no log file at all
+  file: daemon.log       # inside dirs.logs
+  max_size_mb: 10        # rotate past this; 0 = never rotate
+  max_files: 5           # keep this many in total, oldest dropped
+  console: true          # mirror to the terminal (ignored once detached)
+```
+
+Capture is **pipe-based**, not a file redirect, and that is the point: module
+hosts are separate processes holding inherited descriptors. Redirecting to a
+file would catch their output but make rotation impossible — renaming a file out
+from under a child that has it open just keeps filling the old inode. A pipe
+puts one reader in charge, so rotation is safe *and* subprocess output still
+lands in the log.
+
+The size cap and retention come from [spdlog](https://github.com/gabime/spdlog)'s
+rotating sink, which liblogos already logs through. Lines arriving from the pipe
+already carry their own timestamp and level, so they are written verbatim rather
+than stamped twice.
 
 #### Configuration
 

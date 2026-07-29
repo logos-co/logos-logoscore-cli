@@ -52,12 +52,27 @@ struct SessionDirs {
     std::string keyring;
     std::string data;
     std::string cache;
+    std::string logs;
+};
+
+// Daemon log file settings. Capture is pipe-based so module subprocesses are
+// included; see src/daemon/log_sink.h.
+struct LoggingConfig {
+    bool        enabled   = true;
+    std::string file      = "daemon.log";
+    // Rotate past this size, keeping maxFiles in total. 0 = never rotate.
+    std::size_t maxSizeMb = 10;
+    std::size_t maxFiles  = 5;
+    // Mirror to the terminal too. Ignored once detached, where the original
+    // stdout is /dev/null.
+    bool console = true;
 };
 
 struct DaemonConfig {
     std::vector<std::string> modulesDirs;
     std::string              persistencePath;
     SessionDirs              dirs;
+    LoggingConfig            logging;
     // Per-module advertised transport set. Built from
     // `--module-transport` CLI flags (and the previous-launch config
     // when present). `core_service` and `capability_module` always

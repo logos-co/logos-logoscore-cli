@@ -185,6 +185,7 @@
               pkgs.gtest
               pkgs.fmt
               pkgs.yaml-cpp
+              pkgs.spdlog
             ];
 
             cmakeFlags = [
@@ -295,6 +296,7 @@
               pkgs.gtest
               pkgs.fmt
               pkgs.yaml-cpp
+              pkgs.spdlog
               liblogosLib
               # cppSdk propagates Boost, OpenSSL, nlohmann_json (but
               # not Qt) via its symlinkJoin's propagatedBuildInputs —
@@ -407,6 +409,7 @@
               pkgs.cli11
               pkgs.fmt
               pkgs.yaml-cpp
+              pkgs.spdlog
             ];
 
             cmakeFlags = [
@@ -566,6 +569,7 @@
             pkgs.gtest
             pkgs.fmt
             pkgs.yaml-cpp
+              pkgs.spdlog
           ];
           shellHook = ''
             export LOGOS_LIBLOGOS_ROOT="${liblogos}"

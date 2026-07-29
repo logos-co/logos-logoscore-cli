@@ -7,6 +7,7 @@ set(TEST_LIB_SOURCES
     ${CMAKE_SOURCE_DIR}/src/daemon/daemon_state.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/port_allocator.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/token_store.cpp
+    ${CMAKE_SOURCE_DIR}/src/daemon/log_sink.cpp
     ${CMAKE_SOURCE_DIR}/src/client/client_state.cpp
     ${CMAKE_SOURCE_DIR}/src/client/output.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/command.cpp
@@ -41,11 +42,13 @@ target_link_libraries(logosctl_testlib PUBLIC
     OpenSSL::Crypto
     fmt::fmt
     yaml-cpp::yaml-cpp
+    spdlog::spdlog
 )
 
 # Unit tests
 add_executable(unit_tests
     test_config.cpp
+    test_log_sink.cpp
     test_daemon_state.cpp
     test_output.cpp
     test_commands.cpp

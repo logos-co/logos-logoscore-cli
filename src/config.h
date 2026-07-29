@@ -66,11 +66,12 @@ public:
     static std::string keyringDir();   // <configDir>/keyring
     static std::string dataDir();      // <configDir>/data   (module persistence)
     static std::string cacheDir();     // <configDir>/cache  (downloaded .lgx)
+    static std::string logsDir();      // <configDir>/logs   (daemon log files)
 
     // Redirect one of the above. An empty value clears the override. Applied
     // by the daemon once it has read the config; `~` and relative paths are
     // resolved here so every caller sees a final absolute path.
-    enum class SessionDir { Modules, Plugins, Keyring, Data, Cache };
+    enum class SessionDir { Modules, Plugins, Keyring, Data, Cache, Logs };
     static void setSessionDirOverride(SessionDir which, const std::string& path);
 
     // Override the config dir for the lifetime of the process. Called from main

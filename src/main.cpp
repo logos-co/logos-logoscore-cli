@@ -491,16 +491,15 @@ int main(int argc, char *argv[])
             if (child == 0) {
                 // Between fork and exec only async-signal-safe calls are used.
                 setsid();
-                const std::string logPath = Config::daemonDir() + "/daemon.log";
-                int fd = ::open(logPath.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0600);
-                if (fd >= 0) {
-                    ::dup2(fd, STDOUT_FILENO);
-                    ::dup2(fd, STDERR_FILENO);
-                    if (fd > STDERR_FILENO) ::close(fd);
-                }
-                int devnull = ::open("/dev/null", O_RDONLY);
+                // Detach stdio from the inherited terminal. The log file
+                // itself is the daemon's business -- LogSink opens it from
+                // the config, with rotation and retention -- so there is
+                // nothing to redirect to here.
+                int devnull = ::open("/dev/null", O_RDWR);
                 if (devnull >= 0) {
                     ::dup2(devnull, STDIN_FILENO);
+                    ::dup2(devnull, STDOUT_FILENO);
+                    ::dup2(devnull, STDERR_FILENO);
                     if (devnull > STDERR_FILENO) ::close(devnull);
                 }
                 std::vector<char*> cargv;
@@ -514,7 +513,28 @@ int main(int argc, char *argv[])
             // writes only after every transport has bound. Returning before
             // that would hand the caller a daemon that is not listening yet,
             // and the very next command would race it.
-            const std::string logPath = Config::daemonDir() + "/daemon.log";
+            // Resolve where the child will actually log by reading the same
+            // config it will read. The parent prints this before the child has
+            // booted, so guessing the default would report the wrong path to
+            // anyone who redirected dirs.logs or renamed logging.file.
+            std::string logPath;
+            {
+                LoggingConfig lg;
+                SessionDirs   sd;
+                if (auto disk = DaemonConfigFile::read()) {
+                    lg = disk->logging;
+                    sd = disk->dirs;
+                }
+                if (!lg.enabled) {
+                    logPath = "(file logging disabled)";
+                } else {
+                    Config::setSessionDirOverride(Config::SessionDir::Logs, sd.logs);
+                    logPath = Config::logsDir() + "/" + lg.file;
+                    // Leave no override behind: the child re-applies it from
+                    // config, and the parent is about to exit anyway.
+                    Config::setSessionDirOverride(Config::SessionDir::Logs, "");
+                }
+            }
             for (int i = 0; i < 600; ++i) {
                 std::error_code ec;
                 if (std::filesystem::exists(statePath, ec)) {
@@ -524,8 +544,8 @@ int main(int argc, char *argv[])
                 }
                 int status = 0;
                 if (waitpid(child, &status, WNOHANG) == child) {
-                    fprintf(stderr, "Error: daemon exited during startup. See %s\n",
-                            logPath.c_str());
+                    fprintf(stderr, "Error: daemon exited during startup. "
+                                    "See %s\n", logPath.c_str());
                     return 1;
                 }
                 usleep(100 * 1000);

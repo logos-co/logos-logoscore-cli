@@ -2,6 +2,7 @@
 #include "daemon_state.h"
 #include "port_allocator.h"
 #include "token_store.h"
+#include "log_sink.h"
 #include "../config.h"
 #include "../paths.h"
 #include "logos_core.h"
@@ -240,6 +241,27 @@ int Daemon::start(int argc, char* argv[],
     Config::setSessionDirOverride(Config::SessionDir::Keyring, cfg.dirs.keyring);
     Config::setSessionDirOverride(Config::SessionDir::Data,    cfg.dirs.data);
     Config::setSessionDirOverride(Config::SessionDir::Cache,   cfg.dirs.cache);
+    Config::setSessionDirOverride(Config::SessionDir::Logs,    cfg.dirs.logs);
+
+    // Start capturing before anything else runs, so the log holds the whole
+    // boot -- including a failure during it, which is exactly when the log is
+    // worth having. Non-fatal: a daemon that cannot write a log file is still
+    // a working daemon.
+    {
+        LogSink::Options lo;
+        lo.enabled   = cfg.logging.enabled;
+        lo.dir       = Config::logsDir();
+        lo.file      = cfg.logging.file;
+        lo.maxSizeMb = cfg.logging.maxSizeMb;
+        lo.maxFiles  = cfg.logging.maxFiles;
+        // Detached, the "terminal" is /dev/null, so mirroring is wasted work.
+        lo.console   = cfg.logging.console && ::isatty(fileno(stdout));
+        if (cfg.logging.enabled && !LogSink::instance().start(lo)) {
+            fprintf(stderr, "Warning: could not open the log file under %s; "
+                            "continuing without file logging.\n",
+                    lo.dir.c_str());
+        }
+    }
     const auto& moduleTransports = cfg.modules;
     // 1. Generate instance ID BEFORE core init, so logos_host inherits it
     std::random_device rd;
@@ -604,6 +626,7 @@ int Daemon::start(int argc, char* argv[],
     fflush(stdout);
 
     logos_core_cleanup();
+    LogSink::instance().stop();
     DaemonRuntimeStateFile::remove();
 
     delete coreServiceImpl;

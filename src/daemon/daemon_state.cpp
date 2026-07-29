@@ -116,7 +116,16 @@ json daemonConfigToJson(const DaemonConfig& cfg)
     if (!cfg.dirs.keyring.empty()) dirsObj["keyring"] = cfg.dirs.keyring;
     if (!cfg.dirs.data.empty())    dirsObj["data"]    = cfg.dirs.data;
     if (!cfg.dirs.cache.empty())   dirsObj["cache"]   = cfg.dirs.cache;
+    if (!cfg.dirs.logs.empty())    dirsObj["logs"]    = cfg.dirs.logs;
     if (!dirsObj.empty()) obj["dirs"] = std::move(dirsObj);
+
+    json logObj = json::object();
+    logObj["enabled"]     = cfg.logging.enabled;
+    logObj["file"]        = cfg.logging.file;
+    logObj["max_size_mb"] = cfg.logging.maxSizeMb;
+    logObj["max_files"]   = cfg.logging.maxFiles;
+    logObj["console"]     = cfg.logging.console;
+    obj["logging"] = std::move(logObj);
 
     obj["insecure_tcp"] = cfg.insecureTcp;
     if (!cfg.accessPolicy.empty()) obj["access_policy"] = cfg.accessPolicy;
@@ -190,10 +199,20 @@ std::optional<DaemonConfig> daemonConfigFromJson(const json& obj)
         cfg.dirs.keyring = d.value("keyring", std::string{});
         cfg.dirs.data    = d.value("data",    std::string{});
         cfg.dirs.cache   = d.value("cache",   std::string{});
+        cfg.dirs.logs    = d.value("logs",    std::string{});
     }
     // persistence_path is the older spelling of dirs.data and still works;
     // dirs.data wins when both are set.
     if (cfg.dirs.data.empty()) cfg.dirs.data = cfg.persistencePath;
+
+    if (obj.contains("logging") && obj["logging"].is_object()) {
+        const auto& l = obj["logging"];
+        cfg.logging.enabled   = l.value("enabled", true);
+        cfg.logging.file      = l.value("file", std::string{"daemon.log"});
+        cfg.logging.maxSizeMb = l.value("max_size_mb", std::size_t{10});
+        cfg.logging.maxFiles  = l.value("max_files",   std::size_t{5});
+        cfg.logging.console   = l.value("console", true);
+    }
 
     cfg.insecureTcp = obj.value("insecure_tcp", false);
     cfg.accessPolicy = obj.value("access_policy", std::string{});

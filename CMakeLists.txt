@@ -81,6 +81,11 @@ else()
     message(STATUS "Using system fmt")
 endif()
 
+# ── spdlog ───────────────────────────────────────────────────────────────────
+# Its rotating file sink already implements the size cap and keep-N retention
+# the daemon log needs, and liblogos logs through spdlog anyway.
+find_package(spdlog REQUIRED)
+
 # ── yaml-cpp ─────────────────────────────────────────────────────────────────
 # The user-editable config files are YAML; everything machine-owned
 # (state.json, tokens.json, the auto token) stays JSON. See src/yaml_json.h.
@@ -111,6 +116,7 @@ set(SHARED_SOURCES
     src/daemon/daemon_state.cpp
     src/daemon/port_allocator.cpp
     src/daemon/token_store.cpp
+    src/daemon/log_sink.cpp
 
     # Client path
     src/client/client.cpp
@@ -156,6 +162,7 @@ target_link_libraries(${_tgt} PRIVATE
     OpenSSL::Crypto
     fmt::fmt
     yaml-cpp::yaml-cpp
+    spdlog::spdlog
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::RemoteObjects
 )
