@@ -162,6 +162,32 @@ LogosMap RpcClient::refreshModules()
                     {"message", "refreshModules() RPC call failed."}};
 }
 
+// ---------------------------------------------------------------------------
+// Package operations — delegate to core_service
+// ---------------------------------------------------------------------------
+
+LogosMap RpcClient::planPackageOperation(const std::string& op, const LogosList& names,
+                                          const LogosMap& opts)
+{
+    nlohmann::json ret = d->invoke("planPackageOperation",
+                                   nlohmann::json::array({op, names, opts}));
+    if (ret.is_object()) return ret;
+    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
+                    {"message", fmt::format("planPackageOperation('{}') RPC call failed.", op)}};
+}
+
+LogosMap RpcClient::applyPackageOperation(const std::string& op, const LogosList& names,
+                                           const LogosMap& opts)
+{
+    // Installs pull from the network and can take minutes on a cold catalog;
+    // the default RPC deadline is far too short for that.
+    nlohmann::json ret = d->invoke("applyPackageOperation",
+                                   nlohmann::json::array({op, names, opts}));
+    if (ret.is_object()) return ret;
+    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
+                    {"message", fmt::format("applyPackageOperation('{}') RPC call failed.", op)}};
+}
+
 LogosMap RpcClient::reloadModule(const std::string& name)
 {
     nlohmann::json ret = d->invoke("reloadModule", nlohmann::json::array({name}));

@@ -125,10 +125,13 @@ set(CLI_SOURCES
     src/client/commands/issue_token_command.cpp
     src/client/commands/revoke_token_command.cpp
     src/client/commands/list_tokens_command.cpp
+    src/client/commands/package_command.cpp
+    src/client/commands/catalog_command.cpp
 
     # Core service (in-process daemon module)
     src/core_service/core_service_impl.cpp
     src/core_service/core_service_dispatch.cpp
+    src/core_service/package_ops.cpp
 )
 
 add_executable(logoscore ${CLI_SOURCES})

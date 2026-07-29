@@ -22,6 +22,8 @@ set(TEST_LIB_SOURCES
     ${CMAKE_SOURCE_DIR}/src/client/commands/issue_token_command.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/revoke_token_command.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/list_tokens_command.cpp
+    ${CMAKE_SOURCE_DIR}/src/client/commands/package_command.cpp
+    ${CMAKE_SOURCE_DIR}/src/client/commands/catalog_command.cpp
 )
 
 add_library(logoscore_testlib STATIC ${TEST_LIB_SOURCES})

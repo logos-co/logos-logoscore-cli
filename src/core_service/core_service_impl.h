@@ -27,6 +27,17 @@ public:
     // `install` be followed by `load` in the same session.
     LogosMap refreshModules();
 
+    // Package operations. Split into plan/apply so the client can show what
+    // would change (and prompt) before anything is written — `--dry-run`
+    // stops after the plan. See package_ops.h for why the work happens here
+    // rather than in the client.
+    LogosMap planPackageOperation(const std::string& op,
+                                  const LogosList& names,
+                                  const LogosMap& opts);
+    LogosMap applyPackageOperation(const std::string& op,
+                                   const LogosList& names,
+                                   const LogosMap& opts);
+
     // Queries
     LogosList listModules(const std::string& filter);
     LogosMap getStatus();

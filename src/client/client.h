@@ -27,6 +27,16 @@ public:
     // Re-scan the daemon's module directories after an install.
     virtual LogosMap refreshModules() = 0;
 
+    // Package operations. Split so the client can show what would change and
+    // prompt before anything is written; the work itself happens daemon-side
+    // (see src/core_service/package_ops.h).
+    virtual LogosMap planPackageOperation(const std::string& op,
+                                          const LogosList& names,
+                                          const LogosMap& opts) = 0;
+    virtual LogosMap applyPackageOperation(const std::string& op,
+                                           const LogosList& names,
+                                           const LogosMap& opts) = 0;
+
     // Queries
     virtual LogosList listModules(const std::string& filter) = 0;
     virtual LogosMap getStatus() = 0;
@@ -62,6 +72,10 @@ public:
     LogosMap unloadModule(const std::string& name, bool withDependents) override;
     LogosMap reloadModule(const std::string& name) override;
     LogosMap refreshModules() override;
+    LogosMap planPackageOperation(const std::string& op, const LogosList& names,
+                                  const LogosMap& opts) override;
+    LogosMap applyPackageOperation(const std::string& op, const LogosList& names,
+                                   const LogosMap& opts) override;
     LogosList listModules(const std::string& filter) override;
     LogosMap getStatus() override;
     LogosMap getModuleInfo(const std::string& name) override;

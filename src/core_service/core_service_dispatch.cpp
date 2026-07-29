@@ -83,6 +83,12 @@ nlohmann::json CoreServiceImpl::callMethodStd(const std::string& methodName,
     if (methodName == "refreshModules")
         return refreshModules();
 
+    if (methodName == "planPackageOperation" && args.size() >= 3)
+        return planPackageOperation(args[0].get<std::string>(), args[1], args[2]);
+
+    if (methodName == "applyPackageOperation" && args.size() >= 3)
+        return applyPackageOperation(args[0].get<std::string>(), args[1], args[2]);
+
     if (methodName == "listModules") {
         std::string filter = args.size() >= 1 ? args[0].get<std::string>() : "all";
         return listModules(filter);
@@ -165,6 +171,18 @@ std::vector<LogosMethodMetadata> CoreServiceImpl::getMethodsStd()
 
     mkMethod("refreshModules",
              nlohmann::json::array(),
+             "LogosMap");
+
+    mkMethod("planPackageOperation",
+             nlohmann::json::array({mkParam("op", "string"),
+                                    mkParam("names", "LogosList"),
+                                    mkParam("opts", "LogosMap")}),
+             "LogosMap");
+
+    mkMethod("applyPackageOperation",
+             nlohmann::json::array({mkParam("op", "string"),
+                                    mkParam("names", "LogosList"),
+                                    mkParam("opts", "LogosMap")}),
              "LogosMap");
 
     mkMethod("listModules",

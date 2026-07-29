@@ -1,4 +1,5 @@
 #include "core_service_impl.h"
+#include "package_ops.h"
 #include "logos_core.h"
 #include <logos_api.h>
 #include <logos_api_client.h>
@@ -169,6 +170,64 @@ StdLogosResult CoreServiceImpl::unloadModule(const std::string& name, bool withD
     result["module"] = name;
     result["dependents_unloaded"] = dependentsUnloaded;
     return {true, result};
+}
+
+namespace {
+
+// Translate the wire shape into package_ops::Options.
+package_ops::Options toOptions(const LogosMap& opts)
+{
+    package_ops::Options o;
+    o.withDeps       = opts.value("withDeps", true);
+    o.withDependents = opts.value("withDependents", true);
+    o.version        = opts.value("version", std::string{});
+    o.rootHash       = opts.value("rootHash", std::string{});
+    o.catalog        = opts.value("catalog", std::string{});
+    if (opts.contains("localFiles") && opts["localFiles"].is_array()) {
+        for (const auto& f : opts["localFiles"])
+            o.localFiles.push_back(f.get<std::string>());
+    }
+    return o;
+}
+
+std::optional<package_ops::Op> toOp(const std::string& op)
+{
+    if (op == "install") return package_ops::Op::Install;
+    if (op == "upgrade") return package_ops::Op::Upgrade;
+    if (op == "remove")  return package_ops::Op::Remove;
+    return std::nullopt;
+}
+
+std::vector<std::string> toNames(const LogosList& names)
+{
+    std::vector<std::string> out;
+    if (names.is_array())
+        for (const auto& n : names) out.push_back(n.get<std::string>());
+    return out;
+}
+
+} // namespace
+
+LogosMap CoreServiceImpl::planPackageOperation(const std::string& op,
+                                               const LogosList& names,
+                                               const LogosMap& opts)
+{
+    auto parsed = toOp(op);
+    if (!parsed)
+        return LogosMap{{"status", "error"}, {"code", "INVALID_ARGS"},
+                        {"message", "Unknown package operation: " + op}};
+    return package_ops::plan(m_api, *parsed, toNames(names), toOptions(opts));
+}
+
+LogosMap CoreServiceImpl::applyPackageOperation(const std::string& op,
+                                                const LogosList& names,
+                                                const LogosMap& opts)
+{
+    auto parsed = toOp(op);
+    if (!parsed)
+        return LogosMap{{"status", "error"}, {"code", "INVALID_ARGS"},
+                        {"message", "Unknown package operation: " + op}};
+    return package_ops::apply(m_api, *parsed, toNames(names), toOptions(opts));
 }
 
 LogosMap CoreServiceImpl::refreshModules()

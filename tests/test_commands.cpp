@@ -27,10 +27,16 @@ public:
     LogosMap  callMethodResult;
     LogosMap  shutdownResult;
     LogosMap  refreshModulesResult;
+    LogosMap  planPackageResult;
+    LogosMap  applyPackageResult;
 
     // Track calls
     bool shutdownCalled = false;
     bool refreshModulesCalled = false;
+    bool applyPackageCalled = false;
+    std::string lastPackageOp;
+    LogosList   lastPackageNames;
+    LogosMap    lastPackageOpts;
     std::string lastLoadedModule;
     std::string lastUnloadedModule;
     // Defaults to true so a test that never sets --no-dependents still sees
@@ -69,6 +75,23 @@ public:
     LogosMap refreshModules() override {
         refreshModulesCalled = true;
         return refreshModulesResult;
+    }
+
+    LogosMap planPackageOperation(const std::string& op, const LogosList& names,
+                                  const LogosMap& opts) override {
+        lastPackageOp = op;
+        lastPackageNames = names;
+        lastPackageOpts = opts;
+        return planPackageResult;
+    }
+
+    LogosMap applyPackageOperation(const std::string& op, const LogosList& names,
+                                   const LogosMap& opts) override {
+        lastPackageOp = op;
+        lastPackageNames = names;
+        lastPackageOpts = opts;
+        applyPackageCalled = true;
+        return applyPackageResult;
     }
 
     LogosMap reloadModule(const std::string& name) override {

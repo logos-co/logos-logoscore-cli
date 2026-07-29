@@ -315,12 +315,29 @@ int main(int argc, char *argv[])
     auto* listTokensSub    = app.add_subcommand("list-tokens",
         "List the names of issued client tokens");
 
+    // Package management. These are client commands like any other: they RPC
+    // into the bundled package_manager / package_downloader modules, so they
+    // need a running daemon.
+    auto* packageSub       = app.add_subcommand("package",
+        "Install, remove and inspect packages");
+    auto* catalogSub       = app.add_subcommand("catalog",
+        "Manage the package catalogs this session pulls from");
+    auto* keySub           = app.add_subcommand("key",
+        "Manage trusted package-signing keys");
+    // Top-level shortcuts for the two package verbs that have no
+    // runtime-module meaning, so they cannot be confused with `module ...`.
+    auto* installSub       = app.add_subcommand("install",
+        "Alias for 'package install'");
+    auto* searchSub        = app.add_subcommand("search",
+        "Alias for 'package search'");
+
     // Allow extras on all client subcommands so their positional args and
     // command-specific flags pass through to the Command objects unchanged
     for (auto* sub : {statusSub, loadModuleSub, unloadModuleSub, reloadModuleSub,
                       listModulesSub, moduleInfoSub, infoSub, callSub, moduleSub,
                       watchSub, statsSub, stopSub,
-                      issueTokenSub, revokeTokenSub, listTokensSub}) {
+                      issueTokenSub, revokeTokenSub, listTokensSub,
+                      packageSub, catalogSub, keySub, installSub, searchSub}) {
         sub->allow_extras();
     }
 
@@ -770,6 +787,11 @@ int main(int argc, char *argv[])
         {issueTokenSub,   "issue-token"},
         {revokeTokenSub,  "revoke-token"},
         {listTokensSub,   "list-tokens"},
+        {packageSub,      "package"},
+        {catalogSub,      "catalog"},
+        {keySub,          "key"},
+        {installSub,      "install"},
+        {searchSub,       "search"},
     };
 
     for (auto& [sub, name] : clientSubs) {
@@ -799,12 +821,23 @@ int main(int argc, char *argv[])
             }
         }
 
+        // Top-level aliases are the same command with its subcommand
+        // pre-supplied: `logoscore install X` is `logoscore package install X`.
+        // Only verbs with no runtime-module meaning are aliased this way —
+        // `ls`/`show`/`info` would be ambiguous between a package and a
+        // loaded module, so they stay inside their groups.
+        std::string commandName = name;
+        if (name == "install" || name == "search") {
+            cmdArgs.insert(cmdArgs.begin(), name);
+            commandName = "package";
+        }
+
         Output output(jsonMode);
         if (humanMode)
             output.setHumanMode(true);
         RpcClient rpcClient;
 
-        auto cmd = createCommand(name, rpcClient, output);
+        auto cmd = createCommand(commandName, rpcClient, output);
         if (!cmd) {
             output.printError("INVALID_ARGS",
                               "Unknown command: " + name + ". Run 'logoscore --help' for usage.");
