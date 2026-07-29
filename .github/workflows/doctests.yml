@@ -1,7 +1,8 @@
-name: logosctl Doc-Tests
+name: Doc-Tests
 
-# Runs the executable logosctl doc-tests (everything under doctests/*.test.yaml)
-# end-to-end via the shared doctest CLI: builds logosctl from the published
+# Runs every executable doc-test under doctests/*.test.yaml end-to-end via the
+# shared doctest CLI -- both the logoscore specs and the logosctl ones, since
+# this repo ships both binaries. Builds them from the published
 # flake, starts the daemon, loads a module, calls methods, exercises the TCP /
 # TCP+TLS transports, and asserts on output. Every spec is run back-to-back into
 # a single HTML report (each spec is its own dropdown entry).
@@ -36,7 +37,7 @@ concurrency:
 
 jobs:
   doctests:
-    name: logosctl doc-tests (${{ matrix.os }})
+    name: doc-tests (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -88,7 +89,7 @@ jobs:
       # commit under test, so `github:logos-co/logos-logoscore-cli{release}` in
       # the spec becomes `.../<sha>` — the doc-test exercises this PR/push rather
       # than master. Every other repo URL still resolves to latest.
-      - name: Run logosctl doc-tests
+      - name: Run doc-tests
         shell: bash
         run: |
           # Run every doctests/*.test.yaml back-to-back into one report; each
@@ -106,7 +107,7 @@ jobs:
             --verbose \
             --continue-on-fail \
             --release-for logos-logoscore-cli=${{ steps.commit.outputs.sha }} \
-            --report "${{ runner.temp }}/logosctl-doctest-report.html"
+            --report "${{ runner.temp }}/doctest-report.html"
 
       - name: Stage report for upload
         if: always()
@@ -114,8 +115,8 @@ jobs:
         run: |
           mkdir -p report-out
           # Name it index.html so the published directory URL renders directly.
-          if [ -f "${{ runner.temp }}/logosctl-doctest-report.html" ]; then
-            cp "${{ runner.temp }}/logosctl-doctest-report.html" report-out/index.html
+          if [ -f "${{ runner.temp }}/doctest-report.html" ]; then
+            cp "${{ runner.temp }}/doctest-report.html" report-out/index.html
           else
             echo "<h1>No report produced</h1>" > report-out/index.html
           fi
@@ -124,7 +125,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: logosctl-doctest-report-${{ matrix.os }}
+          name: doctest-report-${{ matrix.os }}
           path: report-out/index.html
           if-no-files-found: warn
 
@@ -181,7 +182,7 @@ jobs:
           mkdir -p "site/$BASE"
           found=""
           for os in ubuntu-latest macos-latest; do
-            src="artifacts/logosctl-doctest-report-$os/index.html"
+            src="artifacts/doctest-report-$os/index.html"
             if [ -f "$src" ]; then
               mkdir -p "site/$BASE/$os"
               cp "$src" "site/$BASE/$os/index.html"
@@ -226,7 +227,7 @@ jobs:
             const oses = "${{ steps.arrange.outputs.found }}".trim().split(/\s+/).filter(Boolean);
 
             const links = oses.map(os => `- [\`${os}\` report](${root}/${os}/)`).join("\n");
-            const marker = "<!-- logosctl-doctest-report-links -->";
+            const marker = "<!-- doctest-report-links -->";
             const body =
               `${marker}\n` +
               `### 📊 logosctl doc-test report\n\n` +

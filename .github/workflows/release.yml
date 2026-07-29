@@ -1,9 +1,19 @@
 name: Build & Release
 
-# Builds distributable logosctl artifacts and, on release/** branches, publishes
-# them as a GitHub pre-release. Modeled on logos-basecamp's build.yml.
+# Builds distributable artifacts for BOTH binaries this repo ships and, on
+# release/** branches, publishes them as one pre-release with separate,
+# clearly-named assets. Modeled on logos-basecamp's build.yml.
 #
-# Version stamping: `logosctl --version` is baked at build time from a VERSION
+#   logoscore — the tool to use. Its asset names and the binary inside its
+#               bundle are unchanged, because downstream release sets fetch it
+#               and expect `bin/logoscore`.
+#   logosctl  — the merged CLI, still being validated. Released alongside so it
+#               can be tried, never in place of logoscore.
+#
+# Each tool builds from its own flake outputs (`cli-*` vs `ctl-*`), so an asset
+# labelled logoscore contains logoscore and nothing else.
+#
+# Version stamping: `--version` is baked at build time from a VERSION
 # file at the repo root (read by flake.nix). VERSION exists only on release/**
 # branches — add it (e.g. `echo 0.2.0 > VERSION`) on the release branch and this
 # job bakes that version in. master builds fall back to `pre-release-<sha7>`,
@@ -11,7 +21,7 @@ name: Build & Release
 # always reported.
 #
 #   Linux (x86_64 + aarch64): build the AppImage, chmod +x, wrap in a tar.gz.
-#   macOS (aarch64):          build the portable cli-bundle-dir (bin/ + lib/),
+#   macOS (aarch64):          build the portable bundle dir (bin/ + lib/),
 #                             strip the Gatekeeper quarantine flag the way
 #                             Homebrew handles casks, wrap in a tar.gz.
 
@@ -26,13 +36,17 @@ on:
 jobs:
   build-appimage:
     strategy:
+      # Don't let a failure in the under-validation logosctl block a
+      # logoscore release.
+      fail-fast: false
       matrix:
-        include:
-          - arch: x86_64-linux
-            runner: ubuntu-latest
-          - arch: aarch64-linux
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
+        arch:
+          - { id: x86_64-linux, runner: ubuntu-latest }
+          - { id: aarch64-linux, runner: ubuntu-24.04-arm }
+        tool:
+          - { bin: logoscore, output: cli-appimage }
+          - { bin: logosctl, output: ctl-appimage }
+    runs-on: ${{ matrix.arch.runner }}
 
     steps:
       - uses: actions/checkout@v4
@@ -47,8 +61,8 @@ jobs:
           name: logos-co
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
 
-      - name: Build cli-appimage
-        run: nix build .#cli-appimage -L
+      - name: Build ${{ matrix.tool.output }}
+        run: nix build .#${{ matrix.tool.output }} -L
 
       - name: Smoke test (AppImage runs)
         run: |
@@ -59,19 +73,26 @@ jobs:
 
       - name: Package AppImage as tarball
         run: |
-          arch="${{ matrix.arch }}"
+          arch="${{ matrix.arch.id }}"
           arch_short="${arch%%-*}"
+          bin="${{ matrix.tool.bin }}"
           src=$(find result/ -name '*.AppImage' -print -quit)
-          cp "$src" "logosctl-${arch_short}.AppImage"
-          chmod +x "logosctl-${arch_short}.AppImage"
-          tar -czf "logosctl-${arch_short}-linux.tar.gz" "logosctl-${arch_short}.AppImage"
+          cp "$src" "${bin}-${arch_short}.AppImage"
+          chmod +x "${bin}-${arch_short}.AppImage"
+          tar -czf "${bin}-${arch_short}-linux.tar.gz" "${bin}-${arch_short}.AppImage"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: appimage-${{ matrix.arch }}
-          path: logosctl-*-linux.tar.gz
+          name: appimage-${{ matrix.tool.bin }}-${{ matrix.arch.id }}
+          path: ${{ matrix.tool.bin }}-*-linux.tar.gz
 
   build-macos-bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        tool:
+          - { bin: logoscore, output: cli-bundle-dir }
+          - { bin: logosctl, output: ctl-bundle-dir }
     runs-on: macos-latest
 
     steps:
@@ -84,18 +105,18 @@ jobs:
           name: logos-co
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
 
-      - name: Build cli-bundle-dir
-        run: nix build .#cli-bundle-dir -L
+      - name: Build ${{ matrix.tool.output }}
+        run: nix build .#${{ matrix.tool.output }} -L
 
       - name: Smoke test (bundled binary runs)
         run: |
-          out=$(./result/bin/logosctl --help 2>&1 || true)
+          out=$(./result/bin/${{ matrix.tool.bin }} --help 2>&1 || true)
           echo "$out"
           echo "$out" | grep -qi usage
 
       - name: Package bundle as tarball
         run: |
-          dst="logosctl-aarch64-macos"
+          dst="${{ matrix.tool.bin }}-aarch64-macos"
           # Copy out of the read-only Nix store into a writable, archive-named dir.
           rm -rf "$dst" && mkdir "$dst"
           cp -RL result/. "$dst/"
@@ -109,8 +130,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-aarch64-darwin
-          path: logosctl-aarch64-macos.tar.gz
+          name: macos-${{ matrix.tool.bin }}-aarch64-darwin
+          path: ${{ matrix.tool.bin }}-aarch64-macos.tar.gz
 
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
@@ -120,20 +141,12 @@ jobs:
       contents: write
 
     steps:
+      # Collect every matrix artifact rather than naming each one, so adding
+      # or removing a tool does not mean editing a list here.
       - uses: actions/download-artifact@v4
         with:
-          name: appimage-x86_64-linux
           path: artifacts/
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: appimage-aarch64-linux
-          path: artifacts/
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: macos-aarch64-darwin
-          path: artifacts/
+          merge-multiple: true
 
       - name: Generate tag
         id: tag
@@ -145,37 +158,48 @@ jobs:
           name: Pre-release ${{ steps.tag.outputs.tag }}
           prerelease: true
           body: |
+            Two binaries ship from this release, and they share no state — so
+            installing `logosctl` cannot disturb a `logoscore` setup.
+
+            | | |
+            |---|---|
+            | **`logoscore`** | The tool to use. Commands, flags, config format and `~/.logoscore` unchanged. |
+            | **`logosctl`** | `logoscore` + `lgpd` + `lgpm` merged into one, with package management built in. New surface, own `~/.logosctl` session directory. **Being validated — not yet the default.** |
+
+            The instructions below install `logoscore`; swap the name throughout
+            to install `logosctl` instead.
+
             ## Install
 
             ### Linux
 
-            The artifact is an [AppImage](https://appimage.org/) — a single self-contained executable. Download it, extract, and drop it on your `PATH` as `logosctl` (swap `x86_64` for `aarch64` on ARM):
+            The artifact is an [AppImage](https://appimage.org/) — a single self-contained executable. Download it, extract, and drop it on your `PATH` (swap `x86_64` for `aarch64` on ARM):
 
             ```bash
-            wget https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.tag }}/logosctl-x86_64-linux.tar.gz
-            tar -xvf logosctl-x86_64-linux.tar.gz
+            wget https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.tag }}/logoscore-x86_64-linux.tar.gz
+            tar -xvf logoscore-x86_64-linux.tar.gz
             mkdir -p ~/.local/bin
-            install -m755 logosctl-x86_64.AppImage ~/.local/bin/logosctl
+            install -m755 logoscore-x86_64.AppImage ~/.local/bin/logoscore
             # make sure ~/.local/bin is on your PATH (add this to ~/.bashrc or ~/.zshrc):
             export PATH="$HOME/.local/bin:$PATH"
             ```
 
-            Now `logosctl` runs from anywhere. (If you hit a FUSE error, run it as `APPIMAGE_EXTRACT_AND_RUN=1 logosctl`.)
+            Now `logoscore` runs from anywhere. (If you hit a FUSE error, run it as `APPIMAGE_EXTRACT_AND_RUN=1 logoscore`.)
 
             ### macOS (Apple Silicon)
 
             > **Download from the terminal with `wget` or `curl` — _not_ a web browser.** Browsers tag downloads with `com.apple.quarantine`, which makes Gatekeeper block this unsigned binary. Fetching over the terminal and extracting with `tar` never sets that flag, so the binary runs as-is — no signing or notarization needed.
 
             ```bash
-            wget https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.tag }}/logosctl-aarch64-macos.tar.gz
-            tar -xvf logosctl-aarch64-macos.tar.gz
+            wget https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.tag }}/logoscore-aarch64-macos.tar.gz
+            tar -xvf logoscore-aarch64-macos.tar.gz
             # move the whole folder somewhere permanent (keep its contents together —
             # the binary finds its libraries via ../lib) and put its bin/ on your PATH:
-            mv logosctl-aarch64-macos ~/.local/logosctl
-            echo 'export PATH="$HOME/.local/logosctl/bin:$PATH"' >> ~/.zshrc
+            mv logoscore-aarch64-macos ~/.local/logoscore
+            echo 'export PATH="$HOME/.local/logoscore/bin:$PATH"' >> ~/.zshrc
             source ~/.zshrc
             ```
 
-            Now `logosctl` runs from anywhere.
+            Now `logoscore` runs from anywhere.
           files: |
             artifacts/*.tar.gz
