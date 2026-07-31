@@ -15,6 +15,13 @@
     logos-qt-sdk.inputs.logos-protocol.follows = "logos-protocol";
     logos-qt-sdk.inputs.logos-cpp-sdk.follows = "logos-cpp-sdk";
     logos-liblogos.url = "github:logos-co/logos-liblogos";
+    # liblogos is linked INTO this CLI, so its logos-protocol is the one the
+    # crashing code path actually runs. Without this follows it brought its own,
+    # older protocol while cpp-sdk and qt-sdk followed the root pin — three
+    # protocols in one process image, and bumping the root pin alone fixed
+    # nothing. Measured: 4 SIGSEGVs in 2000 client calls with the root pin
+    # already on the fixed protocol.
+    logos-liblogos.inputs.logos-protocol.follows = "logos-protocol";
     logos-capability-module.url = "github:logos-co/logos-capability-module";
     # Real test-module plugins (test_basic_module) used by the
     # daemon-backed integration tests in tests/test_integration.cpp.
