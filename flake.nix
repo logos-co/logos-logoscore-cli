@@ -224,6 +224,14 @@
             buildInputs = [
               pkgs.qt6.qtbase
               pkgs.qt6.qtremoteobjects
+              # Both binaries link these: yaml_json.cpp and the log sink are in
+              # the shared sources. autoPatchelfHook resolves the binary's
+              # DT_NEEDED entries against buildInputs, so leaving them out fails
+              # the Linux build with "could not satisfy dependency
+              # libyaml-cpp.so.0.8" -- invisibly on macOS, which does not
+              # patchelf.
+              pkgs.yaml-cpp
+              pkgs.spdlog
             ];
 
             qtWrapperArgs = [
@@ -440,6 +448,14 @@
             buildInputs = [
               pkgs.qt6.qtbase
               pkgs.qt6.qtremoteobjects
+              # Both binaries link these: yaml_json.cpp and the log sink are in
+              # the shared sources. autoPatchelfHook resolves the binary's
+              # DT_NEEDED entries against buildInputs, so leaving them out fails
+              # the Linux build with "could not satisfy dependency
+              # libyaml-cpp.so.0.8" -- invisibly on macOS, which does not
+              # patchelf.
+              pkgs.yaml-cpp
+              pkgs.spdlog
             ];
 
             passthru = {
