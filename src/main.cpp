@@ -484,6 +484,20 @@ int main(int argc, char *argv[])
                 std::filesystem::create_directories(Config::daemonDir(), ec);
             }
 
+            // Somewhere for the child's *pre-logging* output to land.
+            //
+            // A config that fails validation -- a bad transport, a plaintext
+            // listener on a public interface -- is rejected before LogSink
+            // opens the real log, so with the child's stderr on /dev/null the
+            // reason vanished and this command reported only "exited during
+            // startup. See <log>" naming a file that was never created. Once
+            // LogSink starts it dup2s its own pipe over these descriptors, so
+            // this file only ever holds the early output, and it is removed
+            // either way.
+            const std::string startupPath =
+                (std::filesystem::path(Config::daemonDir()) / "startup.err").string();
+            { std::error_code ec; std::filesystem::remove(startupPath, ec); }
+
             const pid_t child = fork();
             if (child < 0) {
                 perror("Error: could not fork for --detach");
@@ -492,16 +506,22 @@ int main(int argc, char *argv[])
             if (child == 0) {
                 // Between fork and exec only async-signal-safe calls are used.
                 setsid();
-                // Detach stdio from the inherited terminal. The log file
-                // itself is the daemon's business -- LogSink opens it from
-                // the config, with rotation and retention -- so there is
-                // nothing to redirect to here.
+                // Detach stdio from the inherited terminal. stdout/stderr go to
+                // the startup file rather than /dev/null so a failure that
+                // happens before LogSink opens the real log is still readable;
+                // LogSink takes these descriptors over as soon as it starts.
                 int devnull = ::open("/dev/null", O_RDWR);
                 if (devnull >= 0) {
                     ::dup2(devnull, STDIN_FILENO);
-                    ::dup2(devnull, STDOUT_FILENO);
-                    ::dup2(devnull, STDERR_FILENO);
                     if (devnull > STDERR_FILENO) ::close(devnull);
+                }
+                int early = ::open(startupPath.c_str(),
+                                   O_WRONLY | O_CREAT | O_TRUNC, 0600);
+                if (early < 0) early = ::open("/dev/null", O_WRONLY);
+                if (early >= 0) {
+                    ::dup2(early, STDOUT_FILENO);
+                    ::dup2(early, STDERR_FILENO);
+                    if (early > STDERR_FILENO) ::close(early);
                 }
                 std::vector<char*> cargv;
                 for (auto& a : childArgs) cargv.push_back(const_cast<char*>(a.c_str()));
@@ -536,23 +556,53 @@ int main(int argc, char *argv[])
                     Config::setSessionDirOverride(Config::SessionDir::Logs, "");
                 }
             }
+            // Whatever the child managed to say before logging was up. Usually
+            // empty; when it is not, it is the actual reason startup failed.
+            auto earlyOutput = [&]() -> std::string {
+                std::ifstream in(startupPath);
+                if (!in) return {};
+                std::string s((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+                while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+                return s;
+            };
+            auto cleanupStartupFile = [&]() {
+                std::error_code ec;
+                std::filesystem::remove(startupPath, ec);
+            };
+
             for (int i = 0; i < 600; ++i) {
                 std::error_code ec;
                 if (std::filesystem::exists(statePath, ec)) {
+                    cleanupStartupFile();
                     fprintf(stdout, "Daemon started (pid %ld)\nLogs: %s\n",
                             static_cast<long>(child), logPath.c_str());
                     return 0;
                 }
                 int status = 0;
                 if (waitpid(child, &status, WNOHANG) == child) {
-                    fprintf(stderr, "Error: daemon exited during startup. "
-                                    "See %s\n", logPath.c_str());
+                    const std::string early = earlyOutput();
+                    if (!early.empty()) {
+                        // Print the child's own message. Prefixing it with
+                        // "Error: daemon exited" and a log path would bury the
+                        // one line that says what to fix.
+                        fprintf(stderr, "%s\n", early.c_str());
+                    } else {
+                        fprintf(stderr, "Error: daemon exited during startup. "
+                                        "See %s\n", logPath.c_str());
+                    }
+                    cleanupStartupFile();
                     return 1;
                 }
                 usleep(100 * 1000);
             }
-            fprintf(stderr, "Error: daemon did not become ready in 60s. See %s\n",
-                    logPath.c_str());
+            {
+                const std::string early = earlyOutput();
+                fprintf(stderr, "Error: daemon did not become ready in 60s. See %s\n",
+                        logPath.c_str());
+                if (!early.empty()) fprintf(stderr, "%s\n", early.c_str());
+            }
+            cleanupStartupFile();
             return 1;
         }
 
@@ -635,22 +685,25 @@ int main(int argc, char *argv[])
             transports.insert(transports.begin(), std::move(localEntry));
         }
 
-        // Plaintext-TCP guard, post-merge: refuse to bind plaintext
-        // tcp on a non-loopback host unless `insecure_tcp` is enabled
-        // (whether by --insecure-tcp on the CLI or by config.json).
-        // Iterating the merged map means a disk-supplied plaintext
-        // listener gets the same scrutiny as a CLI-supplied one — the
-        // operator can't bypass the guard by stashing the combo in
-        // config.json.
+        // Plaintext-TCP guard, post-merge: refuse to bind plaintext tcp on a
+        // non-loopback host unless `insecure_tcp` is enabled. Iterating the
+        // merged map means a disk-supplied plaintext listener gets the same
+        // scrutiny as any other — the operator can't bypass the guard by
+        // stashing the combo in the config file.
         for (const auto& [moduleName, transports] : mergedCfg.modules) {
             for (const auto& t : transports) {
                 if (t.protocol != "tcp") continue;
                 if (isLoopback(t.host)) continue;
                 if (mergedCfg.insecureTcp) continue;
+                // Name the escape hatch this binary actually has. logosctl has
+                // no --insecure-tcp flag -- configuration is the YAML document
+                // -- and telling an operator to pass a flag that does not exist
+                // sends them looking for a typo in their own command line.
                 std::cerr << "Error: module '" << moduleName
                           << "' binds plaintext tcp on non-loopback host '"
-                          << t.host << "'. Use protocol=tcp_ssl, or pass "
-                          << "--insecure-tcp if you really mean it."
+                          << t.host << "'. Use protocol: tcp_ssl, or set "
+                          << "insecure_tcp: true in the daemon config if you "
+                          << "really mean it."
                           << std::endl;
                 return 1;
             }

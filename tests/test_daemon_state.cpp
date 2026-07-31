@@ -340,3 +340,66 @@ TEST_F(DaemonStateTest, ClientArtifacts_GroupReadableWithAccessGroup)
     EXPECT_EQ(tokSt.st_mode & 07777, 0640u);
     EXPECT_EQ(tokSt.st_gid, ::getegid());
 }
+
+// ── tcp_ssl cert/key ─────────────────────────────────────────────────────────
+//
+// The parser did not read `cert`/`key` at all. It never mattered while those
+// came from --module-transport on the command line, but once the config file
+// became the only place to set transports, every tcp_ssl listener bound with
+// no certificate: the daemon started, accepted connections, and failed every
+// handshake with "no shared cipher". TLS was unconfigurable and nothing said
+// so.
+TEST_F(DaemonStateTest, Config_RoundTripsTlsCertAndKey)
+{
+    DaemonConfig cfg;
+    TransportInfo t;
+    t.protocol = "tcp_ssl";
+    t.host     = "127.0.0.1";
+    t.port     = 6443;
+    t.certFile = "/etc/logos/server.pem";
+    t.keyFile  = "/etc/logos/server.key";
+    t.caFile   = "/etc/logos/ca.pem";
+    cfg.modules["core_service"] = { t };
+
+    ASSERT_TRUE(DaemonConfigFile::write(cfg));
+    auto got = DaemonConfigFile::read();
+    ASSERT_TRUE(got.has_value());
+    ASSERT_EQ(got->modules.count("core_service"), 1u);
+    ASSERT_EQ(got->modules["core_service"].size(), 1u);
+
+    const TransportInfo& r = got->modules["core_service"][0];
+    EXPECT_EQ(r.protocol, "tcp_ssl");
+    EXPECT_EQ(r.port,     6443);
+    EXPECT_EQ(r.certFile, "/etc/logos/server.pem")
+        << "the server certificate must survive a config round-trip";
+    EXPECT_EQ(r.keyFile,  "/etc/logos/server.key")
+        << "the server key must survive a config round-trip";
+    EXPECT_EQ(r.caFile,   "/etc/logos/ca.pem");
+}
+
+// state.json is a runtime record clients read, so the key path stays out of
+// it -- the config file is where that secret belongs.
+TEST_F(DaemonStateTest, RuntimeState_OmitsTlsCertAndKey)
+{
+    DaemonRuntimeState s = minimalState("inst-tls");
+    TransportInfo t;
+    t.protocol = "tcp_ssl";
+    t.host     = "127.0.0.1";
+    t.port     = 6443;
+    t.certFile = "/etc/logos/server.pem";
+    t.keyFile  = "/etc/logos/server.key";
+    t.caFile   = "/etc/logos/ca.pem";
+    s.resolved.modules["core_service"] = { t };
+    ASSERT_TRUE(DaemonRuntimeStateFile::write(s));
+
+    std::ifstream in(Config::daemonStatePath());
+    ASSERT_TRUE(in.good());
+    const std::string raw((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+    EXPECT_EQ(raw.find("server.key"), std::string::npos)
+        << "state.json must not carry the server's private key path";
+    EXPECT_EQ(raw.find("server.pem"), std::string::npos)
+        << "state.json must not carry the server's certificate path";
+    // The CA is client-relevant, so it does belong here.
+    EXPECT_NE(raw.find("ca.pem"), std::string::npos);
+}

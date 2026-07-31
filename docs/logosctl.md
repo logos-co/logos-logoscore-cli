@@ -206,11 +206,18 @@ logosctl client config show
 
 ```yaml
 # client.yaml — only needed to reach a daemon on another host
+version: 2
 token_file: alice.json
 daemon:
-  core_service:      { protocol: tcp_ssl, host: node.example, port: 8645, caFile: tls/ca.pem }
-  capability_module: { protocol: tcp_ssl, host: node.example, port: 8646, caFile: tls/ca.pem }
+  core_service:      { transport: tcp_ssl, host: node.example, port: 8645, ca: tls/ca.pem }
+  capability_module: { transport: tcp_ssl, host: node.example, port: 8646, ca: tls/ca.pem }
 ```
+
+Note the client says `transport:` where the daemon says `protocol:`, and `ca:`
+where the daemon says `cert:`/`key:`. The two documents describe different ends
+of the same connection and their key names were never unified; the validator
+names the key it expected, so a mix-up fails at `config set` rather than at
+connect time.
 
 For same-host use you do not need this at all: the daemon writes a working
 `client/config.yaml` and `client/auto.json` into the session on every boot.

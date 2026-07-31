@@ -39,10 +39,13 @@ std::string currentUtcIso8601()
 
 namespace {
 
-// Serialize one transport endpoint into the `transports` array under
-// a module. Strips server-only secrets (cert/key) — only client-relevant
-// fields make it to disk.
-json transportToJson(const TransportInfo& t)
+// Serialize one transport endpoint into the `transports` array under a module.
+//
+// `includeSecrets` distinguishes the two files this feeds. The operator's
+// config is where cert/key are *authored*, so they have to survive a
+// round-trip; state.json is a published runtime record that clients read, and
+// a server key path has no business in it.
+json transportToJson(const TransportInfo& t, bool includeSecrets)
 {
     json j;
     j["protocol"] = t.protocol;
@@ -54,6 +57,10 @@ json transportToJson(const TransportInfo& t)
     if (t.protocol == "tcp_ssl") {
         if (!t.caFile.empty()) j["ca_file"] = t.caFile;
         j["verify_peer"] = t.verifyPeer;
+        if (includeSecrets) {
+            if (!t.certFile.empty()) j["cert"] = t.certFile;
+            if (!t.keyFile.empty())  j["key"]  = t.keyFile;
+        }
     }
     return j;
 }
@@ -78,6 +85,14 @@ std::optional<TransportInfo> transportFromJson(const json& j)
     t.port = static_cast<uint16_t>(rawPort);
     t.caFile = j.value("ca_file", std::string{});
     t.verifyPeer = j.value("verify_peer", true);
+    // The server's certificate and key. Read here because the config file is
+    // where an operator writes them -- with the transport CLI flags gone it is
+    // the only place. Omitting them left every tcp_ssl listener bound with no
+    // certificate, so each handshake died with "no shared cipher" and TLS was
+    // effectively unconfigurable. state.json never carries them, so this is a
+    // no-op on that path.
+    t.certFile = j.value("cert", std::string{});
+    t.keyFile  = j.value("key",  std::string{});
     t.codec = j.value("codec", std::string{"json"});
     return t;
 }
@@ -86,7 +101,7 @@ std::optional<TransportInfo> transportFromJson(const json& j)
 // shape) into a JSON object. Used by both DaemonConfigFile (for
 // config.json) and DaemonRuntimeStateFile (for state.json's
 // `resolved` block).
-json daemonConfigToJson(const DaemonConfig& cfg)
+json daemonConfigToJson(const DaemonConfig& cfg, bool includeSecrets)
 {
     json obj;
     obj["modules_dirs"]     = cfg.modulesDirs;
@@ -95,7 +110,7 @@ json daemonConfigToJson(const DaemonConfig& cfg)
     json modulesObj = json::object();
     for (const auto& [name, transports] : cfg.modules) {
         json arr = json::array();
-        for (const auto& t : transports) arr.push_back(transportToJson(t));
+        for (const auto& t : transports) arr.push_back(transportToJson(t, includeSecrets));
         json moduleObj = json::object();
         moduleObj["transports"] = std::move(arr);
         modulesObj[name] = std::move(moduleObj);
@@ -325,7 +340,7 @@ std::optional<DaemonConfig> DaemonConfigFile::read()
 
 bool DaemonConfigFile::write(const DaemonConfig& cfg)
 {
-    json obj = daemonConfigToJson(cfg);
+    json obj = daemonConfigToJson(cfg, /*includeSecrets=*/true);
     obj["version"] = kDaemonConfigSchemaVersion;
     // logoscore keeps writing JSON so an existing deployment's config file
     // stays readable by the tool that wrote it; logosctl writes YAML.
@@ -351,7 +366,7 @@ bool DaemonRuntimeStateFile::write(const DaemonRuntimeState& state)
     obj["pid"]           = state.pid;
     obj["started_at"]    = state.startedAt;
     if (!state.configSource.empty()) obj["config_source"] = state.configSource;
-    obj["resolved"]      = daemonConfigToJson(state.resolved);
+    obj["resolved"]      = daemonConfigToJson(state.resolved, /*includeSecrets=*/false);
     return atomicWriteJson(fs::path(filePath()), obj);
 }
 
