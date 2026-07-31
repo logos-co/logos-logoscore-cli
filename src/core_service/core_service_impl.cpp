@@ -295,18 +295,27 @@ LogosMap CoreServiceImpl::getModuleInfo(const std::string& name)
             info["uptime_seconds"] = uptime;
 
         if (m_api) {
-            // Use the nlohmann::json overload — no QJson types needed here
+            // Use the nlohmann::json overload — no QJson types needed here.
             LogosAPIClient* moduleClient = m_api->getClient(QString::fromStdString(name));
             if (moduleClient) {
-                nlohmann::json methods = moduleClient->invokeRemoteMethod(
-                    name, "getPluginMethods", nlohmann::json::array());
-                if (methods.is_array())
+                // One introspection round-trip: getPluginInterface returns both
+                // methods and events (each tagged with "type"); split locally.
+                // Calling getPluginMethods + getPluginEvents would invoke the
+                // module's getMethods() twice — pure overhead for one info call.
+                nlohmann::json iface = moduleClient->invokeRemoteMethod(
+                    name, "getPluginInterface", nlohmann::json::array());
+                if (iface.is_array()) {
+                    nlohmann::json methods = nlohmann::json::array();
+                    nlohmann::json events  = nlohmann::json::array();
+                    for (const auto& m : iface) {
+                        if (m.is_object() && m.value("type", std::string{}) == "event")
+                            events.push_back(m);
+                        else
+                            methods.push_back(m);
+                    }
                     info["methods"] = methods;
-
-                nlohmann::json events = moduleClient->invokeRemoteMethod(
-                    name, "getPluginEvents", nlohmann::json::array());
-                if (events.is_array())
-                    info["events"] = events;
+                    info["events"]  = events;
+                }
             }
         }
     } else {
