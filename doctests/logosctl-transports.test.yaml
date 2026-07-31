@@ -11,18 +11,24 @@ intro: |
 
   - **`tcp`** — a plaintext TCP listener. Good for loopback and trusted
     networks. On a non-loopback host it puts the auth token on the wire in
-    cleartext, so the daemon refuses to bind it there without `--insecure-tcp`.
+    cleartext, so the daemon refuses to bind it there unless the config says
+    `insecure_tcp: true`.
   - **`tcp_ssl`** — a TLS-wrapped TCP listener. The wire is encrypted with a
     server certificate; the client verifies that certificate against a CA.
 
   We drive everything on a single host over the loopback interface
   (`127.0.0.1`) so the doc-test is self-contained and needs no second machine,
   but the moving parts — a per-module network listener on the daemon, a
-  hand-written `client/config.json` dial spec, and a copied auth token — are
-  exactly the ones a real remote client uses.
+  client dial spec, and a copied auth token — are exactly the ones a real
+  remote client uses.
 
-  > ⚠️ **Remote operation is under active development.** The transport flags,
-  > the `client/config.json` schema, and the auth model may change between
+  Both sides are configured the same way: write a YAML document, install it
+  into the session with `daemon config set` / `client config set`. Configuration
+  is never passed alongside another command, so `daemon start` always acts on
+  whatever the session already holds.
+
+  > ⚠️ **Remote operation is under active development.** The config schema
+  > and the auth model may change between
   > releases. Local same-host use is the stable path. This walkthrough
   > authenticates the network client with the daemon's **auto-emitted token**
   > (`client/auto.json`), which is the credential the daemon registers for
@@ -37,12 +43,12 @@ intro: |
 
 what_you_learn:
   - How the daemon's per-module transports work and why `local` is always present
-  - How to add a `tcp` listener to the well-known modules with `--module-transport`
+  - How to add a `tcp` listener to the well-known modules with `daemon config set`
   - Why both `core_service` and `capability_module` must be exposed, not just one
   - How the plaintext-TCP guard protects you from leaking tokens on the wire
-  - How to write a `client/config.json` dial spec and point a client at it with `--config-dir`
+  - How to write a client dial spec with `client config set` and point a client at it with `--config-dir`
   - How to copy the daemon's auth token into the client config directory
-  - How to drive the daemon (`status`, `load-module`, `call`, …) over TCP
+  - How to drive the daemon (`status`, `module load`, `call`, …) over TCP
   - How to switch the same setup to `tcp_ssl` with a self-signed certificate
   - How TLS peer verification fails closed when the client has no CA to trust
 
@@ -109,9 +115,10 @@ sections:
   - title: "Start the daemon with TCP listeners"
     step: true
     text: |
-      `--module-transport NAME=PROTOCOL[,k=v...]` adds one network listener to
-      the named module. We bind **both** well-known modules on loopback:
-      `core_service` on port 6000 and `capability_module` on port 6001.
+      The daemon's listeners live in its config document, under `modules:` —
+      one entry per module, each a list of listeners. We bind **both**
+      well-known modules on loopback: `core_service` on port 6000 and
+      `capability_module` on port 6001.
 
       Two things worth calling out:
 
@@ -133,28 +140,58 @@ sections:
         text: |
           First, a guardrail. Plaintext `tcp` on a non-loopback host would put
           the auth token on the wire in cleartext, so the daemon refuses to bind
-          it unless you explicitly pass `--insecure-tcp`. Watch it reject a
-          `0.0.0.0` listener (the `|| true` lets the doc-test continue past the
-          expected non-zero exit):
-        run: "./logos/bin/logosctl --config-dir ./daemon-home daemon start --detach --module-transport core_service=tcp,host=0.0.0.0,port=6000 2>&1 || true"
-        code_block: "logosctl daemon start --detach --module-transport core_service=tcp,host=0.0.0.0,port=6000"
+          it unless the config explicitly says `insecure_tcp: true`. Watch it
+          reject a `0.0.0.0` listener (the `|| true` lets the doc-test continue
+          past the expected non-zero exit):
+        run: |
+          mkdir -p ./daemon-home
+          cat > ./public.yaml <<'YAML'
+          version: 2
+          modules_dirs:
+            - ./modules
+          modules:
+            core_service:
+              - protocol: tcp
+                host: 0.0.0.0
+                port: 6000
+          YAML
+          ./logos/bin/logosctl --config-dir ./daemon-home daemon config set ./public.yaml
+          ./logos/bin/logosctl --config-dir ./daemon-home daemon start --detach 2>&1 || true
+        code_block: |
+          logosctl daemon config set ./public.yaml
+          logosctl daemon start --detach
         expect_contains:
           - "plaintext tcp on non-loopback host"
-          - "--insecure-tcp"
+          - "insecure_tcp"
         post_text: |
           On loopback (`127.0.0.1`) there is nothing to leak to, so the same
-          flag binds without the escape hatch — which is what we do next.
+          listener binds without the escape hatch — which is what we do next.
 
       - title: "Start the daemon on loopback TCP"
         text: |
-          Start the daemon in the background with TCP listeners for both
-          well-known modules, capturing its output to `daemon.log`:
-        run: "./logos/bin/logosctl --config-dir ./daemon-home daemon start --detach"
+          Replace the config with one that binds both well-known modules on
+          loopback. `config set` overwrites wholesale — there is no merge — so
+          this is the whole daemon configuration:
+        run: |
+          cat > ./node.yaml <<'YAML'
+          version: 2
+          modules_dirs:
+            - ./modules
+          modules:
+            core_service:
+              - protocol: tcp
+                host: 127.0.0.1
+                port: 6000
+            capability_module:
+              - protocol: tcp
+                host: 127.0.0.1
+                port: 6001
+          YAML
+          ./logos/bin/logosctl --config-dir ./daemon-home daemon config set ./node.yaml
+          ./logos/bin/logosctl --config-dir ./daemon-home daemon start --detach
         code_block: |
-          logosctl daemon start --detach \
-              --module-transport core_service=tcp,host=127.0.0.1,port=6000 \
-              --module-transport capability_module=tcp,host=127.0.0.1,port=6001 \
-              > daemon.log &
+          logosctl daemon config set ./node.yaml
+          logosctl daemon start --detach
 
       - run: "sleep 4"
 
@@ -174,17 +211,17 @@ sections:
     step: true
     text: |
       A network client doesn't read the daemon's files — it dials whatever its
-      own `client/config.json` says and authenticates with a token file beside
-      it. We build a **separate** config directory (`./client-home`) to make the
+      own client config says and authenticates with a token file beside it. We
+      build a **separate** config directory (`./client-home`) to make the
       client/daemon split explicit, then point the client at it with
       `--config-dir`.
 
-      The directory layout the client expects:
+      The directory layout the client ends up with:
 
       ```
       client-home/            ← pass this to --config-dir
       └── client/
-          ├── config.json     ← the dial spec
+          ├── config.yaml     ← the dial spec, written by `client config set`
           └── auto.json       ← the auth token referenced by token_file
       ```
     steps:
@@ -204,22 +241,27 @@ sections:
 
       - title: "Write the dial spec"
         text: |
-          The `client/config.json` schema is version `2`. `token_file` names the
-          file you just copied, and the `daemon` block lists one entry per
-          module with its transport, host, and port — matching the listeners the
-          daemon bound. Both `core_service` and `capability_module` are required:
+          The client schema is version `2`. `token_file` names the file you just
+          copied, and the `daemon` block lists one entry per module with its
+          transport, host, and port — matching the listeners the daemon bound.
+          Both `core_service` and `capability_module` are required.
+
+          Note the client says `transport:` where the daemon config said
+          `protocol:`. The two documents describe opposite ends of the same
+          connection and their key names were never unified; `config set`
+          validates up front and names the key it expected, so a mix-up fails
+          here rather than at connect time.
         run: |
-          cat > ./client-home/client/config.json <<'JSON'
-          {
-              "version": 2,
-              "token_file": "auto.json",
-              "daemon": {
-                  "core_service":      { "transport": "tcp", "host": "127.0.0.1", "port": 6000 },
-                  "capability_module": { "transport": "tcp", "host": "127.0.0.1", "port": 6001 }
-              }
-          }
-          JSON
-        check_file: "client-home/client/config.json"
+          cat > ./client.yaml <<'YAML'
+          version: 2
+          token_file: auto.json
+          daemon:
+            core_service:      { transport: tcp, host: 127.0.0.1, port: 6000 }
+            capability_module: { transport: tcp, host: 127.0.0.1, port: 6001 }
+          YAML
+          ./logos/bin/logosctl --config-dir ./client-home client config set ./client.yaml
+        code_block: "logosctl --config-dir ./client-home client config set ./client.yaml"
+        check_file: "client-home/client/config.yaml"
 
       - title: "Check daemon status over TCP"
         text: |
@@ -263,8 +305,8 @@ sections:
     text: |
       `tcp` is fine on loopback, but across any untrusted network you want the
       wire encrypted. The `tcp_ssl` protocol wraps the same TCP listener in TLS.
-      The daemon side adds `cert=` and `key=` (the server's certificate and
-      private key); the client side adds a `ca` to verify that certificate
+      The daemon side adds `cert:` and `key:` (the server's certificate and
+      private key); the client side adds a `ca:` to verify that certificate
       against, plus `verify_peer`.
 
       TLS verifies the certificate's host name against the address the client
@@ -288,15 +330,33 @@ sections:
 
       - title: "Start the daemon with tcp_ssl listeners"
         text: |
-          Bind both well-known modules over `tcp_ssl`, passing the cert and key.
-          On loopback no `--insecure-tcp` is involved at all — TLS is never
-          plaintext:
-        run: "./logos/bin/logosctl --config-dir ./tls-daemon-home daemon start --detach"
+          Bind both well-known modules over `tcp_ssl`, giving each the cert and
+          key. `insecure_tcp` never enters into it — TLS is not plaintext:
+        run: |
+          mkdir -p ./tls-daemon-home
+          cat > ./tls-node.yaml <<YAML
+          version: 2
+          modules_dirs:
+            - ./modules
+          modules:
+            core_service:
+              - protocol: tcp_ssl
+                host: 127.0.0.1
+                port: 6443
+                cert: $PWD/tls/cert.pem
+                key: $PWD/tls/key.pem
+            capability_module:
+              - protocol: tcp_ssl
+                host: 127.0.0.1
+                port: 6444
+                cert: $PWD/tls/cert.pem
+                key: $PWD/tls/key.pem
+          YAML
+          ./logos/bin/logosctl --config-dir ./tls-daemon-home daemon config set ./tls-node.yaml
+          ./logos/bin/logosctl --config-dir ./tls-daemon-home daemon start --detach
         code_block: |
-          logosctl daemon start --detach \
-              --module-transport "core_service=tcp_ssl,host=127.0.0.1,port=6443,cert=$PWD/tls/cert.pem,key=$PWD/tls/key.pem" \
-              --module-transport "capability_module=tcp_ssl,host=127.0.0.1,port=6444,cert=$PWD/tls/cert.pem,key=$PWD/tls/key.pem" \
-              > tls-daemon.log &
+          logosctl daemon config set ./tls-node.yaml
+          logosctl daemon start --detach
 
       - run: "sleep 4"
 
@@ -308,17 +368,16 @@ sections:
         run: |
           mkdir -p ./tls-client-home/client
           cp ./tls-daemon-home/client/auto.json ./tls-client-home/client/auto.json
-          cat > ./tls-client-home/client/config.json <<JSON
-          {
-              "version": 2,
-              "token_file": "auto.json",
-              "daemon": {
-                  "core_service":      { "transport": "tcp_ssl", "host": "127.0.0.1", "port": 6443, "ca": "$PWD/tls/ca.pem", "verify_peer": true },
-                  "capability_module": { "transport": "tcp_ssl", "host": "127.0.0.1", "port": 6444, "ca": "$PWD/tls/ca.pem", "verify_peer": true }
-              }
-          }
-          JSON
-        check_file: "tls-client-home/client/config.json"
+          cat > ./tls-client.yaml <<YAML
+          version: 2
+          token_file: auto.json
+          daemon:
+            core_service:      { transport: tcp_ssl, host: 127.0.0.1, port: 6443, ca: $PWD/tls/ca.pem, verify_peer: true }
+            capability_module: { transport: tcp_ssl, host: 127.0.0.1, port: 6444, ca: $PWD/tls/ca.pem, verify_peer: true }
+          YAML
+          ./logos/bin/logosctl --config-dir ./tls-client-home client config set ./tls-client.yaml
+        code_block: "logosctl --config-dir ./tls-client-home client config set ./tls-client.yaml"
+        check_file: "tls-client-home/client/config.yaml"
 
       - title: "Drive the daemon over TLS"
         text: "Status, load, and call now travel over an encrypted connection:"
@@ -346,24 +405,22 @@ sections:
           daemon is reported unreachable (the `|| true` lets the doc-test assert
           on the failure):
         run: |
-          cat > ./tls-client-home/client/config.json <<'JSON'
-          {
-              "version": 2,
-              "token_file": "auto.json",
-              "daemon": {
-                  "core_service":      { "transport": "tcp_ssl", "host": "127.0.0.1", "port": 6443, "verify_peer": true },
-                  "capability_module": { "transport": "tcp_ssl", "host": "127.0.0.1", "port": 6444, "verify_peer": true }
-              }
-          }
-          JSON
+          cat > ./tls-client-noca.yaml <<'YAML'
+          version: 2
+          token_file: auto.json
+          daemon:
+            core_service:      { transport: tcp_ssl, host: 127.0.0.1, port: 6443, verify_peer: true }
+            capability_module: { transport: tcp_ssl, host: 127.0.0.1, port: 6444, verify_peer: true }
+          YAML
+          ./logos/bin/logosctl --config-dir ./tls-client-home client config set ./tls-client-noca.yaml
           ./logos/bin/logosctl --config-dir ./tls-client-home status || true
         code_block: "logosctl --config-dir ./tls-client-home status   # no ca → rejected"
         expect_contains:
           - '"status":"not_running"'
         post_text: |
           > To intentionally skip verification in a dev setup, set
-          > `"verify_peer": false` (or pass `--no-verify-peer`) instead of
-          > omitting the CA — but never do that against a real network.
+          > `verify_peer: false` instead of omitting the CA — but never do that
+          > against a real network.
 
       - title: "Stop the TLS daemon"
         run: "./logos/bin/logosctl --config-dir ./tls-daemon-home stop"

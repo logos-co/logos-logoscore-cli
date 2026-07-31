@@ -89,12 +89,13 @@ sections:
     step: true
     text: |
       Start the daemon in the background, then use client subcommands to interact
-      with it. Output from the daemon process is captured in `session/daemon/daemon.log`.
+      with it. Output from the daemon process is captured in `session/logs/daemon.log`.
     steps:
       - title: "Start the daemon"
         text: |
           Start logosctl in daemon mode in the background, capturing output to
-          `session/daemon/daemon.log`:
+          `session/logs/daemon.log`. That name is a symlink to the
+          current session's timestamped file, so it always points at the live log:
         run: "./logos/bin/logosctl --config-dir ./session daemon start --detach"
         code_block: "logosctl daemon start --detach"
         post_text: |
@@ -106,7 +107,7 @@ sections:
 
       - title: "Inspect the startup log"
         text: "Review the daemon's startup output:"
-        run: "cat session/daemon/daemon.log"
+        run: "cat session/logs/daemon.log"
 
       - title: "Check daemon status"
         text: |
@@ -413,7 +414,8 @@ sections:
           `getppid` watchdog on other platforms. (Graceful shutdown, above, still
           reaps workers per-PID; this covers the crash path.)
         run: |
-          ./logos/bin/logosctl --config-dir ./session -D --config-dir ./crashcfg -m ./modules > crash.log 2>&1 &
+          mkdir -p ./crashcfg/modules && cp -RL ./session/modules/. ./crashcfg/modules/
+          ./logos/bin/logosctl --config-dir ./crashcfg -D > crash.log 2>&1 &
           sleep 5
           dpid=$(./logos/bin/logosctl --config-dir ./crashcfg status --json | python3 -c "import json,sys;print(json.load(sys.stdin)['daemon']['pid'])")
           worker=""

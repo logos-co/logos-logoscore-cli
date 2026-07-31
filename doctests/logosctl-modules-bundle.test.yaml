@@ -4,9 +4,22 @@ release: ""
 
 intro: |
   `logosctl` is not just a client — it ships a small set of **bundled modules**
-  that make it self-sufficient. They live next to the binary (`<bin>/../modules`)
-  and are added to the daemon's module search path automatically, as a read-only
-  "embedded" directory that sits alongside the writable one in your session dir.
+  that make it self-sufficient. They live next to the binary and are added to
+  the daemon's module search path automatically, as read-only "embedded"
+  directories sitting alongside the writable one in your session dir.
+
+  They arrive in two directories, which is worth explaining because it looks
+  odd at first:
+
+  | Directory | Contents |
+  |---|---|
+  | `<bin>/../modules` | `capability_module` — bundled by **both** binaries this repo ships |
+  | `<bin>/../modules-pkg` | `package_manager`, `package_downloader` — `logosctl` only |
+
+  `logoscore` scans `modules/` and its doc-tests assert exactly what is in
+  there, so the package modules go in a directory of their own rather than
+  changing what `logoscore` sees. The daemon adds both paths, so the split is
+  invisible in use — `module ls` shows all three.
 
   Three modules are bundled:
 
@@ -60,8 +73,8 @@ sections:
       separate tools.
     steps:
       - title: "List the bundled modules"
-        run: "ls result/modules"
-        code_block: "ls result/modules"
+        run: "ls result/modules result/modules-pkg"
+        code_block: "ls result/modules result/modules-pkg"
         expect_contains:
           - "capability_module"
           - "package_manager"
@@ -72,16 +85,16 @@ sections:
           The bundler runs the package manager at build time, so every entry is
           a proper installed package — a `manifest.json`, a `variant` marker,
           and the plugin binary — not a loose library dropped in a folder.
-        run: "ls result/modules/package_manager"
-        code_block: "ls result/modules/package_manager"
+        run: "ls result/modules-pkg/package_manager"
+        code_block: "ls result/modules-pkg/package_manager"
         expect_contains:
           - "manifest.json"
 
   - title: "The daemon picks them up automatically"
     step: true
     text: |
-      Start a daemon with no module configuration at all. It still finds the
-      bundled modules, because `<bin>/../modules` is always on the search path
+      Start a daemon with no module configuration at all. It still finds all
+      three, because both bundled directories are always on the search path
       alongside your session's writable `modules/` directory.
     steps:
       - title: "Start the daemon"

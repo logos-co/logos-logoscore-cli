@@ -113,13 +113,17 @@ sections:
       `--dry-run` resolves everything and prints exactly what would change —
       including which running modules would be stopped and restarted — without
       writing anything.
+
+      Output below is JSON because these commands are piped rather than run on
+      a terminal; on a terminal you get the same information as a table. `--json`
+      and `--human` force either form.
     steps:
       - title: "Preview the install"
         run: "./result-portable/bin/logosctl --config-dir ./session install openmetrics --dry-run"
         code_block: "logosctl install openmetrics --dry-run"
         expect_contains:
           - "openmetrics"
-          - "dry run"
+          - '"action":"install"'
 
       - title: "Install for real"
         text: |
@@ -129,7 +133,7 @@ sections:
         run: "./result-portable/bin/logosctl --config-dir ./session install openmetrics -y"
         code_block: "logosctl install openmetrics -y"
         expect_contains:
-          - "Installed:"
+          - '"installed":["openmetrics"]'
 
       - title: "It landed in the session, not the bundle"
         text: |
@@ -181,13 +185,13 @@ sections:
         code_block: "logosctl package remove openmetrics --dry-run"
         expect_contains:
           - "openmetrics"
-          - "dry run"
+          - '"action":"remove"'
 
       - title: "Remove for real"
         run: "./result-portable/bin/logosctl --config-dir ./session package remove openmetrics -y"
         code_block: "logosctl package remove openmetrics -y"
         expect_contains:
-          - "Removed:"
+          - '"removed":["openmetrics"]'
 
       - title: "Gone from the session"
         run: "./result-portable/bin/logosctl --config-dir ./session package ls"
