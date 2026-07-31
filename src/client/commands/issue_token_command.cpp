@@ -92,8 +92,7 @@ int IssueTokenCommand::execute(const std::vector<std::string>& args)
                  "Reject this token over non-LocalSocket transports");
 
     try {
-        std::vector<std::string> argsCopy(args.rbegin(), args.rend());
-        cli.parse(argsCopy);
+        parseArgs(cli, args);
     } catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS",
             "Usage: logosctl token issue --name NAME [--expires DUR] [--replace] [--local-only]");

@@ -13,8 +13,7 @@ int WatchCommand::execute(const std::vector<std::string>& args)
     cli.add_option("module", module, "Module name")->required();
     cli.add_option("--event", eventName, "Event name filter (optional)")->default_val("");
     try {
-        std::vector<std::string> argsCopy(args.rbegin(), args.rend());
-        cli.parse(argsCopy);
+        parseArgs(cli, args);
     } catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS",
                             "Usage: logosctl watch <module> [--event <event>]");

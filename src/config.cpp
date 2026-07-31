@@ -1,5 +1,6 @@
 #include "config.h"
 #include <cstdlib>
+#include <filesystem>
 #include <map>
 
 namespace {
@@ -107,6 +108,11 @@ std::string Config::keyringDir() { return sessionDir(SessionDir::Keyring, "keyri
 std::string Config::dataDir()    { return sessionDir(SessionDir::Data,    "data"); }
 std::string Config::cacheDir()   { return sessionDir(SessionDir::Cache,   "cache"); }
 std::string Config::logsDir()    { return sessionDir(SessionDir::Logs,    "logs"); }
+
+std::string Config::downloadsDir()
+{
+    return (std::filesystem::path(cacheDir()) / "downloads").string();
+}
 
 std::string Config::clientTokenPath(const std::string& filename)
 {

@@ -36,6 +36,11 @@ public:
     virtual LogosMap applyPackageOperation(const std::string& op,
                                            const LogosList& names,
                                            const LogosMap& opts) = 0;
+    // Fetch without installing. Goes through the daemon rather than straight
+    // to package_downloader because the downloaded file lands on the daemon's
+    // filesystem, and so must the move into the requested directory.
+    virtual LogosMap downloadPackage(const std::string& name,
+                                     const LogosMap& opts) = 0;
 
     // Queries
     virtual LogosList listModules(const std::string& filter) = 0;
@@ -76,6 +81,7 @@ public:
                                   const LogosMap& opts) override;
     LogosMap applyPackageOperation(const std::string& op, const LogosList& names,
                                    const LogosMap& opts) override;
+    LogosMap downloadPackage(const std::string& name, const LogosMap& opts) override;
     LogosList listModules(const std::string& filter) override;
     LogosMap getStatus() override;
     LogosMap getModuleInfo(const std::string& name) override;

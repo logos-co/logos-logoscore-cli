@@ -38,6 +38,12 @@ public:
                                    const LogosList& names,
                                    const LogosMap& opts);
 
+    // Fetch a .lgx without installing it. Daemon-side rather than a direct
+    // proxy to package_downloader because the downloader has no destination
+    // parameter -- it drops the file in $TMPDIR, and the move to the requested
+    // directory has to happen on the host that holds it.
+    LogosMap downloadPackage(const std::string& name, const LogosMap& opts);
+
     // Queries
     LogosList listModules(const std::string& filter);
     LogosMap getStatus();

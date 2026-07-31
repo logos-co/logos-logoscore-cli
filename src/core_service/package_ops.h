@@ -61,6 +61,24 @@ LogosMap apply(LogosAPI* api, Op op,
                const std::vector<std::string>& names,
                const Options& opts);
 
+// Fetch a .lgx without installing it, and put it where the caller asked.
+//
+// The download itself lands wherever package_downloader chose -- it takes no
+// destination, so that is $TMPDIR on the daemon's host. This moves the result
+// to `destDir`, or to the session's cache directory when `destDir` is empty,
+// which is what makes both `package download -o` and the config's
+// `dirs.cache` mean anything.
+//
+// `destDir` is a path on the DAEMON's filesystem. The client resolves a
+// relative -o against its own working directory before sending, so a local
+// daemon -- the usual case -- does exactly what the user typed; against a
+// remote daemon the path is remote, and a bad one fails loudly here rather
+// than silently writing somewhere else.
+//
+// Shape: { status, result: { name, version, path, repository, ... } }
+LogosMap download(LogosAPI* api, const std::string& name,
+                  const Options& opts, const std::string& destDir);
+
 } // namespace package_ops
 
 #endif // PACKAGE_OPS_H

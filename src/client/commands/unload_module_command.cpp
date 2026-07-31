@@ -16,8 +16,7 @@ int UnloadModuleCommand::execute(const std::vector<std::string>& args)
     cli.add_flag("--no-dependents", noDependents,
                  "Unload only this module, leaving its dependents running");
     try {
-        auto argsCopy = args;
-        cli.parse(argsCopy);
+        parseArgs(cli, args);
     } catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS",
                             "Usage: logosctl module unload <name> [--no-dependents]");

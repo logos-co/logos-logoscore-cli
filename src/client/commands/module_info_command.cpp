@@ -8,8 +8,7 @@ int ModuleInfoCommand::execute(const std::vector<std::string>& args)
     std::string name;
     cli.add_option("name", name, "Module name")->required();
     try {
-        auto argsCopy = args;
-        cli.parse(argsCopy);
+        parseArgs(cli, args);
     } catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS", "Usage: logosctl module show <name>");
         return 1;

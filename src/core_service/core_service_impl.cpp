@@ -230,6 +230,15 @@ LogosMap CoreServiceImpl::applyPackageOperation(const std::string& op,
     return package_ops::apply(m_api, *parsed, toNames(names), toOptions(opts));
 }
 
+LogosMap CoreServiceImpl::downloadPackage(const std::string& name,
+                                          const LogosMap& opts)
+{
+    const std::string dest = opts.is_object()
+        ? opts.value("output", std::string{})
+        : std::string{};
+    return package_ops::download(m_api, name, toOptions(opts), dest);
+}
+
 LogosMap CoreServiceImpl::refreshModules()
 {
     logos_core_refresh_modules();

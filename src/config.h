@@ -68,6 +68,11 @@ public:
     static std::string cacheDir();     // <configDir>/cache  (downloaded .lgx)
     static std::string logsDir();      // <configDir>/logs   (daemon log files)
 
+    // Where `package download` puts a .lgx when no -o was given. A subdirectory
+    // of the cache rather than the cache root, so anything else that wants to
+    // cache something later has somewhere to put it without colliding.
+    static std::string downloadsDir(); // <cacheDir>/downloads
+
     // Redirect one of the above. An empty value clears the override. Applied
     // by the daemon once it has read the config; `~` and relative paths are
     // resolved here so every caller sees a final absolute path.

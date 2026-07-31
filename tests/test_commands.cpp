@@ -1,4 +1,6 @@
 #include <gtest/gtest.h>
+
+#include <filesystem>
 #include <logos_json.h>
 #include <algorithm>
 #include <cstdint>
@@ -29,6 +31,7 @@ public:
     LogosMap  refreshModulesResult;
     LogosMap  planPackageResult;
     LogosMap  applyPackageResult;
+    LogosMap  downloadResult;
 
     // Track calls
     bool shutdownCalled = false;
@@ -37,6 +40,8 @@ public:
     std::string lastPackageOp;
     LogosList   lastPackageNames;
     LogosMap    lastPackageOpts;
+    std::string lastDownloadName;
+    LogosMap    lastDownloadOpts;
     std::string lastLoadedModule;
     std::string lastUnloadedModule;
     // Defaults to true so a test that never sets --no-dependents still sees
@@ -92,6 +97,12 @@ public:
         lastPackageOpts = opts;
         applyPackageCalled = true;
         return applyPackageResult;
+    }
+
+    LogosMap downloadPackage(const std::string& name, const LogosMap& opts) override {
+        lastDownloadName = name;
+        lastDownloadOpts = opts;
+        return downloadResult;
     }
 
     LogosMap reloadModule(const std::string& name) override {
@@ -922,4 +933,73 @@ TEST_F(CommandTest, Stop_NoDaemon)
 
     nlohmann::json doc = parseJson(out);
     EXPECT_EQ(doc["code"].get<std::string>(), "NO_DAEMON");
+}
+
+// ---------------------------------------------------------------------------
+// package download
+//
+// These exist because `-o` was parsed and then thrown away — the option was
+// accepted, the file went to $TMPDIR, and nothing anywhere said so. There was
+// no unit coverage of PackageCommand at all, which is why it survived.
+// ---------------------------------------------------------------------------
+
+TEST_F(CommandTest, PackageDownload_PassesOutputDirectoryThrough)
+{
+    mockClient.downloadResult = LogosMap{
+        {"status", "ok"},
+        {"result", LogosMap{{"name", "storage_module"}, {"path", "/out/storage_module.lgx"}}}};
+
+    auto cmd = createCommand("package", mockClient, output);
+    captureOutput([&]() {
+        int exitCode = cmd->execute({"download", "storage_module", "-o", "/out"});
+        EXPECT_EQ(exitCode, 0);
+    });
+
+    EXPECT_EQ(mockClient.lastDownloadName, "storage_module");
+    EXPECT_EQ(mockClient.lastDownloadOpts.value("output", std::string{}), "/out");
+}
+
+// A relative -o has to become absolute before it leaves this process: the
+// daemon does the move, and its working directory is not ours -- for a
+// detached daemon it is wherever it happened to be started.
+TEST_F(CommandTest, PackageDownload_ResolvesRelativeOutputAgainstOurCwd)
+{
+    mockClient.downloadResult = LogosMap{
+        {"status", "ok"}, {"result", LogosMap{{"path", "/x/p.lgx"}}}};
+
+    auto cmd = createCommand("package", mockClient, output);
+    captureOutput([&]() { cmd->execute({"download", "pkg", "-o", "pkgs"}); });
+
+    const std::string sent = mockClient.lastDownloadOpts.value("output", std::string{});
+    ASSERT_FALSE(sent.empty());
+    EXPECT_EQ(sent, (std::filesystem::current_path() / "pkgs").string())
+        << "a relative -o must be resolved against the client's cwd, not sent raw";
+}
+
+// No -o means "the session's cache", which only the daemon knows the path of.
+// Sending an empty string is how it is told to use that default.
+TEST_F(CommandTest, PackageDownload_NoOutputDirLeavesTheChoiceToTheDaemon)
+{
+    mockClient.downloadResult = LogosMap{
+        {"status", "ok"}, {"result", LogosMap{{"path", "/cache/downloads/p.lgx"}}}};
+
+    auto cmd = createCommand("package", mockClient, output);
+    captureOutput([&]() { cmd->execute({"download", "pkg"}); });
+
+    EXPECT_EQ(mockClient.lastDownloadOpts.value("output", std::string("unset")), "");
+}
+
+TEST_F(CommandTest, PackageDownload_ReportsFailure)
+{
+    mockClient.downloadResult = LogosMap{
+        {"status", "error"}, {"code", "DOWNLOAD_FAILED"}, {"message", "no such package"}};
+
+    auto cmd = createCommand("package", mockClient, output);
+    std::string out = captureOutput([&]() {
+        int exitCode = cmd->execute({"download", "nope"});
+        EXPECT_EQ(exitCode, 1);
+    });
+
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["code"].get<std::string>(), "DOWNLOAD_FAILED");
 }

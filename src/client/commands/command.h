@@ -28,6 +28,25 @@ private:
     Output& m_output;
 };
 
+// Hand `args` to a CLI::App in the order it actually expects.
+//
+// CLI11's `parse(std::vector<std::string>&)` consumes the vector from the
+// BACK, so it wants the arguments reversed; only the rvalue overload reverses
+// for you. Passing a natural-order lvalue silently parses the command line
+// backwards -- harmless when there is one positional and the rest are flags,
+// and quietly wrong the moment an option takes a value, because the option
+// then pairs with the token to its left. `package download pkg -o dir` came
+// out as pkg="dir", output="pkg".
+//
+// Defined as a template so this header does not have to include CLI11, which
+// is heavy and only needed by the command .cpp files.
+template <typename App>
+void parseArgs(App& cli, const std::vector<std::string>& args)
+{
+    std::vector<std::string> reversed(args.rbegin(), args.rend());
+    cli.parse(reversed);
+}
+
 // Factory to create commands by name
 std::unique_ptr<Command> createCommand(const std::string& name, Client& client, Output& output);
 

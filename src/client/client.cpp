@@ -188,6 +188,17 @@ LogosMap RpcClient::applyPackageOperation(const std::string& op, const LogosList
                     {"message", fmt::format("applyPackageOperation('{}') RPC call failed.", op)}};
 }
 
+LogosMap RpcClient::downloadPackage(const std::string& name, const LogosMap& opts)
+{
+    // Same deadline reasoning as applyPackageOperation: this is a network
+    // fetch, not a local query.
+    nlohmann::json ret = d->invoke("downloadPackage",
+                                   nlohmann::json::array({name, opts}));
+    if (ret.is_object()) return ret;
+    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
+                    {"message", fmt::format("downloadPackage('{}') RPC call failed.", name)}};
+}
+
 LogosMap RpcClient::reloadModule(const std::string& name)
 {
     nlohmann::json ret = d->invoke("reloadModule", nlohmann::json::array({name}));

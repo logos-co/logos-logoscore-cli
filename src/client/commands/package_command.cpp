@@ -92,8 +92,7 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
     cli.add_flag("--no-dependents", noDependents, "Do not remove dependents");
 
     try {
-        auto argsCopy = args;
-        cli.parse(argsCopy);
+        parseArgs(cli, args);
     } catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS",
             "Usage: logosctl package " + op + " <name...> [--version V] [-y] [--dry-run]");
@@ -252,7 +251,7 @@ int PackageCommand::list(const std::vector<std::string>& args)
     cli.set_help_flag();
     std::string type;
     cli.add_option("--type", type, "Filter by type: core | ui");
-    try { auto c = args; cli.parse(c); }
+    try { parseArgs(cli, args); }
     catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS", "Usage: logosctl package ls [--type core|ui]");
         return 1;
@@ -364,7 +363,7 @@ int PackageCommand::deps(const std::vector<std::string>& args)
     bool recursive = false, reverse = false;
     cli.add_flag("-r,--recursive", recursive, "Walk the graph transitively");
     cli.add_flag("--reverse", reverse, "Show dependents instead of dependencies");
-    try { auto c = args; cli.parse(c); }
+    try { parseArgs(cli, args); }
     catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS",
             "Usage: logosctl package deps <name> [-r] [--reverse]");
@@ -407,7 +406,7 @@ int PackageCommand::search(const std::vector<std::string>& args)
     cli.add_option("query", query, "Search text (omit to list everything)");
     cli.add_option("--category", category, "Filter by category");
     cli.add_option("--catalog", catalog, "Restrict to one catalog (url or name)");
-    try { auto c = args; cli.parse(c); }
+    try { parseArgs(cli, args); }
     catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS",
             "Usage: logosctl package search [query] [--category C] [--catalog C]");
@@ -477,8 +476,10 @@ int PackageCommand::download(const std::vector<std::string>& args)
     cli.add_option("--version", version, "Pin an exact version");
     cli.add_option("--root-hash", rootHash, "Disambiguate releases sharing a version");
     cli.add_option("--catalog", catalog, "Restrict to one catalog (url or name)");
-    cli.add_option("-o,--output", outDir, "Directory to write the .lgx into");
-    try { auto c = args; cli.parse(c); }
+    cli.add_option("-o,--output", outDir,
+        "Directory to write the .lgx into (on the daemon's host; "
+        "defaults to the session's cache/downloads)");
+    try { parseArgs(cli, args); }
     catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS",
             "Usage: logosctl package download <name> [--version V] [-o DIR]");
@@ -488,8 +489,27 @@ int PackageCommand::download(const std::vector<std::string>& args)
     int err = ensureConnected();
     if (err != 0) return err;
 
-    LogosMap r = client().callModuleMethod(kPd, "downloadPinned",
-                    LogosList{catalog, pkg, version, rootHash});
+    // The daemon does the move, because the file lands on its filesystem, not
+    // ours. Resolve a relative -o here so it means what the user typed in
+    // *this* shell -- correct for the usual local daemon. Against a remote one
+    // the result is an absolute path over there, which fails loudly if it is
+    // not writable rather than quietly writing somewhere else.
+    if (!outDir.empty()) {
+        std::error_code ec;
+        const std::filesystem::path p(outDir);
+        if (p.is_relative()) {
+            const auto abs = std::filesystem::absolute(p, ec);
+            if (!ec) outDir = abs.lexically_normal().string();
+        }
+    }
+
+    LogosMap opts = LogosMap::object();
+    opts["version"] = version;
+    opts["root_hash"] = rootHash;
+    opts["catalog"] = catalog;
+    opts["output"] = outDir;
+
+    LogosMap r = client().downloadPackage(pkg, opts);
     if (r.value("status", std::string{}) == "error") {
         output().printError(r.value("code", std::string("RPC_FAILED")),
                             r.value("message", std::string{}), r);
@@ -497,15 +517,12 @@ int PackageCommand::download(const std::vector<std::string>& args)
     }
     const auto& res = r["result"];
     const std::string path = res.value("path", std::string{});
-    const std::string errMsg = res.value("error", std::string{});
     if (path.empty()) {
-        output().printError("DOWNLOAD_FAILED",
-            errMsg.empty() ? ("Could not download '" + pkg + "'.") : errMsg);
+        output().printError("DOWNLOAD_FAILED", "Could not download '" + pkg + "'.");
         return 1;
     }
     if (output().isJsonMode()) { output().printSuccess(res); return 0; }
     output().printRaw(fmt::format("Downloaded {} -> {}", pkg, path));
     (void)jsonArg;
-    (void)outDir;
     return 0;
 }

@@ -8,8 +8,7 @@ int ListModulesCommand::execute(const std::vector<std::string>& args)
     bool loadedOnly = false;
     cli.add_flag("--loaded", loadedOnly, "Show only loaded modules");
     try {
-        auto argsCopy = args;
-        cli.parse(argsCopy);
+        parseArgs(cli, args);
     } catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS", "Usage: logosctl module ls [--loaded]");
         return 1;

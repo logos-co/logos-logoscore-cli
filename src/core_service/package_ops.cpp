@@ -1,4 +1,5 @@
 #include "package_ops.h"
+#include "config.h"
 #include "logos_core.h"
 
 #include <logos_api.h>
@@ -6,8 +7,11 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <filesystem>
 #include <set>
 #include <unordered_set>
+
+namespace fs = std::filesystem;
 
 namespace package_ops {
 namespace {
@@ -504,6 +508,63 @@ LogosMap apply(LogosAPI* api, Op op,
     result["installed"] = installedNow;
     result["reloaded"] = reloaded;
     return result;
+}
+
+LogosMap download(LogosAPI* api, const std::string& name,
+                  const Options& opts, const std::string& destDir)
+{
+    nlohmann::json r = call(api, kPd, "downloadPinned",
+                            LogosList{opts.catalog, name, opts.version, opts.rootHash});
+    if (!r.is_object())
+        return err("DOWNLOAD_FAILED", "package_downloader did not respond");
+
+    const std::string error = r.value("error", std::string{});
+    std::string path = r.value("path", std::string{});
+    if (!error.empty() || path.empty()) {
+        return err("DOWNLOAD_FAILED",
+                   error.empty() ? ("could not download '" + name + "'") : error);
+    }
+
+    // package_downloader has no destination parameter, so the file is sitting
+    // in $TMPDIR. Move it where it was actually asked to go.
+    const std::string dir = destDir.empty() ? Config::downloadsDir() : destDir;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) {
+        return err("DOWNLOAD_FAILED",
+                   "downloaded '" + name + "' but could not create " + dir +
+                   ": " + ec.message());
+    }
+
+    const fs::path from(path);
+    const fs::path to = fs::path(dir) / from.filename();
+    if (fs::equivalent(from.parent_path(), fs::path(dir), ec)) {
+        // Already in place (a downloader that gained a destination, or a cache
+        // dir that happens to be $TMPDIR). Nothing to move.
+        ec.clear();
+    } else {
+        fs::rename(from, to, ec);
+        if (ec) {
+            // rename() fails across filesystems, which is the normal case when
+            // the cache dir and $TMPDIR are on different mounts. Copy instead,
+            // and only drop the original once the copy is safely there.
+            ec.clear();
+            fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
+            if (ec) {
+                return err("DOWNLOAD_FAILED",
+                           "downloaded '" + name + "' to " + path +
+                           " but could not place it in " + dir + ": " + ec.message());
+            }
+            std::error_code rmec;
+            fs::remove(from, rmec);   // best effort; the copy is what matters
+        }
+        path = to.string();
+    }
+
+    LogosMap res = LogosMap::object();
+    for (auto it = r.begin(); it != r.end(); ++it) res[it.key()] = it.value();
+    res["path"] = path;
+    return LogosMap{{"status", "ok"}, {"result", res}};
 }
 
 } // namespace package_ops
