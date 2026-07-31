@@ -236,6 +236,10 @@ int Daemon::start(int argc, char* argv[],
     // makes a session portable; an override is an explicit decision to move
     // one out (a shared keyring, a cache on a bigger disk, a modules tree
     // something else manages).
+    // Everything gated on this is a logosctl feature; logoscore keeps the
+    // behaviour it has today.
+    const bool modern = (Config::flavor() == Config::Flavor::Modern);
+
     Config::setSessionDirOverride(Config::SessionDir::Modules, cfg.dirs.modules);
     Config::setSessionDirOverride(Config::SessionDir::Plugins, cfg.dirs.plugins);
     Config::setSessionDirOverride(Config::SessionDir::Keyring, cfg.dirs.keyring);
@@ -247,15 +251,17 @@ int Daemon::start(int argc, char* argv[],
     // boot -- including a failure during it, which is exactly when the log is
     // worth having. Non-fatal: a daemon that cannot write a log file is still
     // a working daemon.
-    {
+    if (modern) {
         LogSink::Options lo;
         lo.enabled   = cfg.logging.enabled;
         lo.dir       = Config::logsDir();
         lo.file      = cfg.logging.file;
         lo.maxSizeMb = cfg.logging.maxSizeMb;
         lo.maxFiles  = cfg.logging.maxFiles;
-        // Detached, the "terminal" is /dev/null, so mirroring is wasted work.
-        lo.console   = cfg.logging.console && ::isatty(fileno(stdout));
+        // Mirror whenever configured, pipe or terminal alike: a caller doing
+        // `daemon start > out.log` is watching that pipe. Detached, the
+        // original stdout is /dev/null, so this costs a discarded write.
+        lo.console   = cfg.logging.console;
         if (cfg.logging.enabled && !LogSink::instance().start(lo)) {
             fprintf(stderr, "Warning: could not open the log file under %s; "
                             "continuing without file logging.\n",
@@ -378,7 +384,6 @@ int Daemon::start(int argc, char* argv[],
     //     see, so install-then-load could not work at all. Created eagerly so
     //     the package manager has somewhere to write on its very first
     //     install rather than failing on a missing directory.
-    const bool modern = (Config::flavor() == Config::Flavor::Modern);
     if (modern) {
         std::error_code ec;
         for (const std::string& dir : {Config::modulesDir(), Config::pluginsDir(),

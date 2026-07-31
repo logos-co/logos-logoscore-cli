@@ -323,13 +323,17 @@
               cp bin/unit_tests $out/bin/
               cp bin/integration_tests $out/bin/
               cp bin/logosctl $out/bin/
+              # Both binaries ship, so both are tested.
+              cp bin/cli_tests_logoscore $out/bin/
+              cp bin/integration_tests_logoscore $out/bin/
+              cp bin/logoscore $out/bin/
 
               if [ -d ${liblogosLib}/lib ]; then
                 cp -r ${liblogosLib}/lib/* $out/lib/ || true
               fi
 
               ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
-                for binary in $out/bin/cli_tests $out/bin/unit_tests $out/bin/integration_tests $out/bin/logosctl; do
+                for binary in $out/bin/*; do
                   for dylib in $out/lib/*.dylib; do
                     if [ -f "$dylib" ]; then
                       libname=$(basename $dylib)
@@ -527,8 +531,12 @@
               logos-test-modules.modules.${system}.test_basic_module.install
             ];
           };
-        in {
-          tests = pkgs.runCommand "logos-logoscore-cli-tests" {
+        in rec {
+          # One runner, two flavours. They are separate derivations so nix
+          # builds them in parallel: while both binaries ship, a regression in
+          # either should surface in the same run, and neither should wait on
+          # the other.
+          tests-logosctl = pkgs.runCommand "logos-logoscore-cli-tests-logosctl" {
             nativeBuildInputs = [ testsPkg ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.qt6.qtbase ];
           } ''
             export QT_QPA_PLATFORM=offscreen
@@ -537,18 +545,45 @@
               export QT_PLUGIN_PATH="${pkgs.qt6.qtbase}/${pkgs.qt6.qtbase.qtPluginPrefix}"
             ''}
             export LOGOSCTL_BINARY=${testsPkg}/bin/logosctl
-            # Daemon-backed integration tests (tests/test_integration.cpp)
-            # read these. Absent ⇒ those tests GTEST_SKIP, so the rest of
-            # the suite still runs in environments without test modules.
+            # Daemon-backed integration tests read these. Absent ⇒ those tests
+            # GTEST_SKIP, so the rest still runs where test modules are absent.
             export LOGOSCTL_TEST_MODULES_DIR=${testModulesInstall}/modules
             export LOGOS_HOST_PATH=${liblogos}/bin/logos_host
             mkdir -p $out
-            echo "Running logos-logoscore-cli unit tests..."
+            echo "unit tests (shared code)..."
             ${testsPkg}/bin/unit_tests --gtest_output=xml:$out/unit-test-results.xml
-            echo "Running logos-logoscore-cli CLI tests..."
+            echo "logosctl CLI tests..."
             ${testsPkg}/bin/cli_tests --gtest_output=xml:$out/cli-test-results.xml
-            echo "Running logos-logoscore-cli integration tests..."
+            echo "logosctl integration tests..."
             ${testsPkg}/bin/integration_tests --gtest_output=xml:$out/integration-test-results.xml
+          '';
+
+          # logoscore's copy of the suites, pinning the surface people actually
+          # use. Deleted along with the tool.
+          tests-logoscore = pkgs.runCommand "logos-logoscore-cli-tests-logoscore" {
+            nativeBuildInputs = [ testsPkg ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.qt6.qtbase ];
+          } ''
+            export QT_QPA_PLATFORM=offscreen
+            export QT_FORCE_STDERR_LOGGING=1
+            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+              export QT_PLUGIN_PATH="${pkgs.qt6.qtbase}/${pkgs.qt6.qtbase.qtPluginPrefix}"
+            ''}
+            export LOGOSCORE_BINARY=${testsPkg}/bin/logoscore
+            export LOGOSCORE_TEST_MODULES_DIR=${testModulesInstall}/modules
+            export LOGOS_HOST_PATH=${liblogos}/bin/logos_host
+            mkdir -p $out
+            echo "logoscore CLI tests..."
+            ${testsPkg}/bin/cli_tests_logoscore --gtest_output=xml:$out/cli-test-results.xml
+            echo "logoscore integration tests..."
+            ${testsPkg}/bin/integration_tests_logoscore --gtest_output=xml:$out/integration-test-results.xml
+          '';
+
+          # Aggregate. `nix build .#checks.<sys>.tests` still works and now
+          # covers both tools; nix builds the two dependencies concurrently.
+          tests = pkgs.runCommand "logos-logoscore-cli-tests" { } ''
+            mkdir -p $out
+            cp -r ${tests-logosctl}/. $out/logosctl/
+            cp -r ${tests-logoscore}/. $out/logoscore/
           '';
         }
       );

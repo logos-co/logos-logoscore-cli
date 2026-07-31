@@ -142,7 +142,7 @@ int main(int argc, char *argv[])
 
     // ── CLI11 setup ──────────────────────────────────────────────────────────
     CLI::App app{"logoscore - Logos Core runtime CLI"};
-    app.set_version_flag("--version", logosctl_version::versionString());
+    app.set_version_flag("--version", logosctl_version::versionString("logoscore"));
     app.set_help_flag("-h,--help", "Show this help");
 
     // Global flags

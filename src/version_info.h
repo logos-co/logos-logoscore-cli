@@ -38,8 +38,12 @@ inline std::string commit() {
 }
 
 // Full multi-line banner printed by `logosctl --version`. No trailing newline.
-inline std::string versionString() {
-    std::string out = "logosctl version " + version();
+// `toolName` is the binary asking: the two front-ends share this code but must
+// each identify as themselves. Hardcoding one meant `logoscore --version`
+// reported "logosctl", which is exactly the sort of thing nobody notices until
+// a bug report cites the wrong tool.
+inline std::string versionString(const char* toolName = "logosctl") {
+    std::string out = std::string(toolName) + " version " + version();
 #if LOGOSCORE_HAS_BUILD_INFO
     out += "\ncommit: " + commit();
     const std::string commits = LOGOS_BUILD_COMMITS;
