@@ -9,16 +9,17 @@ intro: |
   at each stage that the command had the effect we expect.
 
   `logosctl` is the headless CLI frontend for the Logos platform. In daemon mode
-  (`-D`), it runs in the background and exposes client subcommands (`status`,
-  `module ls`, `load-module`, `module-info`, `stats`, `call`, `unload-module`,
-  `reload-module`, `stop`, …) that connect over a local RPC channel.
+  (`daemon start`, or the `-D` shorthand), it runs in the background and exposes
+  client commands (`daemon status`, `module ls`, `module load`, `module show`,
+  `stats`, `call`, `module unload`, `module reload`, `daemon stop`, …) that
+  connect over a local RPC channel.
 
 what_you_learn:
   - How to build and run the logosctl CLI
   - How a session directory holds the modules the daemon scans
   - How to start the daemon in the background and capture its logs
   - How to inspect the daemon and the modules it has discovered
-  - How to load a module, introspect it with `module-info`, and call its methods
+  - How to load a module, introspect it with `module show`, and call its methods
   - How to read per-module resource usage with `stats`
   - How `status` reflects the module lifecycle as you load, unload, and reload
   - How to stop the daemon and confirm it has actually exited
@@ -99,9 +100,12 @@ sections:
         run: "./logos/bin/logosctl --config-dir ./session daemon start --detach"
         code_block: "logosctl daemon start --detach"
         post_text: |
-          The `-D` flag starts the daemon. The client subcommands in the following
-          steps connect to this running process via the config written under
-          `~/.logosctl/`.
+          `daemon start --detach` returns only once the daemon is accepting
+          commands (`-D` is the shorthand for `daemon start`). The client
+          commands in the following steps connect to this running process via
+          the dial spec the daemon wrote into this session — `session/client/`,
+          because every command here passes `--config-dir ./session`. Without
+          it they would use `~/.logosctl/` instead.
 
       - run: "sleep 3"
 
@@ -237,10 +241,11 @@ sections:
         expect_contains:
           - "MODULE_SUBPROCESS_ISOLATED"
 
-      - title: "Inspect the module with module-info"
+      - title: "Inspect the module with module show"
         text: |
-          `module-info` shows a single module's status and the `Q_INVOKABLE`
-          methods it exposes — the same methods you can `call`:
+          `module show` (`module info` is accepted too) shows a single module's
+          status and the `Q_INVOKABLE` methods it exposes — the same methods you
+          can `call`:
         run: |
           ./logos/bin/logosctl --config-dir ./session module show test_basic_module --human
           echo '# --- JSON ---'
@@ -370,7 +375,7 @@ sections:
 
       - title: "Reload the module"
         text: |
-          `reload-module` unloads and re-loads a module in one step (handy after
+          `module reload` unloads and re-loads a module in one step (handy after
           rebuilding it). The module is loaded and callable again afterwards:
         run: "./logos/bin/logosctl --config-dir ./session module reload test_basic_module"
         code_block: "logosctl module reload test_basic_module"

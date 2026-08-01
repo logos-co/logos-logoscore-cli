@@ -163,6 +163,7 @@ std::vector<TransportInfo> toAdvertised(const LogosTransportSet& set)
 // here is allowed to abort startup.
 void bootstrapPackageModules(LogosAPI* api,
                              const std::string& bundledDir,
+                             const std::string& signaturePolicy,
                              bool verbose)
 {
     for (const char* name : {"package_manager", "package_downloader"}) {
@@ -208,6 +209,18 @@ void bootstrapPackageModules(LogosAPI* api,
     pm->invokeRemoteMethod("package_manager", "setKeyringDirectory",
                            nlohmann::json::array({Config::keyringDir()}));
 
+    // ...and so is the policy applied to what those keys say about a package.
+    // The module defaults to `warn`, so an unset `signature_policy:` is left
+    // alone rather than restated; anything else is the operator asking for a
+    // different answer and has to reach the module, or `require` would be a
+    // setting that reads back correctly and enforces nothing.
+    // The value is allowlisted by the config reader, so by here it is one of
+    // none | warn | require.
+    if (!signaturePolicy.empty()) {
+        pm->invokeRemoteMethod("package_manager", "setSignaturePolicy",
+                               nlohmann::json::array({signaturePolicy}));
+    }
+
     // A crash mid-dialog in a previous run can leave the module's single
     // gated-operation slot occupied, which would reject every subsequent
     // install. Basecamp clears it at startup for the same reason.
@@ -215,9 +228,13 @@ void bootstrapPackageModules(LogosAPI* api,
                            nlohmann::json::array());
 
     if (verbose)
-        fprintf(stderr, "Configured package_manager: user=%s embedded=%s keyring=%s\n",
+        fprintf(stderr,
+                "Configured package_manager: user=%s embedded=%s keyring=%s "
+                "signature_policy=%s\n",
                 Config::modulesDir().c_str(), bundledDir.c_str(),
-                Config::keyringDir().c_str());
+                Config::keyringDir().c_str(),
+                signaturePolicy.empty() ? "(module default)"
+                                        : signaturePolicy.c_str());
 }
 
 } // namespace
@@ -540,7 +557,8 @@ int Daemon::start(int argc, char* argv[],
     //     modules, and refusing to boot would turn a missing optional module
     //     into total unavailability.
     if (modern)
-        bootstrapPackageModules(coreServiceApi, paths::bundledPackageModulesDir(), verbose);
+        bootstrapPackageModules(coreServiceApi, paths::bundledPackageModulesDir(),
+                                cfg.signaturePolicy, verbose);
 
     // 9. Write the live-instance state file. Carries the resolved
     //    transport endpoints (post-bind, with real ports), instanceId/

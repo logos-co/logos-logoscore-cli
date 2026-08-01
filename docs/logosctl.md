@@ -32,7 +32,7 @@ picks which one (default `~/.logosctl`, also `LOGOSCTL_CONFIG_DIR`):
 <session>/
 ├── daemon/
 │   ├── config.yaml     # daemon configuration — you write this
-│   ├── daemon.log      # captured stdout/stderr when started with --detach
+│   ├── startup.err     # transient: a --detach child's output before logging is up
 │   ├── state.json      # live instance: pid, instance id, bound ports
 │   ├── tokens.json     # hashed-at-rest accepted tokens
 │   └── tokens/<name>.json
@@ -42,7 +42,7 @@ picks which one (default `~/.logosctl`, also `LOGOSCTL_CONFIG_DIR`):
 ├── modules/            # core modules installed into this session
 ├── plugins/            # UI plugins installed into this session
 ├── keyring/            # trusted package-signing keys
-├── logs/               # daemon_<timestamp>.log, rotated
+├── logs/               # daemon.log -> daemon_<timestamp>.log, rotated
 ├── cache/downloads/    # fetched .lgx
 └── data/               # per-module persistence
 ```
@@ -151,11 +151,16 @@ logosctl daemon config set ./node.yaml     # also accepts @file, or - for stdin
 logosctl daemon config show
 ```
 
-`set` replaces the file wholesale — there is no merge — and validates before
-writing, so a malformed document leaves the previous config intact. Unknown keys
-are rejected by name, because the loader ignores what it does not recognise and
-a silently-dropped `insecureTcp` (the key is `insecure_tcp`) would leave the
-daemon running with your intent missing.
+`set` replaces the file wholesale — there is no merge — and validates the whole
+document, through the loader the daemon itself uses, before writing anything. A
+document it rejects is never installed, so the previous config stays intact and
+the session is never left holding one the daemon would refuse to boot from.
+Unknown keys are rejected by name, because the loader ignores what it does not
+recognise and a silently-dropped `insecureTcp` (the key is `insecure_tcp`) would
+leave the daemon running with your intent missing. A key whose *value* is the
+wrong type is reported the same way — `modules_dirs: /single/path` (a scalar
+where a list belongs) fails with `modules_dirs: expected a list of strings, but
+got a string.` rather than being ignored, half-applied, or fatal.
 
 ```yaml
 # node.yaml
@@ -166,21 +171,46 @@ access_group: logos          # share the daemon with an OS group (see below)
 signature_policy: warn       # none | warn | require
 modules_dirs:                # extra read-only module directories to scan
   - /opt/logos/modules
+ssl:                         # default TLS material for every tcp_ssl listener
+  cert: /etc/logos/tls/server.pem
+  key:  /etc/logos/tls/server.key
 modules:
   core_service:
     - protocol: tcp_ssl
       host: 0.0.0.0
       port: 8645
       codec: json            # json | cbor
-      cert: tls/server.pem   # relative paths resolve inside the session
-      key: tls/server.key
   capability_module:
     - protocol: tcp_ssl
       host: 0.0.0.0
       port: 8646
-      cert: tls/server.pem
-      key: tls/server.key
+      cert: /etc/logos/tls/other.pem   # overrides the ssl: block for this one
+      key:  /etc/logos/tls/other.key
 ```
+
+Per-listener keys are `protocol`, `host`, `port`, `codec`, `cert`, `key`,
+`ca_file` and `verify_peer`. **`cert`, `key` and `ca_file` are opened as
+written** — unlike `dirs:`, a relative one resolves against the daemon
+process's working directory, not the session, so the same config started from
+a different directory silently fails its TLS handshake
+(`use_certificate_chain_file: No such file or directory`). Give them absolute
+paths.
+
+The top-level `ssl: { cert, key, ca }` block is the **default** for every
+`tcp_ssl` listener in the document — the usual case, where one certificate
+covers the whole node. A listener that names its own `cert:`/`key:`/`ca_file:`
+keeps it; the merge is per field, so a listener that names only a `cert:` still
+inherits the block's `key:`. A `tcp_ssl` listener left with no certificate from
+either source is refused at startup rather than bound: it would accept
+connections and fail every handshake with `no shared cipher`, which reads like
+a client fault.
+
+`signature_policy:` is handed to the session's package manager at daemon start
+and decides what `logosctl package install` does with an unsigned package or
+one signed by a key that is not in the session's `keyring/`: `none` skips the
+check, `warn` (the default when the key is absent) installs and prints a
+warning, `require` refuses the install. It takes effect on the next daemon
+start, like everything else in this file.
 
 A `local` listener is always added to every module, so same-host clients and the
 daemon's own cross-module calls keep working whatever else you configure. Any
@@ -207,17 +237,33 @@ logosctl client config show
 ```yaml
 # client.yaml — only needed to reach a daemon on another host
 version: 2
-token_file: alice.json
+token_file: alice.json       # a bare filename, read from <session>/client/
 daemon:
-  core_service:      { transport: tcp_ssl, host: node.example, port: 8645, ca: tls/ca.pem }
-  capability_module: { transport: tcp_ssl, host: node.example, port: 8646, ca: tls/ca.pem }
+  core_service:      { transport: tcp_ssl, host: node.example, port: 8645, ca: /etc/logos/tls/ca.pem, verify_peer: true }
+  capability_module: { transport: tcp_ssl, host: node.example, port: 8646, ca: /etc/logos/tls/ca.pem, verify_peer: true }
 ```
 
-Note the client says `transport:` where the daemon says `protocol:`, and `ca:`
-where the daemon says `cert:`/`key:`. The two documents describe different ends
-of the same connection and their key names were never unified; the validator
-names the key it expected, so a mix-up fails at `config set` rather than at
-connect time.
+The accepted top-level keys are exactly `version`, `daemon`, `token_file` and
+`instance_id`. `token_file` must be a plain filename — anything containing a
+separator or `..` is refused and the client fails closed with "token file not
+found". `ca` is opened as written, so give it an absolute path for the same
+reason `cert`/`key` need one on the daemon side.
+
+The two documents describe different ends of the same connection, and their key
+names were never unified. Per listener:
+
+| | Daemon (`modules:`) | Client (`daemon:`) |
+|---|---|---|
+| which protocol | `protocol:` | `transport:` |
+| where | `host:`, `port:`, `codec:` | `host:`, `port:`, `codec:` |
+| CA to trust | `ca_file:` | `ca:` |
+| verify the peer | `verify_peer:` | `verify_peer:` |
+| own certificate | `cert:`, `key:` | — (no client counterpart) |
+
+So `ca` is the *client's* spelling of the daemon's `ca_file`, and `cert`/`key`
+are the daemon's server certificate — a client config has no equivalent. The
+validator names the key it expected, so a mix-up fails at `config set` rather
+than at connect time.
 
 For same-host use you do not need this at all: the daemon writes a working
 `client/config.yaml` and `client/auto.json` into the session on every boot.
@@ -247,7 +293,7 @@ logosctl client config show
 # Modules — what is running right now
 logosctl module ls [--loaded]        # list known / loaded modules
 logosctl module show NAME            # methods, events, deps, crash detail
-logosctl module load NAME            # + dependencies (--no-deps to opt out)
+logosctl module load NAME            # + dependencies, always (no opt-out)
 logosctl module unload NAME          # + dependents  (--no-dependents to opt out)
 logosctl module reload NAME
 logosctl module stats                # per-module CPU / memory
@@ -257,14 +303,17 @@ logosctl call MODULE METHOD [args...]
 logosctl watch MODULE [--event NAME]
 
 # Packages — what is on disk
+# install/upgrade/remove share one option set:
+#   --file X.lgx  --dir D  --version V  --root-hash H  --catalog C
+#   -y|--yes  --dry-run  --no-deps  --no-dependents
 logosctl package install NAME...     # or --file X.lgx / --dir D
 logosctl package upgrade NAME
 logosctl package remove NAME         # + dependents by default
 logosctl package ls [--type core|ui]
 logosctl package show NAME|FILE.lgx  # installed detail, or inspect an .lgx
-logosctl package deps NAME [-r] [--reverse]
-logosctl package search [QUERY]
-logosctl package download NAME [-o DIR]
+logosctl package deps NAME [-r|--recursive] [--reverse]
+logosctl package search [QUERY] [--category C] [--catalog C]
+logosctl package download NAME [--version V] [--root-hash H] [--catalog C] [-o|--output DIR]
 
 # Catalogs
 logosctl catalog ls
@@ -282,9 +331,9 @@ logosctl token ls
 logosctl token revoke NAME
 ```
 
-Shorthands exist for the things you type most: `status`, `call`, `watch`,
-`stats`, `install`, and `search` work at the top level. `list` is accepted
-wherever `ls` is, `info` wherever `show` is, and `uninstall` for
+Shorthands exist for the things you type most: `status`, `stop`, `call`,
+`watch`, `stats`, `install`, and `search` work at the top level. `list` is
+accepted wherever `ls` is, `info` wherever `show` is, and `uninstall` for
 `package remove`.
 
 `install` and `search` are the only package commands aliased to the top level,
@@ -298,7 +347,11 @@ some tools do:
   them. Staging a package without starting it is a thing you may well want.
 - **`remove` takes dependents with it**, and `unload` too. Leaving a module
   running against something that no longer exists is the more surprising
-  outcome. `--no-dependents` opts out and fails if any exist.
+  outcome. `--no-dependents` opts out, acting on the named package or module
+  alone and leaving its dependents in place.
+- **`module load` always resolves dependencies.** There is no `--no-deps` on
+  it — that flag exists only on `package install` / `package upgrade`, which
+  are about files on disk, not about what is running.
 
 Installing does not require a daemon restart: the daemon re-scans afterwards,
 and only modules that were *already running* are stopped and restarted.
@@ -403,9 +456,9 @@ keyring, so a key trusted in one is not automatically trusted in the other.
 #### Agent / Script Example
 
 ```bash
-# Start daemon
-logosctl daemon start --detach &
-sleep 2
+# Start daemon (--detach returns only once it is accepting commands,
+# so no `&` and no sleep are needed)
+logosctl daemon start --detach
 
 # Preflight: verify daemon is running
 logosctl daemon status --json | jq -e '.daemon.status == "running"' > /dev/null
@@ -436,9 +489,9 @@ logosctl watch chat --event chat-message --json >> events.log &
 Modules can emit events that you can listen to in real time. Use `watch` to subscribe and `call` to trigger:
 
 ```bash
-# Start daemon with a modules directory
-logosctl daemon start --detach_dir &
-sleep 2
+# Start the daemon (the modules it scans come from the session's
+# modules/ directory and any modules_dirs in daemon/config.yaml)
+logosctl daemon start --detach
 
 # Load the module
 logosctl module load test_basic_module
@@ -465,7 +518,7 @@ on its own). Load modules with `module load` — transitive dependencies are
 resolved automatically — then call methods:
 
 ```bash
-# Start a clean daemon scanning ./modules
+# Start a clean daemon on this session's modules
 logosctl daemon start --detach
 
 # Load modules (deps resolved automatically)
@@ -497,21 +550,45 @@ Daemon startup options:
 Everything else — module directories, persistence, transports, the access
 policy — is configuration, and lives in `daemon/config.yaml`.
 
+These global flags work before or after any subcommand:
+
+```
+  -h, --help            Show help
+      --version         Print the version
+  -v, --verbose         Show debug logs
+  -j, --json            Force JSON output
+      --no-json,--human Force human-readable output even when piped
+  -q, --quiet           Suppress non-essential output
+      --config-dir DIR  Which session to act on (also LOGOSCTL_CONFIG_DIR)
+```
+
 #### Access policy
 
 The `access_policy` key declares, per target module, which caller modules may
-invoke it:
+invoke it. Unlike every other key in this document, its value is **a JSON
+document carried as a string** — the daemon hands the text straight to the
+runtime rather than interpreting it, so it is not modelled as YAML. A YAML
+block scalar (`|`) is the readable way to write it:
 
 ```yaml
-access_policy:
-  version: 1
-  mode: enforce
-  restrictions:
-    package_manager:    { allowedCallers: [package_manager_ui] }
-    package_downloader: { allowedCallers: [package_manager_ui] }
+access_policy: |
+  {
+    "version": 1,
+    "mode": "enforce",
+    "restrictions": {
+      "package_manager":    { "allowedCallers": ["package_manager_ui"] },
+      "package_downloader": { "allowedCallers": ["package_manager_ui"] }
+    }
+  }
 ```
 
-The policy is handed to the runtime (via `logos_core_set_access_policy`)
+> **Do not write it as a YAML mapping.** `access_policy:` followed by an
+> indented `version: 1` / `restrictions:` block is read as an object where a
+> string is expected. `daemon config set` reports it by name
+> (`access_policy: expected a string, but got a mapping.`) and writes nothing.
+> Quote the JSON, or use the `|` block above.
+
+The string is handed to the runtime (via `logos_core_set_access_policy`)
 before any module is loaded.
 
 > **Note:** enforcement is not yet implemented on the runtime side — the

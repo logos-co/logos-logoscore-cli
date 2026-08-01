@@ -7,6 +7,9 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -109,6 +112,39 @@ int ConfigCommand::set(const std::vector<std::string>& args)
         }
     }
 
+    // Stamp the schema version so a hand-written document doesn't have to
+    // carry it, and round-trip through the emitter so what lands on disk is
+    // canonical rather than whatever formatting the author used.
+    nlohmann::json doc = std::move(*parsed);
+    doc["version"] = m_daemonSide ? kDaemonConfigSchemaVersion
+                                  : kClientStateSchemaVersion;
+    const std::string canonical = yaml_json::dump(doc);
+
+    // Validate the exact bytes we are about to write, through the same loader
+    // the daemon and client use at startup — and do it BEFORE writing.
+    //
+    // This used to run after the file was on disk, so a document that parsed
+    // as YAML but failed the schema was written, *then* reported as an error:
+    // the command exited 1 while the session was left holding a config the
+    // daemon would refuse to boot from. Re-parsing the canonical text here
+    // (rather than validating `doc` directly) keeps the earlier guarantee that
+    // what was checked is what lands on disk, with nothing written on failure.
+    {
+        std::string err;
+        auto reparsed = yaml_json::parse(canonical, &err);
+        if (!reparsed) {
+            output().printError("INVALID_CONFIG", "Not valid YAML: " + err);
+            return 1;
+        }
+        const bool valid = m_daemonSide
+            ? parseDaemonConfigDocument(*reparsed, &err).has_value()
+            : parseClientStateDocument(*reparsed, &err).has_value();
+        if (!valid) {
+            output().printError("INVALID_CONFIG", err);
+            return 1;
+        }
+    }
+
     const std::string path = m_daemonSide ? Config::daemonConfigPath()
                                           : Config::clientConfigPath();
     std::error_code ec;
@@ -118,35 +154,37 @@ int ConfigCommand::set(const std::vector<std::string>& args)
         return 1;
     }
 
-    // Stamp the schema version so a hand-written document doesn't have to
-    // carry it, and round-trip through the emitter so what lands on disk is
-    // canonical rather than whatever formatting the author used.
-    nlohmann::json doc = std::move(*parsed);
-    doc["version"] = m_daemonSide ? kDaemonConfigSchemaVersion
-                                  : kClientStateSchemaVersion;
-
-    std::ofstream ofs(path, std::ios::trunc);
-    if (!ofs) {
-        output().printError("IO_ERROR", "Could not write " + path);
-        return 1;
-    }
-    ofs << yaml_json::dump(doc);
-    ofs.close();
-    if (!ofs) {
-        output().printError("IO_ERROR", "Could not write " + path);
-        return 1;
-    }
-
-    // Re-read through the real loader so an accepted document is one the
-    // daemon can actually consume — a schema error surfaces now, not at the
-    // next boot.
-    if (m_daemonSide) {
-        if (!DaemonConfigFile::read()) {
-            output().printError("INVALID_CONFIG",
-                "Written to " + path + ", but it does not load as a daemon "
-                "config. See the diagnostics above.");
+    // Write beside the target and rename into place. Opening the real path
+    // with `trunc` would destroy the previous config before the new bytes were
+    // safely down, so an I/O failure mid-write left the session holding a
+    // truncated file — the same half-applied state the validation above exists
+    // to prevent. The rename is the atomic publish step: a reader sees either
+    // the old config or the new one.
+    const fs::path tmp = path + ".tmp." + std::to_string(::getpid());
+    {
+        std::ofstream ofs(tmp, std::ios::trunc);
+        if (!ofs) {
+            output().printError("IO_ERROR", "Could not write " + path);
             return 1;
         }
+        ofs << canonical;
+        ofs.close();
+        if (!ofs) {
+            fs::remove(tmp, ec);
+            output().printError("IO_ERROR", "Could not write " + path);
+            return 1;
+        }
+    }
+    // Keep whatever permissions the file being replaced had — a session shared
+    // with an OS group would otherwise silently lose its group access.
+    struct stat st;
+    if (::stat(path.c_str(), &st) == 0)
+        ::chmod(tmp.c_str(), st.st_mode & 07777);
+    fs::rename(tmp, path, ec);
+    if (ec) {
+        fs::remove(tmp, ec);
+        output().printError("IO_ERROR", "Could not write " + path);
+        return 1;
     }
 
     if (output().isJsonMode()) {

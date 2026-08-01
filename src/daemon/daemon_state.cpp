@@ -1,5 +1,6 @@
 #include "daemon_state.h"
 #include "../config.h"
+#include "../json_schema.h"
 #include "../yaml_json.h"
 
 #include <nlohmann/json.hpp>
@@ -65,11 +66,19 @@ json transportToJson(const TransportInfo& t, bool includeSecrets)
     return j;
 }
 
-std::optional<TransportInfo> transportFromJson(const json& j)
+// `path` is where this entry lives in the document (e.g.
+// "modules.core_service.transports[0]"), so a rejection can name it.
+std::optional<TransportInfo> transportFromJson(const json& j,
+                                               json_schema::Errors& errs,
+                                               const std::string& path)
 {
-    if (!j.is_object()) return std::nullopt;
+    if (!j.is_object()) {
+        errs.mismatch(path, "a mapping describing one transport", j);
+        return std::nullopt;
+    }
+    json_schema::Reader r(j, errs, path + ".");
     TransportInfo t;
-    t.protocol = j.value("protocol", std::string{});
+    t.protocol = r.str("protocol");
     // Strict allowlist. An unknown protocol ("local2", "tcps", etc.)
     // would otherwise default to LocalSocket downstream, silently
     // misconfiguring the daemon (a typo in config.json would mean no
@@ -78,22 +87,29 @@ std::optional<TransportInfo> transportFromJson(const json& j)
     // no listener bound".
     if (t.protocol != "local"
      && t.protocol != "tcp"
-     && t.protocol != "tcp_ssl") return std::nullopt;
-    t.host = j.value("host", std::string{});
-    const int rawPort = j.value("port", 0);
-    if (rawPort < 0 || rawPort > 0xFFFF) return std::nullopt;
-    t.port = static_cast<uint16_t>(rawPort);
-    t.caFile = j.value("ca_file", std::string{});
-    t.verifyPeer = j.value("verify_peer", true);
+     && t.protocol != "tcp_ssl") {
+        errs.note(r.path("protocol") +
+                  R"(: expected one of "local", "tcp", "tcp_ssl")" +
+                  (t.protocol.empty() ? std::string(", but it is missing.")
+                                      : ", but got \"" + t.protocol + "\"."));
+        return std::nullopt;
+    }
+    t.host = r.str("host");
+    t.port = static_cast<uint16_t>(r.integer("port", 0, 0, 0xFFFF));
+    t.caFile = r.str("ca_file");
+    t.verifyPeer = r.boolean("verify_peer", true);
     // The server's certificate and key. Read here because the config file is
     // where an operator writes them -- with the transport CLI flags gone it is
     // the only place. Omitting them left every tcp_ssl listener bound with no
     // certificate, so each handshake died with "no shared cipher" and TLS was
     // effectively unconfigurable. state.json never carries them, so this is a
     // no-op on that path.
-    t.certFile = j.value("cert", std::string{});
-    t.keyFile  = j.value("key",  std::string{});
-    t.codec = j.value("codec", std::string{"json"});
+    t.certFile = r.str("cert");
+    t.keyFile  = r.str("key");
+    t.codec = r.str("codec", "json");
+    // A field of the wrong type is reported by the reader; the entry as a
+    // whole is unusable, so hand back nothing rather than a half-read one.
+    if (!errs.ok()) return std::nullopt;
     return t;
 }
 
@@ -145,55 +161,77 @@ json daemonConfigToJson(const DaemonConfig& cfg, bool includeSecrets)
     obj["insecure_tcp"] = cfg.insecureTcp;
     if (!cfg.accessPolicy.empty()) obj["access_policy"] = cfg.accessPolicy;
     if (!cfg.accessGroup.empty())  obj["access_group"]  = cfg.accessGroup;
+    // Omitted when unset, like access_policy: an empty string is not a valid
+    // policy, so emitting one would produce a document that fails its own
+    // reader on the next load.
+    if (!cfg.signaturePolicy.empty()) obj["signature_policy"] = cfg.signaturePolicy;
     return obj;
 }
 
 // Inverse of daemonConfigToJson — used by both config.json and
 // state.json readers (the latter parses the `resolved` block).
 //
-// Returns std::nullopt when any embedded transport entry fails the
-// strict-allowlist check in `transportFromJson` (e.g. an unknown
-// `protocol` value, or an out-of-range port). Silent skip would
-// turn a typo in config.json into a quietly-disabled listener — the
-// daemon would come up with a partial transport set, no diagnostic.
-// Failing the parse forces the operator to see the error and fix
-// the file.
-std::optional<DaemonConfig> daemonConfigFromJson(const json& obj)
+// Returns std::nullopt, with the reason in `errs`, when anything in the
+// document is not what the schema expects: a value of the wrong type
+// (`modules_dirs:` given a scalar), an out-of-range number, or a transport
+// entry that fails the strict-allowlist check in `transportFromJson` (an
+// unknown `protocol`, say). Silent skip would turn a typo in config.yaml into
+// a quietly-disabled listener — the daemon would come up with a partial
+// transport set, no diagnostic. Failing the parse forces the operator to see
+// the error and fix the file; nothing is applied in the meantime.
+// `prefix` is the dotted path of `obj` inside its file — empty for config.yaml,
+// "resolved." for the block state.json nests it under — so every message points
+// at the key as it appears in the file the operator would open.
+std::optional<DaemonConfig> daemonConfigFromJson(const json& obj,
+                                                 json_schema::Errors& errs,
+                                                 const std::string& prefix = {})
 {
     DaemonConfig cfg;
-    cfg.modulesDirs     = obj.value("modules_dirs", std::vector<std::string>{});
-    cfg.persistencePath = obj.value("persistence_path", "");
+    json_schema::Reader r(obj, errs, prefix);
+    cfg.modulesDirs     = r.stringList("modules_dirs");
+    cfg.persistencePath = r.str("persistence_path");
 
-    if (obj.contains("modules") && obj["modules"].is_object()) {
-        for (auto it = obj["modules"].begin(); it != obj["modules"].end(); ++it) {
+    if (const json* modules = r.mapping("modules")) {
+        for (auto it = modules->begin(); it != modules->end(); ++it) {
             const std::string& moduleName = it.key();
             if (moduleName.empty()) continue;
-            const auto& moduleObj = it.value();
+            const json& moduleObj = it.value();
+            const std::string modulePath = r.path("modules") + "." + moduleName;
+            // An empty value (`core_service:` with nothing after it) means the
+            // module names no transports, same as everywhere else in this
+            // reader. It is not a type mismatch.
+            if (moduleObj.is_null()) continue;
             // Two accepted spellings. The canonical one is
             // `<module>: { transports: [ ... ] }`, which is what we emit and
             // what state.json uses. A bare sequence is the obvious thing to
             // hand-write, so accept it as shorthand rather than skipping it
             // silently — an ignored transport block means the daemon boots
             // local-only with no hint as to why.
-            json arr;
+            const json* arr = nullptr;
             if (moduleObj.is_array()) {
-                arr = moduleObj;
+                arr = &moduleObj;
             } else if (moduleObj.is_object()) {
-                arr = moduleObj.value("transports", json::array());
-            } else {
-                continue;
-            }
-            if (!arr.is_array()) continue;
-            std::vector<TransportInfo> transports;
-            for (const auto& j : arr) {
-                auto t = transportFromJson(j);
-                if (!t) {
-                    std::cerr << "DaemonConfig: invalid transport entry under "
-                              << "modules." << moduleName
-                              << " — refusing to load partial config."
-                              << std::endl;
-                    return std::nullopt;
+                json_schema::Reader mr(moduleObj, errs, modulePath + ".");
+                arr = mr.list("transports", "a list of transports");
+                if (!arr) {
+                    if (!errs.ok()) return std::nullopt;
+                    continue;  // no `transports` key: no entries, not an error
                 }
+            } else {
+                errs.mismatch(modulePath,
+                              "a list of transports, or a mapping with a "
+                              "\"transports\" list",
+                              moduleObj);
+                return std::nullopt;
+            }
+            std::vector<TransportInfo> transports;
+            for (std::size_t i = 0; i < arr->size(); ++i) {
+                auto t = transportFromJson(
+                    (*arr)[i], errs,
+                    modulePath + ".transports[" + std::to_string(i) + "]");
+                // errs names the offending entry; refuse the whole document
+                // rather than load a partial transport set.
+                if (!t) return std::nullopt;
                 transports.push_back(*t);
             }
             if (!transports.empty())
@@ -201,37 +239,57 @@ std::optional<DaemonConfig> daemonConfigFromJson(const json& obj)
         }
     }
 
-    if (obj.contains("ssl") && obj["ssl"].is_object()) {
-        cfg.sslCert = obj["ssl"].value("cert", std::string{});
-        cfg.sslKey  = obj["ssl"].value("key",  std::string{});
-        cfg.sslCa   = obj["ssl"].value("ca",   std::string{});
+    if (const json* ssl = r.mapping("ssl")) {
+        json_schema::Reader sr(*ssl, errs, r.path("ssl") + ".");
+        cfg.sslCert = sr.str("cert");
+        cfg.sslKey  = sr.str("key");
+        cfg.sslCa   = sr.str("ca");
     }
 
-    if (obj.contains("dirs") && obj["dirs"].is_object()) {
-        const auto& d = obj["dirs"];
-        cfg.dirs.modules = d.value("modules", std::string{});
-        cfg.dirs.plugins = d.value("plugins", std::string{});
-        cfg.dirs.keyring = d.value("keyring", std::string{});
-        cfg.dirs.data    = d.value("data",    std::string{});
-        cfg.dirs.cache   = d.value("cache",   std::string{});
-        cfg.dirs.logs    = d.value("logs",    std::string{});
+    if (const json* dirs = r.mapping("dirs")) {
+        json_schema::Reader d(*dirs, errs, r.path("dirs") + ".");
+        cfg.dirs.modules = d.str("modules");
+        cfg.dirs.plugins = d.str("plugins");
+        cfg.dirs.keyring = d.str("keyring");
+        cfg.dirs.data    = d.str("data");
+        cfg.dirs.cache   = d.str("cache");
+        cfg.dirs.logs    = d.str("logs");
     }
     // persistence_path is the older spelling of dirs.data and still works;
     // dirs.data wins when both are set.
     if (cfg.dirs.data.empty()) cfg.dirs.data = cfg.persistencePath;
 
-    if (obj.contains("logging") && obj["logging"].is_object()) {
-        const auto& l = obj["logging"];
-        cfg.logging.enabled   = l.value("enabled", true);
-        cfg.logging.file      = l.value("file", std::string{"daemon.log"});
-        cfg.logging.maxSizeMb = l.value("max_size_mb", std::size_t{10});
-        cfg.logging.maxFiles  = l.value("max_files",   std::size_t{5});
-        cfg.logging.console   = l.value("console", true);
+    if (const json* logging = r.mapping("logging")) {
+        json_schema::Reader l(*logging, errs, r.path("logging") + ".");
+        cfg.logging.enabled   = l.boolean("enabled", true);
+        cfg.logging.file      = l.str("file", "daemon.log");
+        cfg.logging.maxSizeMb = static_cast<std::size_t>(
+            l.integer("max_size_mb", 10, 0, 1024 * 1024));
+        cfg.logging.maxFiles  = static_cast<std::size_t>(
+            l.integer("max_files", 5, 0, 1000000));
+        cfg.logging.console   = l.boolean("console", true);
     }
 
-    cfg.insecureTcp = obj.value("insecure_tcp", false);
-    cfg.accessPolicy = obj.value("access_policy", std::string{});
-    cfg.accessGroup = obj.value("access_group", std::string{});
+    cfg.insecureTcp  = r.boolean("insecure_tcp", false);
+    cfg.accessPolicy = r.str("access_policy");
+    cfg.accessGroup  = r.str("access_group");
+
+    // Strict allowlist, same reasoning as the transport `protocol` field: the
+    // value is handed to package_manager, which ignores what it doesn't
+    // recognise. A typo ("required", "strict") would otherwise leave the
+    // module on its default `warn` while `daemon config show` kept displaying
+    // the operator's stricter intent.
+    cfg.signaturePolicy = r.str("signature_policy");
+    if (!cfg.signaturePolicy.empty() && !isValidSignaturePolicy(cfg.signaturePolicy)) {
+        errs.note(r.path("signature_policy") + ": expected one of \"none\", "
+                  "\"warn\", \"require\", but got \"" + cfg.signaturePolicy + "\".");
+        return std::nullopt;
+    }
+
+    // Any type mismatch recorded above (the reader keeps the first one) makes
+    // the whole document unusable: half-applying it is how an operator ends up
+    // with a daemon that does not match the file they are looking at.
+    if (!errs.ok()) return std::nullopt;
     return cfg;
 }
 
@@ -298,6 +356,39 @@ bool atomicWriteJson(const fs::path& path, const json& obj,
 
 // -- DaemonConfigFile -------------------------------------------------------
 
+std::optional<DaemonConfig> parseDaemonConfigDocument(const json& obj,
+                                                      std::string* error)
+{
+    auto fail = [&](const std::string& message) {
+        if (error) *error = message;
+        return std::optional<DaemonConfig>{};
+    };
+    try {
+        if (!obj.is_object())
+            return fail("The config document must be a mapping at the top level.");
+
+        json_schema::Errors errs;
+        json_schema::Reader r(obj, errs);
+        const int64_t v = r.integer("version", 0);
+        if (!errs.ok()) return fail(errs.message());
+        if (v != kDaemonConfigSchemaVersion)
+            return fail("unsupported schema version " + std::to_string(v) +
+                        " — rewrite it with `daemon config set` (expected "
+                        "version " + std::to_string(kDaemonConfigSchemaVersion) +
+                        ").");
+
+        auto cfg = daemonConfigFromJson(obj, errs);
+        if (!cfg) return fail(errs.ok() ? "the document could not be read."
+                                        : errs.message());
+        return cfg;
+    } catch (const std::exception& e) {
+        // Belt and braces. Every read above is type-checked, so nothing in
+        // here is supposed to throw any more — but a config file must never be
+        // able to terminate the process, whatever it contains.
+        return fail(std::string("the document could not be read (") + e.what() + ").");
+    }
+}
+
 std::string DaemonConfigFile::filePath()
 {
     return Config::daemonConfigPath();
@@ -309,7 +400,7 @@ std::optional<DaemonConfig> DaemonConfigFile::read()
     if (!ifs) return std::nullopt;
 
     // The file is YAML (a human writes it); the schema work below is still
-    // done by daemonConfigFromJson, so the format change stops here.
+    // done by parseDaemonConfigDocument, so the format change stops here.
     std::stringstream buf;
     buf << ifs.rdbuf();
     std::string parseError;
@@ -319,23 +410,14 @@ std::optional<DaemonConfig> DaemonConfigFile::read()
                   << parseError << std::endl;
         return std::nullopt;
     }
-    json obj = std::move(*parsed);
-    if (!obj.is_object()) {
-        std::cerr << "DaemonConfig: " << filePath()
-                  << " must be a mapping at the top level." << std::endl;
-        return std::nullopt;
-    }
 
-    const int v = obj.value("version", 0);
-    if (v != kDaemonConfigSchemaVersion) {
-        std::cerr << "DaemonConfig: unsupported schema version " << v
-                  << " in " << filePath()
-                  << " — rewrite it with `daemon config set` "
-                  << "(expected version " << kDaemonConfigSchemaVersion
-                  << ")." << std::endl;
-        return std::nullopt;
-    }
-    return daemonConfigFromJson(obj);
+    // Exactly the validation `daemon config set` runs before it writes, so a
+    // document that installs is a document that boots.
+    std::string error;
+    auto cfg = parseDaemonConfigDocument(*parsed, &error);
+    if (!cfg)
+        std::cerr << "DaemonConfig: " << filePath() << ": " << error << std::endl;
+    return cfg;
 }
 
 bool DaemonConfigFile::write(const DaemonConfig& cfg)
@@ -380,8 +462,20 @@ DaemonRuntimeState DaemonRuntimeStateFile::read()
     json obj;
     try { obj = json::parse(ifs); }
     catch (...) { return state; }
+    if (!obj.is_object()) return state;
 
-    state.schemaVersion = obj.value("version", 0);
+    // Type-checked like the operator's config file. state.json is
+    // machine-written, so a mismatch here means a corrupted or hand-edited
+    // file — which must still read as "no usable state", never as a crash.
+    json_schema::Errors errs;
+    json_schema::Reader r(obj, errs);
+
+    state.schemaVersion = static_cast<int>(r.integer("version", 0));
+    if (!errs.ok()) {
+        std::cerr << "DaemonRuntimeState: " << filePath() << ": "
+                  << errs.message() << std::endl;
+        return DaemonRuntimeState{};
+    }
     if (state.schemaVersion != kDaemonRuntimeStateSchemaVersion) {
         std::cerr << "DaemonRuntimeState: unsupported schema version "
                   << state.schemaVersion
@@ -391,12 +485,12 @@ DaemonRuntimeState DaemonRuntimeStateFile::read()
         return state;
     }
 
-    state.instanceId   = obj.value("instance_id", "");
-    state.pid          = obj.value("pid", int64_t(-1));
-    state.startedAt    = obj.value("started_at", "");
-    state.configSource = obj.value("config_source", "");
-    if (obj.contains("resolved") && obj["resolved"].is_object()) {
-        auto resolved = daemonConfigFromJson(obj["resolved"]);
+    state.instanceId   = r.str("instance_id");
+    state.pid          = r.integer("pid", -1);
+    state.startedAt    = r.str("started_at");
+    state.configSource = r.str("config_source");
+    if (const json* resolvedObj = r.mapping("resolved")) {
+        auto resolved = daemonConfigFromJson(*resolvedObj, errs, "resolved.");
         if (!resolved) {
             // Same fail-the-parse contract as DaemonConfigFile::read:
             // an invalid embedded transport entry means we can't trust
@@ -407,6 +501,15 @@ DaemonRuntimeState DaemonRuntimeStateFile::read()
             return DaemonRuntimeState{};
         }
         state.resolved = std::move(*resolved);
+    }
+
+    // Same contract for a mistyped field anywhere above: one wrong type means
+    // the file cannot be trusted as a whole, so callers get "no live daemon"
+    // rather than a state half-read from it.
+    if (!errs.ok()) {
+        std::cerr << "DaemonRuntimeState: " << filePath() << ": "
+                  << errs.message() << std::endl;
+        return DaemonRuntimeState{};
     }
 
     state.fileOk = !state.instanceId.empty();
@@ -482,6 +585,43 @@ json toClientEntry(const TransportInfo& t)
 }
 
 }  // namespace
+
+bool isValidSignaturePolicy(const std::string& policy)
+{
+    return policy == "none" || policy == "warn" || policy == "require";
+}
+
+void applySslDefaults(DaemonConfig& cfg)
+{
+    if (cfg.sslCert.empty() && cfg.sslKey.empty() && cfg.sslCa.empty()) return;
+
+    for (auto& [moduleName, transports] : cfg.modules) {
+        (void)moduleName;
+        for (auto& t : transports) {
+            // Only TLS listeners have anywhere to put this. A `local` or
+            // plaintext `tcp` entry carrying a cert path would be advertised
+            // to clients as if it meant something.
+            if (t.protocol != "tcp_ssl") continue;
+            if (t.certFile.empty()) t.certFile = cfg.sslCert;
+            if (t.keyFile.empty())  t.keyFile  = cfg.sslKey;
+            if (t.caFile.empty())   t.caFile   = cfg.sslCa;
+        }
+    }
+}
+
+std::vector<std::string> findTlsListenersMissingMaterial(const DaemonConfig& cfg)
+{
+    std::vector<std::string> offenders;
+    for (const auto& [moduleName, transports] : cfg.modules) {
+        for (const auto& t : transports) {
+            if (t.protocol != "tcp_ssl") continue;
+            if (!t.certFile.empty() && !t.keyFile.empty()) continue;
+            offenders.push_back(moduleName + " tcp_ssl " + t.host + ":" +
+                                std::to_string(t.port));
+        }
+    }
+    return offenders;
+}
 
 // Resolve an OS group name-or-gid to a gid. Accepts an all-digits string as a
 // numeric gid (with overflow/range validation), otherwise looks the name up in
@@ -606,13 +746,19 @@ bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
             json existing = json::object();
             if (auto parsed = yaml_json::parse(ebuf.str()); parsed && parsed->is_object())
                 existing = std::move(*parsed);
-            const std::string existingInstance =
-                existing.value("instance_id", std::string{});
+            // Type-checked: this file is operator-editable, and a stray
+            // `instance_id: 42` must not abort the daemon mid-boot. A field of
+            // the wrong type reads as absent, which lands on the safe side —
+            // the artifact gets regenerated / keeps the default token file.
+            json_schema::Errors ignored;
+            json_schema::Reader er(existing, ignored);
+            const std::string existingInstance = er.str("instance_id");
             if (!existingInstance.empty() && existingInstance != instanceId) {
                 writeClientCfg = true;
                 // Keep whatever token file the existing config referenced —
                 // an operator may have repointed it away from auto.json.
-                tokenFileName = existing.value("token_file", std::string{"auto.json"});
+                const std::string named = er.str("token_file");
+                if (!named.empty()) tokenFileName = named;
             }
         }
     }

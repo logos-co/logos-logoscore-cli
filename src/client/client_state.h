@@ -1,6 +1,8 @@
 #ifndef LOGOSCORE_CLIENT_STATE_H
 #define LOGOSCORE_CLIENT_STATE_H
 
+#include <nlohmann/json_fwd.hpp>
+
 #include <map>
 #include <optional>
 #include <string>
@@ -53,6 +55,19 @@ struct ClientState {
     // surrounding shape.
     std::map<std::string, ClientModuleTransport> daemon;
 };
+
+// Validate a client-config document (YAML already converted to JSON) and turn
+// it into a ClientState, without touching disk. Returns nullopt with a one-line
+// reason in `error` for anything the client could not dial from: a wrong
+// top-level type, an unsupported schema version, a value of the wrong type, or
+// an invalid `daemon.<module>` transport entry. The message names the offending
+// key by its dotted path.
+//
+// Never throws: a hand-written config must not be able to terminate the
+// process. Shared by ClientStateFile::read and by `client config set`, which
+// validates a document through this *before* writing it.
+std::optional<ClientState> parseClientStateDocument(const nlohmann::json& obj,
+                                                    std::string* error);
 
 class ClientStateFile {
 public:

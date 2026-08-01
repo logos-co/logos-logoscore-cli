@@ -629,6 +629,17 @@ int main(int argc, char *argv[])
             configSource = "config.yaml";
         }
 
+        // Push the top-level `ssl:` block into the listeners that need it.
+        // It is a session-wide default: a `tcp_ssl` entry naming its own
+        // cert/key/ca keeps them, one that names none inherits these. Done
+        // before state.json is written, so the resolved snapshot shows the
+        // material each listener actually bound with rather than the intent
+        // it was derived from.
+        //
+        // logosctl-only by construction -- this is main.cpp, the Modern
+        // front-end. logoscore (main_legacy.cpp) never calls it.
+        applySslDefaults(mergedCfg);
+
         // Make sure the well-known modules at least *have* an entry,
         // so a bare `logosctl daemon start` (no transport flags) still boots
         // with listeners. The local-prepend below populates them.
@@ -707,6 +718,21 @@ int main(int argc, char *argv[])
                           << std::endl;
                 return 1;
             }
+        }
+
+        // TLS-material guard, post-defaults: a tcp_ssl listener with no
+        // certificate binds happily and then fails every handshake with
+        // "no shared cipher", which reads like a client problem. Refuse to
+        // start and name the two places the material can come from.
+        if (auto missing = findTlsListenersMissingMaterial(mergedCfg);
+            !missing.empty()) {
+            for (const auto& who : missing) {
+                std::cerr << "Error: " << who << " has no certificate/key. "
+                          << "Set cert: and key: on the listener, or a "
+                          << "top-level ssl: { cert, key } block to cover "
+                          << "every tcp_ssl listener at once." << std::endl;
+            }
+            return 1;
         }
 
         return Daemon::start(argc, argv, mergedCfg, configSource, g_verbose);

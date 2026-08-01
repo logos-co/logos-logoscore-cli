@@ -347,6 +347,88 @@ TEST_F(CLITest, DaemonConfigSet_RoundTripsThroughShow) {
     fs::remove_all(cfgDir);
 }
 
+TEST_F(CLITest, DaemonConfigSet_AcceptsEverySignaturePolicyValue) {
+    for (const char* policy : {"none", "warn", "require"}) {
+        const fs::path cfgDir = fs::temp_directory_path() /
+            ("logosctl_cli_sigok_" + std::string(policy) + "_" +
+             std::to_string(::getpid()));
+        fs::remove_all(cfgDir);
+        fs::create_directories(cfgDir);
+        const fs::path doc = cfgDir / "node.yaml";
+        { std::ofstream ofs(doc, std::ios::trunc);
+          ofs << "signature_policy: " << policy << "\n"; }
+
+        std::string output;
+        int exitCode = runLogosctlWithTimeout(
+            "--config-dir " + cfgDir.string() + " daemon config set " + doc.string(),
+            &output, 5);
+        EXPECT_EQ(exitCode, 0) << policy << " Output:\n" << output;
+
+        std::string shown;
+        exitCode = runLogosctlWithTimeout(
+            "--config-dir " + cfgDir.string() + " daemon config show --human",
+            &shown, 5);
+        EXPECT_EQ(exitCode, 0) << "Output:\n" << shown;
+        EXPECT_NE(shown.find(policy), std::string::npos) << "Output:\n" << shown;
+        fs::remove_all(cfgDir);
+    }
+}
+
+TEST_F(CLITest, DaemonConfigSet_RejectsUnknownSignaturePolicy) {
+    // package_manager ignores a policy it does not recognise, so `required`
+    // (the key takes `require`) would leave it on the default `warn` while
+    // `daemon config show` kept reporting the operator's stricter intent.
+    const fs::path cfgDir = fs::temp_directory_path() /
+        ("logosctl_cli_sigbad_" + std::to_string(::getpid()));
+    fs::remove_all(cfgDir);
+    fs::create_directories(cfgDir);
+    const fs::path doc = cfgDir / "node.yaml";
+    { std::ofstream ofs(doc, std::ios::trunc); ofs << "signature_policy: required\n"; }
+
+    std::string output;
+    int exitCode = runLogosctlWithTimeout(
+        "--config-dir " + cfgDir.string() + " daemon config set " + doc.string(),
+        &output, 5);
+    EXPECT_EQ(exitCode, 1) << "Output:\n" << output;
+    EXPECT_NE(output.find("require"), std::string::npos)
+        << "The error should name the accepted values. Output:\n" << output;
+    fs::remove_all(cfgDir);
+}
+
+TEST_F(CLITest, DaemonStart_RefusesTlsListenerWithNoCertificate) {
+    // A tcp_ssl listener with no material binds fine and then fails every
+    // handshake with "no shared cipher", which reads like a client fault.
+    const fs::path cfgDir = fs::temp_directory_path() /
+        ("logosctl_cli_nocert_" + std::to_string(::getpid()));
+    fs::remove_all(cfgDir);
+    fs::create_directories(cfgDir);
+    const fs::path doc = cfgDir / "node.yaml";
+    {
+        std::ofstream ofs(doc, std::ios::trunc);
+        ofs << "modules:\n"
+               "  core_service:\n"
+               "    - protocol: tcp_ssl\n"
+               "      host: 127.0.0.1\n"
+               "      port: 8645\n";
+    }
+    std::string output;
+    ASSERT_EQ(runLogosctlWithTimeout(
+        "--config-dir " + cfgDir.string() + " daemon config set " + doc.string(),
+        &output, 5), 0) << "Output:\n" << output;
+
+    output.clear();
+    // 124 would mean a daemon actually started on a certificate-less listener.
+    int exitCode = runLogosctlWithTimeout(
+        "--config-dir " + cfgDir.string() + " -D", &output, 15);
+    EXPECT_EQ(exitCode, 1) << "Output:\n" << output;
+    EXPECT_NE(output.find("core_service"), std::string::npos)
+        << "The error should name the listener. Output:\n" << output;
+    EXPECT_NE(output.find("ssl:"), std::string::npos)
+        << "The error should name the top-level block as one of the two places "
+           "the material can come from. Output:\n" << output;
+    fs::remove_all(cfgDir);
+}
+
 TEST_F(CLITest, DaemonConfigShow_AbsentIsNotAnError) {
     // A session with no config runs on defaults; that is a normal state.
     const fs::path cfgDir = fs::temp_directory_path() /
@@ -357,4 +439,139 @@ TEST_F(CLITest, DaemonConfigShow_AbsentIsNotAnError) {
         "--config-dir " + cfgDir.string() + " daemon config show --human", &output, 5);
     EXPECT_EQ(exitCode, 0) << "Output:\n" << output;
     fs::remove_all(cfgDir);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// A malformed document must be an error, never a crash, and never a write.
+//
+// The reader used nlohmann's `json::value(key, default)`, which throws when the
+// key is present with a different type than the default. Nothing caught it, so
+// `modules_dirs: /single/path` — a scalar where a list belongs — terminated the
+// binary:
+//
+//   libc++abi: terminating due to uncaught exception of type
+//   nlohmann::detail::type_error: [json.exception.type_error.302]
+//   type must be array, but is string
+//
+// A process killed by SIGABRT surfaces here as exit 134, so asserting exit 1
+// is what distinguishes "reported it" from "died on it".
+// ═════════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// Per-test config dir plus a document to feed `config set`. Named after the
+// test so parallel cases never share one.
+struct ConfigFixture {
+    fs::path dir;
+    fs::path doc;
+
+    ConfigFixture(const std::string& name, const std::string& body)
+    {
+        dir = fs::temp_directory_path() /
+              ("logosctl_cli_" + name + "_" + std::to_string(::getpid()));
+        fs::remove_all(dir);
+        fs::create_directories(dir);
+        doc = dir / "doc.yaml";
+        std::ofstream ofs(doc, std::ios::trunc);
+        ofs << body;
+    }
+    ~ConfigFixture() { fs::remove_all(dir); }
+
+    fs::path daemonConfig() const { return dir / "daemon" / "config.yaml"; }
+    fs::path clientConfig() const { return dir / "client" / "config.yaml"; }
+};
+
+} // namespace
+
+TEST_F(CLITest, DaemonConfigSet_TypeMismatchIsReportedNotFatal) {
+    ConfigFixture fx("typemismatch", "modules_dirs: /single/path\n");
+
+    std::string output;
+    int exitCode = runLogosctlWithTimeout(
+        "--config-dir " + fx.dir.string() + " daemon config set " + fx.doc.string(),
+        &output, 5);
+
+    EXPECT_EQ(exitCode, 1)
+        << "A mistyped value must be reported (exit 1), not abort the process "
+           "(exit 134). Output:\n" << output;
+    EXPECT_NE(output.find("modules_dirs"), std::string::npos)
+        << "The error must name the offending key. Output:\n" << output;
+    EXPECT_EQ(output.find("terminating due to uncaught exception"), std::string::npos)
+        << "Output:\n" << output;
+    EXPECT_FALSE(fs::exists(fx.daemonConfig()))
+        << "A document that cannot be understood must not be written.";
+}
+
+TEST_F(CLITest, DaemonConfigSet_SchemaInvalidDocumentIsNotWritten) {
+    // This document passes the YAML parse and the key allowlist, and fails
+    // only the schema. Validation used to run AFTER the write, so the command
+    // exited 1 having already installed a config the daemon would refuse to
+    // boot from.
+    ConfigFixture fx("schemainvalid",
+                     "modules:\n"
+                     "  core_service:\n"
+                     "    - protocol: tcpp\n"
+                     "      host: 127.0.0.1\n"
+                     "      port: 8645\n");
+
+    std::string output;
+    int exitCode = runLogosctlWithTimeout(
+        "--config-dir " + fx.dir.string() + " daemon config set " + fx.doc.string(),
+        &output, 5);
+
+    EXPECT_EQ(exitCode, 1) << "Output:\n" << output;
+    EXPECT_FALSE(fs::exists(fx.daemonConfig()))
+        << "A rejected document must not be left on disk — the session would "
+           "be holding a config the daemon cannot boot from.";
+    EXPECT_NE(output.find("protocol"), std::string::npos)
+        << "The error must name the offending key. Output:\n" << output;
+}
+
+TEST_F(CLITest, DaemonConfigSet_RejectionLeavesThePreviousConfigIntact) {
+    ConfigFixture fx("preserve", "insecure_tcp: true\n");
+
+    std::string output;
+    ASSERT_EQ(runLogosctlWithTimeout(
+        "--config-dir " + fx.dir.string() + " daemon config set " + fx.doc.string(),
+        &output, 5), 0) << "Output:\n" << output;
+    ASSERT_TRUE(fs::exists(fx.daemonConfig()));
+
+    const fs::path bad = fx.dir / "bad.yaml";
+    { std::ofstream ofs(bad, std::ios::trunc); ofs << "modules_dirs: /single/path\n"; }
+    output.clear();
+    EXPECT_EQ(runLogosctlWithTimeout(
+        "--config-dir " + fx.dir.string() + " daemon config set " + bad.string(),
+        &output, 5), 1) << "Output:\n" << output;
+
+    std::ifstream ifs(fx.daemonConfig());
+    const std::string body((std::istreambuf_iterator<char>(ifs)),
+                            std::istreambuf_iterator<char>());
+    EXPECT_NE(body.find("insecure_tcp"), std::string::npos)
+        << "The accepted config must survive a rejected one. It now reads:\n" << body;
+    EXPECT_EQ(body.find("modules_dirs"), std::string::npos)
+        << "The rejected document must not have been applied. It now reads:\n" << body;
+}
+
+TEST_F(CLITest, ClientConfigSet_TypeMismatchIsReportedNotFatal) {
+    // The client half of the same hazard, and the same guarantee.
+    ConfigFixture fx("clienttype",
+                     "token_file: auto.json\n"
+                     "daemon:\n"
+                     "  core_service:\n"
+                     "    transport: tcp\n"
+                     "    host: 127.0.0.1\n"
+                     "    port: \"6001\"\n");
+
+    std::string output;
+    int exitCode = runLogosctlWithTimeout(
+        "--config-dir " + fx.dir.string() + " client config set " + fx.doc.string(),
+        &output, 5);
+
+    EXPECT_EQ(exitCode, 1)
+        << "A mistyped value must be reported (exit 1), not abort the process "
+           "(exit 134). Output:\n" << output;
+    EXPECT_NE(output.find("port"), std::string::npos)
+        << "The error must name the offending key. Output:\n" << output;
+    EXPECT_FALSE(fs::exists(fx.clientConfig()))
+        << "A document that cannot be understood must not be written.";
 }

@@ -32,6 +32,27 @@ nlohmann::json scalarToJson(const YAML::Node& node)
     return s;
 }
 
+// True when emitting `s` as a bare scalar would read back as something other
+// than a string -- `"6001"` re-parsing as the number 6001, `"true"` as a bool,
+// `"null"` as nothing. yaml-cpp's auto-quoting only worries about characters
+// that break the syntax, not about a scalar that is valid but retyped, so
+// without this a round-trip through dump() silently changes a value's type:
+// a document that was validated as a string lands on disk as a number and is
+// rejected the next time it is read. The check mirrors scalarToJson exactly,
+// which is what keeps the two directions in agreement.
+bool plainWouldChangeType(const std::string& s)
+{
+    if (s.empty() || s == "~" || s == "null") return true;
+    const YAML::Node probe(s);
+    bool b = false;
+    if (YAML::convert<bool>::decode(probe, b)) return true;
+    int64_t i = 0;
+    if (YAML::convert<int64_t>::decode(probe, i)) return true;
+    double d = 0;
+    if (YAML::convert<double>::decode(probe, d)) return true;
+    return false;
+}
+
 nlohmann::json nodeToJson(const YAML::Node& node)
 {
     switch (node.Type()) {
@@ -71,9 +92,12 @@ void emit(YAML::Emitter& out, const nlohmann::json& v)
         for (const auto& e : v) emit(out, e);
         out << YAML::EndSeq;
         break;
-    case nlohmann::json::value_t::string:
-        out << v.get<std::string>();
+    case nlohmann::json::value_t::string: {
+        const std::string s = v.get<std::string>();
+        if (plainWouldChangeType(s)) out << YAML::DoubleQuoted;
+        out << s;
         break;
+    }
     case nlohmann::json::value_t::boolean:
         out << v.get<bool>();
         break;
