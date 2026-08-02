@@ -35,6 +35,7 @@
 #include <logos_json.h>
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
@@ -450,6 +451,59 @@ TEST_F(ErrorPathTest, NoLoadNegativePaths) {
     EXPECT_NE(d.run("module-info definitely_not_a_real_module_xyz",
                      &out, kNegativeBudgetSecs), 0)
         << "module-info on unknown module should not succeed.\n" << out;
+}
+
+// A client can still construct its local transport handle after a clean daemon
+// shutdown because client/config.json survives. The subsequent RPC must remain
+// an error, rather than being converted into a successful empty query result.
+TEST_F(ErrorPathTest, StoppedDaemonQueriesReportRpcFailure)
+{
+    std::string stopOutput;
+    ASSERT_EQ(d.run("stop", &stopOutput), 0) << stopOutput;
+
+    bool stopped = false;
+    for (int i = 0; i < 100; ++i) {
+        int status = 0;
+        if (d.pid > 0 && waitpid(d.pid, &status, WNOHANG) == d.pid) {
+            d.pid = -1;
+            stopped = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    ASSERT_TRUE(stopped) << "daemon did not stop after stop command.\n"
+                         << slurp(d.daemonLog);
+
+    struct QueryResult {
+        std::string command;
+        int exitCode = -1;
+        std::string output;
+    };
+    std::array<QueryResult, 3> queries{{
+        {"status"},
+        {"list-modules"},
+        {"stats"},
+    }};
+    LogoscoreDaemon& daemon = d;
+    std::vector<std::thread> workers;
+    workers.reserve(queries.size());
+    for (auto& query : queries) {
+        workers.emplace_back([&daemon, &query]() {
+            query.exitCode = daemon.run(query.command, &query.output, 30);
+        });
+    }
+    for (auto& worker : workers) worker.join();
+
+    for (const auto& query : queries) {
+        EXPECT_EQ(query.exitCode, 1)
+            << query.command << " must report an RPC failure after daemon stop.\n"
+            << query.output;
+        const nlohmann::json response = lastJsonObject(query.output);
+        EXPECT_EQ(response.value("status", std::string{}), "error")
+            << query.command << " must emit an error envelope.\n" << query.output;
+        EXPECT_EQ(response.value("code", std::string{}), "RPC_FAILED")
+            << query.command << " must preserve the RPC error code.\n" << query.output;
+    }
 }
 
 // Regression for #59: the version, sourced from each module's embedded

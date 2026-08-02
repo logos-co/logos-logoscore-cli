@@ -1112,7 +1112,7 @@ done
 
 1. **Event forwarding** — The `watch` command requires `core_service` to forward events from target modules to CLI clients. The approach is: `core_service.watchModuleEvents()` registers a listener on the target module via `LogosAPIClient::onEvent()`, then re-emits received events via `LogosProviderBase::emitEvent()`. The CLI client subscribes to `core_service` events. This creates a relay chain (target module → core_service → CLI client) which adds latency. An alternative would be having the CLI client connect directly to the target module, but that bypasses the core_service gateway pattern.
 
-2. **Stale state file** — If the daemon crashes without removing `<configDir>/daemon/state.json` (and the auto-emitted `client/` tree), the files stay on disk. Clients no longer pre-probe PID liveness (that only works for local daemons); instead the first RPC fails with a connect error and the `status` command turns that into a "not running" report. The only cost of a stale file is that the first attempt after a crash wastes one RPC timeout; in practice that's fine.
+2. **Stale state file** — If the daemon crashes without removing `<configDir>/daemon/state.json` (and the auto-emitted `client/` tree), the files stay on disk. Local `status` detects a dead recorded PID; when the client instead reaches a failed daemon RPC, it reports an explicit RPC error after the transport timeout. The only cost of a stale file is that the first attempt after a crash wastes one RPC timeout; in practice that's fine.
 
 3. **Crash tracking** — The daemon needs to track module crash metadata (exit code, signal, timestamp, restart count, last log line) so that `listModules` and `getModuleInfo` on core_service can report it. This may require extending liblogos to expose crash info, or core_service could track it independently by monitoring `QProcess` signals.
 
@@ -1127,4 +1127,3 @@ done
 5. **Extract core_service** — If core_service grows, it could be extracted into a standalone plugin loaded from disk rather than statically linked. The LOGOS_PROVIDER API makes this trivial.
 6. **Capability-scoped tokens** — Today all tokens are admin-equivalent. Named tokens (`issue-token --name …`) create separate identities but each one is still fully authorised against the daemon. A scope/capability system would let e.g. a read-only token call `list-modules` / `status` but reject `load-module` / `stop`.
 7. **Client-cert TLS** — The `tcp_ssl` transport today authenticates the daemon to the client (server cert); mutual TLS + client-cert auth would be a natural extension once we have scoped tokens, and subsumes the token-file distribution problem for many deployments.
-

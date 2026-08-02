@@ -8,8 +8,6 @@
 #include <logos_transport_config.h>
 #include <token_manager.h>
 
-#include <QCoreApplication>
-
 #include <fmt/format.h>
 #include <chrono>
 #include <cstdlib>
@@ -169,21 +167,16 @@ LogosList RpcClient::listModules(const std::string& filter)
 {
     nlohmann::json ret = d->invoke("listModules", nlohmann::json::array({filter}));
     if (ret.is_array()) return ret;
-    return LogosList::array();
+    return LogosList{{"status","error"},{"code","RPC_FAILED"},
+                     {"message", "listModules RPC call failed."}};
 }
 
 LogosMap RpcClient::getStatus()
 {
     nlohmann::json ret = d->invoke("getStatus");
     if (ret.is_object()) return ret;
-
-    std::string version = QCoreApplication::applicationVersion().toStdString();
-    LogosMap daemon{{"status","not_running"},{"version", version}};
-    if (!d->instanceId.empty())
-        daemon["instance_id"] = d->instanceId;
-    return LogosMap{{"daemon", daemon},
-                    {"modules", LogosList::array()},
-                    {"rpc_error", "core_service not reachable"}};
+    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
+                    {"message", "getStatus RPC call failed."}};
 }
 
 LogosMap RpcClient::getModuleInfo(const std::string& name)
@@ -198,7 +191,8 @@ LogosList RpcClient::getModuleStats()
 {
     nlohmann::json ret = d->invoke("getModuleStats");
     if (ret.is_array()) return ret;
-    return LogosList::array();
+    return LogosList{{"status","error"},{"code","RPC_FAILED"},
+                     {"message", "getModuleStats RPC call failed."}};
 }
 
 // ---------------------------------------------------------------------------

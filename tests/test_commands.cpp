@@ -3,13 +3,19 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
 #include "client/client.h"
+#include "client/client_state.h"
 #include "client/output.h"
 #include "client/commands/command.h"
+#include "config.h"
+
+namespace fs = std::filesystem;
 
 // Mock client for testing commands without a real daemon
 class MockClient : public Client {
@@ -124,6 +130,37 @@ protected:
 
     nlohmann::json parseJson(const std::string& s) {
         return nlohmann::json::parse(s);
+    }
+};
+
+class StatusCommandTest : public CommandTest {
+protected:
+    fs::path configDir;
+
+    void SetUp() override {
+        CommandTest::SetUp();
+        const auto* testInfo = ::testing::UnitTest::GetInstance()->current_test_info();
+        configDir = fs::path(testing::TempDir()) /
+            (std::string("logoscore_status_command_") + testInfo->name());
+
+        std::error_code error;
+        fs::remove_all(configDir, error);
+        ASSERT_FALSE(error) << error.message();
+        fs::create_directories(configDir, error);
+        ASSERT_FALSE(error) << error.message();
+
+        Config::setConfigDir(configDir.string());
+        ClientState state;
+        state.fileOk = true;
+        ClientStateFile::setOverride(state);
+    }
+
+    void TearDown() override {
+        ClientStateFile::setOverride(std::nullopt);
+        Config::setConfigDir("");
+
+        std::error_code error;
+        fs::remove_all(configDir, error);
     }
 };
 
@@ -325,6 +362,71 @@ TEST_F(CommandTest, ListModules_LoadedFilter)
     });
 
     EXPECT_EQ(mockClient.lastListFilter, "loaded");
+}
+
+TEST_F(CommandTest, ListModules_EmptyResult_Succeeds)
+{
+    mockClient.listModulesResult = LogosList::array();
+
+    auto cmd = createCommand("list-modules", mockClient, output);
+    std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 0);
+    });
+
+    EXPECT_EQ(parseJson(out), LogosList::array());
+}
+
+TEST_F(CommandTest, ListModules_RpcFailure_ReturnsExit1)
+{
+    mockClient.listModulesResult = LogosMap{
+        {"status", "error"}, {"code", "RPC_FAILED"},
+        {"message", "listModules RPC call failed."}
+    };
+
+    auto cmd = createCommand("list-modules", mockClient, output);
+    std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 1);
+    });
+
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc.value("status", std::string{}), "error");
+    EXPECT_EQ(doc.value("code", std::string{}), "RPC_FAILED");
+}
+
+// ── status ──────────────────────────────────────────────────────────────────
+
+TEST_F(StatusCommandTest, Status_ValidResponse_Succeeds)
+{
+    mockClient.statusResult = LogosMap{
+        {"daemon", LogosMap{{"status", "running"}, {"pid", 42}}},
+        {"modules", LogosList::array()},
+        {"modules_summary", LogosMap{{"loaded", 0}, {"crashed", 0}, {"not_loaded", 0}}}
+    };
+
+    auto cmd = createCommand("status", mockClient, output);
+    std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 0);
+    });
+
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["daemon"].value("status", std::string{}), "running");
+}
+
+TEST_F(StatusCommandTest, Status_RpcFailure_ReturnsExit1)
+{
+    mockClient.statusResult = LogosMap{
+        {"status", "error"}, {"code", "RPC_FAILED"},
+        {"message", "getStatus RPC call failed."}
+    };
+
+    auto cmd = createCommand("status", mockClient, output);
+    std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 1);
+    });
+
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc.value("status", std::string{}), "error");
+    EXPECT_EQ(doc.value("code", std::string{}), "RPC_FAILED");
 }
 
 // ── module-info / info ───────────────────────────────────────────────────────
@@ -742,6 +844,35 @@ TEST_F(CommandTest, Stats_Success)
     nlohmann::json doc = parseJson(out);
     ASSERT_TRUE(doc.is_array());
     EXPECT_EQ(doc.size(), 2u);
+}
+
+TEST_F(CommandTest, Stats_EmptyResult_Succeeds)
+{
+    mockClient.moduleStatsResult = LogosList::array();
+
+    auto cmd = createCommand("stats", mockClient, output);
+    std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 0);
+    });
+
+    EXPECT_EQ(parseJson(out), LogosList::array());
+}
+
+TEST_F(CommandTest, Stats_RpcFailure_ReturnsExit1)
+{
+    mockClient.moduleStatsResult = LogosMap{
+        {"status", "error"}, {"code", "RPC_FAILED"},
+        {"message", "getModuleStats RPC call failed."}
+    };
+
+    auto cmd = createCommand("stats", mockClient, output);
+    std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 1);
+    });
+
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc.value("status", std::string{}), "error");
+    EXPECT_EQ(doc.value("code", std::string{}), "RPC_FAILED");
 }
 
 // ── watch ────────────────────────────────────────────────────────────────────
