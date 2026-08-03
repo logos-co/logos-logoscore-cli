@@ -456,7 +456,7 @@ int main(int argc, char *argv[])
             // "you MUST exec()". So the child execs a fresh copy of this
             // binary with --detach stripped, and that copy runs the daemon
             // normally.
-            const std::string self = paths::executablePath();
+            const std::string self = paths::relaunchPath(argv[0]);
             if (self.empty()) {
                 fprintf(stderr, "Error: could not resolve own path for --detach.\n");
                 return 1;
@@ -571,6 +571,29 @@ int main(int argc, char *argv[])
                 std::filesystem::remove(startupPath, ec);
             };
 
+            // The tail of the daemon's own log.
+            //
+            // The startup file only ever holds output from BEFORE LogSink
+            // starts, because LogSink dup2s its pipe over those descriptors.
+            // So a daemon that dies *after* logging is up leaves the startup
+            // file empty and the reason in the log -- and pointing at a path
+            // is no help to a CI run, a script, or anyone who then has to go
+            // and read it. Print the end of it.
+            auto logTail = [&](std::size_t lines) -> std::string {
+                if (logPath.empty()) return {};
+                std::ifstream in(logPath);
+                if (!in) return {};
+                std::vector<std::string> tail;
+                std::string line;
+                while (std::getline(in, line)) {
+                    tail.push_back(line);
+                    if (tail.size() > lines) tail.erase(tail.begin());
+                }
+                std::string out;
+                for (const auto& l : tail) { out += l; out += '\n'; }
+                return out;
+            };
+
             for (int i = 0; i < 600; ++i) {
                 std::error_code ec;
                 if (std::filesystem::exists(statePath, ec)) {
@@ -588,8 +611,15 @@ int main(int argc, char *argv[])
                         // one line that says what to fix.
                         fprintf(stderr, "%s\n", early.c_str());
                     } else {
-                        fprintf(stderr, "Error: daemon exited during startup. "
-                                        "See %s\n", logPath.c_str());
+                        // Nothing before LogSink started, so the reason is in
+                        // the log. Show it rather than naming it.
+                        const std::string tail = logTail(30);
+                        fprintf(stderr, "Error: daemon exited during startup.\n");
+                        if (!tail.empty())
+                            fprintf(stderr, "--- %s (last lines) ---\n%s",
+                                    logPath.c_str(), tail.c_str());
+                        else
+                            fprintf(stderr, "See %s\n", logPath.c_str());
                     }
                     cleanupStartupFile();
                     return 1;
@@ -598,9 +628,14 @@ int main(int argc, char *argv[])
             }
             {
                 const std::string early = earlyOutput();
-                fprintf(stderr, "Error: daemon did not become ready in 60s. See %s\n",
-                        logPath.c_str());
+                fprintf(stderr, "Error: daemon did not become ready in 60s.\n");
                 if (!early.empty()) fprintf(stderr, "%s\n", early.c_str());
+                const std::string tail = logTail(30);
+                if (!tail.empty())
+                    fprintf(stderr, "--- %s (last lines) ---\n%s",
+                            logPath.c_str(), tail.c_str());
+                else
+                    fprintf(stderr, "See %s\n", logPath.c_str());
             }
             cleanupStartupFile();
             return 1;

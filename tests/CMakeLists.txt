@@ -3,6 +3,7 @@
 # Testable library: config, daemon_state, output, commands (with mock client)
 set(TEST_LIB_SOURCES
     ${CMAKE_SOURCE_DIR}/src/config.cpp
+    ${CMAKE_SOURCE_DIR}/src/paths.cpp
     ${CMAKE_SOURCE_DIR}/src/yaml_json.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/daemon_state.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/port_allocator.cpp
@@ -50,6 +51,7 @@ add_executable(unit_tests
     test_config.cpp
     test_log_sink.cpp
     test_daemon_state.cpp
+    test_paths.cpp
     test_output.cpp
     test_commands.cpp
     test_mode_detection.cpp
