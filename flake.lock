@@ -103289,11 +103289,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1776974030,
-        "narHash": "sha256-lQ/tc/owFa7Yjh8MXe0Fn2GodQXVGmpOZwe5gBEcENA=",
+        "lastModified": 1785786049,
+        "narHash": "sha256-NWw6oV8Uj0U394Sc5Uubr7X9+ptrw51/UtV/5/VYo4k=",
         "owner": "logos-co",
         "repo": "nix-bundle-dir",
-        "rev": "4937262f55cf8be942263255dd0801e3e3878bc9",
+        "rev": "4fd87d183fe5960b7e3d1f06ef8b73d4cffddebc",
         "type": "github"
       },
       "original": {

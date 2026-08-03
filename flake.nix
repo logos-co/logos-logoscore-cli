@@ -80,7 +80,12 @@
         packageDownloaderModuleLib = logos-package-downloader-module.packages.${system}.lib;
         installDev = nix-bundle-logos-module-install.bundlers.${system}.dev;
         installPortable = nix-bundle-logos-module-install.bundlers.${system}.portable;
-        dirBundler = nix-bundle-dir.bundlers.${system}.qtApp;
+        # Both binaries here are headless: they link Qt for its object system
+        # and IPC, never for a GUI. qtCliApp bundles identically to qtApp but
+        # leaves bin/ as plain binaries -- no environment launcher, no hidden
+        # companion ELF -- because with no platform plugin there is nothing
+        # that needs XKB_CONFIG_ROOT or the portal theme.
+        dirBundler = nix-bundle-dir.bundlers.${system}.qtCliApp;
         appBundler = nix-bundle-appimage.lib.${system}.mkAppImage;
       });
     in
