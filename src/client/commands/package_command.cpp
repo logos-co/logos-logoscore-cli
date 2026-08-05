@@ -205,10 +205,22 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
 
     LogosMap result = client().applyPackageOperation(op, nameList, opts);
     if (result.value("status", std::string{}) == "error") {
+        // A failure arrives in one of two shapes, and reading only the first
+        // threw away the reason. package_ops' own step failures carry
+        // `failed_step` + `error`; anything that went wrong before the chain
+        // started -- an unreachable module, a dead daemon, a transport error --
+        // carries `code` + `message` instead. Reporting that second shape with
+        // the first shape's keys printed "install failed at step '?': " with
+        // nothing after the colon, which is how a real diagnosis was lost.
+        const std::string step   = result.value("failed_step", std::string{});
+        std::string       reason = result.value("error", std::string{});
+        if (reason.empty()) reason = result.value("message", std::string{});
+        if (reason.empty()) reason = "no reason reported";
+
         output().printError(result.value("code", std::string("PACKAGE_OP_FAILED")),
-                            fmt::format("{} failed at step '{}': {}", op,
-                                        result.value("failed_step", std::string("?")),
-                                        result.value("error", std::string{})),
+                            step.empty()
+                                ? fmt::format("{} failed: {}", op, reason)
+                                : fmt::format("{} failed at step '{}': {}", op, step, reason),
                             result);
         return 1;
     }

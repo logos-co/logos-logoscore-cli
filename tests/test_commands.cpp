@@ -1003,3 +1003,78 @@ TEST_F(CommandTest, PackageDownload_ReportsFailure)
     nlohmann::json doc = parseJson(out);
     EXPECT_EQ(doc["code"].get<std::string>(), "DOWNLOAD_FAILED");
 }
+
+// ── package failure reporting ───────────────────────────────────────────────
+//
+// A real install failure was reported as "install failed at step '?': " with
+// nothing after the colon. The daemon had said why; the client dropped it,
+// because package_ops returns two different error shapes and this only read
+// one. The reason is the entire value of the message.
+
+TEST_F(CommandTest, PackageMutate_ReportsTheReasonFromEitherErrorShape)
+{
+    mockClient.planPackageResult = LogosMap{
+        {"status", "ok"},
+        {"changes", LogosList::array({LogosMap{{"name","blockchain_module"},
+                                               {"action","install"},
+                                               {"toVersion","0.2.1"}}})},
+        {"affected_loaded", LogosList::array()}};
+
+    // The shape produced before the step chain starts: code + message.
+    mockClient.applyPackageResult = LogosMap{
+        {"status", "error"},
+        {"code", "DOWNLOAD_FAILED"},
+        {"message", "package_downloader did not respond"}};
+
+    auto cmd = createCommand("package", mockClient, output);
+    std::string out = captureOutput([&]() {
+        int exitCode = cmd->execute({"install", "blockchain_module", "-y"});
+        EXPECT_EQ(exitCode, 1);
+    });
+
+    nlohmann::json doc = parseJson(out);
+    const std::string msg = doc["message"].get<std::string>();
+    EXPECT_NE(msg.find("package_downloader did not respond"), std::string::npos)
+        << "the daemon's reason must survive to the user; got: " << msg;
+    EXPECT_EQ(msg.find("step '?'"), std::string::npos)
+        << "an unknown step should be omitted, not printed as '?': " << msg;
+}
+
+TEST_F(CommandTest, PackageMutate_KeepsTheStepWhenTheDaemonReportsOne)
+{
+    mockClient.planPackageResult = LogosMap{
+        {"status", "ok"},
+        {"changes", LogosList::array({LogosMap{{"name","storage_module"},
+                                               {"action","install"}}})},
+        {"affected_loaded", LogosList::array()}};
+
+    // The shape package_ops' own `fail()` produces: failed_step + error.
+    mockClient.applyPackageResult = LogosMap{
+        {"status", "error"},
+        {"failed_step", "confirm"},
+        {"error", "package_manager rejected the install"}};
+
+    auto cmd = createCommand("package", mockClient, output);
+    std::string out = captureOutput([&]() { cmd->execute({"install", "storage_module", "-y"}); });
+
+    const std::string msg = parseJson(out)["message"].get<std::string>();
+    EXPECT_NE(msg.find("confirm"), std::string::npos) << msg;
+    EXPECT_NE(msg.find("package_manager rejected the install"), std::string::npos) << msg;
+}
+
+// Never print a bare colon with nothing after it: if both shapes are empty we
+// still owe the reader a sentence.
+TEST_F(CommandTest, PackageMutate_SaysSoWhenNoReasonWasReported)
+{
+    mockClient.planPackageResult = LogosMap{
+        {"status", "ok"},
+        {"changes", LogosList::array({LogosMap{{"name","x"},{"action","install"}}})},
+        {"affected_loaded", LogosList::array()}};
+    mockClient.applyPackageResult = LogosMap{{"status", "error"}};
+
+    auto cmd = createCommand("package", mockClient, output);
+    std::string out = captureOutput([&]() { cmd->execute({"install", "x", "-y"}); });
+
+    const std::string msg = parseJson(out)["message"].get<std::string>();
+    EXPECT_NE(msg.find("no reason reported"), std::string::npos) << msg;
+}

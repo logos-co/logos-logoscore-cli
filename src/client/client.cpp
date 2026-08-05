@@ -27,11 +27,34 @@ struct RpcClient::Impl {
     ClientState clientState;
 
     // Helper: invoke a core_service method via the nlohmann::json overload.
+    //
+    // `timeoutMs` exists because the transport's default deadline is 20
+    // seconds (logos::Timeout), which is right for a status query and far too
+    // short for anything that touches the network. An install that outran it
+    // reported "RPC call failed" while the daemon carried on and finished the
+    // job -- the package landed on disk and the user was told it had not.
     nlohmann::json invoke(const std::string& method,
-                          const nlohmann::json& args = nlohmann::json::array()) {
+                          const nlohmann::json& args = nlohmann::json::array(),
+                          int timeoutMs = 0) {
+        if (timeoutMs > 0) {
+            return coreService->invokeRemoteMethod("core_service", method, args,
+                                                   Timeout(timeoutMs));
+        }
         return coreService->invokeRemoteMethod("core_service", method, args);
     }
 };
+
+namespace {
+
+// Deadlines for the operations that leave the machine. The transport's default
+// is 20 seconds -- fine for "is the daemon up", useless for "fetch and install
+// a blockchain node". These are generous on purpose: the cost of waiting too
+// long is a slow command, the cost of waiting too little is telling someone
+// their install failed while it is still running and about to succeed.
+constexpr int kCatalogTimeoutMs  = 2  * 60 * 1000;   // resolve against the catalog
+constexpr int kTransferTimeoutMs = 30 * 60 * 1000;   // download + install
+
+} // namespace
 
 RpcClient::RpcClient()
     : d(new Impl)
@@ -169,8 +192,11 @@ LogosMap RpcClient::refreshModules()
 LogosMap RpcClient::planPackageOperation(const std::string& op, const LogosList& names,
                                           const LogosMap& opts)
 {
+    // Resolving a plan reads the catalog, so it is network-bound too -- less
+    // so than the install itself, hence the smaller budget.
     nlohmann::json ret = d->invoke("planPackageOperation",
-                                   nlohmann::json::array({op, names, opts}));
+                                   nlohmann::json::array({op, names, opts}),
+                                   kCatalogTimeoutMs);
     if (ret.is_object()) return ret;
     return LogosMap{{"status","error"},{"code","RPC_FAILED"},
                     {"message", fmt::format("planPackageOperation('{}') RPC call failed.", op)}};
@@ -180,9 +206,11 @@ LogosMap RpcClient::applyPackageOperation(const std::string& op, const LogosList
                                            const LogosMap& opts)
 {
     // Installs pull from the network and can take minutes on a cold catalog;
-    // the default RPC deadline is far too short for that.
+    // the default 20s deadline is far too short for that. This comment used to
+    // sit above a call that passed no timeout at all.
     nlohmann::json ret = d->invoke("applyPackageOperation",
-                                   nlohmann::json::array({op, names, opts}));
+                                   nlohmann::json::array({op, names, opts}),
+                                   kTransferTimeoutMs);
     if (ret.is_object()) return ret;
     return LogosMap{{"status","error"},{"code","RPC_FAILED"},
                     {"message", fmt::format("applyPackageOperation('{}') RPC call failed.", op)}};
@@ -193,7 +221,8 @@ LogosMap RpcClient::downloadPackage(const std::string& name, const LogosMap& opt
     // Same deadline reasoning as applyPackageOperation: this is a network
     // fetch, not a local query.
     nlohmann::json ret = d->invoke("downloadPackage",
-                                   nlohmann::json::array({name, opts}));
+                                   nlohmann::json::array({name, opts}),
+                                   kTransferTimeoutMs);
     if (ret.is_object()) return ret;
     return LogosMap{{"status","error"},{"code","RPC_FAILED"},
                     {"message", fmt::format("downloadPackage('{}') RPC call failed.", name)}};
