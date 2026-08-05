@@ -44,10 +44,10 @@ static void messageHandler(QtMsgType type, const QMessageLogContext &context, co
         fprintf(stderr, "Warning: %s\n", localMsg.constData());
         break;
     case QtCriticalMsg:
-        fprintf(stderr, "Critical: %s (%s:%u, %s)\n", localMsg.constData(), file, context.line, function);
+        fprintf(stderr, "Critical: %s (%s:%d, %s)\n", localMsg.constData(), file, context.line, function);
         break;
     case QtFatalMsg:
-        fprintf(stderr, "Fatal: %s (%s:%u, %s)\n", localMsg.constData(), file, context.line, function);
+        fprintf(stderr, "Fatal: %s (%s:%d, %s)\n", localMsg.constData(), file, context.line, function);
         fflush(stderr);
         abort();
     }
