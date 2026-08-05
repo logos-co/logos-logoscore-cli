@@ -770,7 +770,14 @@ int main(int argc, char *argv[])
             return 1;
         }
 
-        return Daemon::start(argc, argv, mergedCfg, configSource, g_verbose);
+        // Both trailing parameters are bool. Name them at the call site: this
+        // line used to read `..., configSource, g_verbose)`, which silently
+        // handed g_verbose to persistConfig and left verbose false forever --
+        // so -v never reached anything the daemon gates on it, and it quietly
+        // rewrote the config file instead. logosctl has no --persist-config;
+        // configuration is installed with `daemon config set`.
+        return Daemon::start(argc, argv, mergedCfg, configSource,
+                             /*persistConfig=*/false, /*verbose=*/g_verbose);
     }
 
     // ── Client mode ──────────────────────────────────────────────────────────

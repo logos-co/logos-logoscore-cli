@@ -33,8 +33,14 @@ public:
     static int start(int argc, char* argv[],
                      const DaemonConfig& cfg,
                      const std::string& configSource,
-                     bool persistConfig = false,
-                     bool verbose = false);
+                     // No default arguments. They are both bool and adjacent,
+                     // so a defaulted tail let a caller drop one and have the
+                     // other silently slide into its place -- which is exactly
+                     // what happened: logosctl passed g_verbose as
+                     // persistConfig for the whole life of the binary, and it
+                     // compiled. Requiring both makes that a build error.
+                     bool persistConfig,
+                     bool verbose);
 
 private:
     static void setupSignalHandlers();
