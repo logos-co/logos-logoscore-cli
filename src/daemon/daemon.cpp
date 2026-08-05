@@ -1,4 +1,6 @@
 #include "daemon.h"
+
+#include <spdlog/spdlog.h>
 #include "daemon_state.h"
 #include "port_allocator.h"
 #include "token_store.h"
@@ -479,6 +481,21 @@ int Daemon::start(int argc, char* argv[],
     //    capability_module loads now, with the transport set we just
     //    registered.
     logos_core_start();
+
+    // -v has to reach spdlog, not just Qt -- and it has to be set HERE.
+    //
+    // Module subprocesses do not share our stdio. The container gives each one
+    // its own pipes, reads them line by line, and re-emits each line through
+    // spdlog, picking the level from the line's prefix ("Debug:" -> debug).
+    // spdlog's default is `info`, so a module's debug output was read, parsed,
+    // classified -- and dropped at the last step. `-v` only ever gated OUR Qt
+    // handler, so no flag made those lines appear.
+    //
+    // Ordering matters and cost a wrong fix: setting the level before
+    // logos_core_start() is silently undone, because liblogos installs its own
+    // `logos` logger during startup and that becomes the default. Set it after
+    // and it sticks.
+    spdlog::set_level(verbose ? spdlog::level::debug : spdlog::level::info);
 
     // 7. Register core_service as an in-process module via the C++ SDK.
     //    core_service can publish on multiple transports simultaneously:
