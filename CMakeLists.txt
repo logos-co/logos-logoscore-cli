@@ -37,9 +37,43 @@ endif()
 
 add_library(logos_core SHARED IMPORTED)
 set_target_properties(logos_core PROPERTIES
-    IMPORTED_LOCATION "${LOGOS_CORE_LIBRARY}"
     INTERFACE_INCLUDE_DIRECTORIES "${LOGOS_LIBLOGOS_ROOT}/include;${LOGOS_LIBLOGOS_ROOT}/include/cpp"
 )
+
+if(WIN32)
+    # A PE shared library is TWO files: liblogos_core.dll (the runtime image)
+    # and liblogos_core.dll.a (link-time import stubs). CMake wants them in
+    # different properties — IMPORTED_LOCATION is the DLL, IMPORTED_IMPLIB is
+    # the import library — and putting the import library in IMPORTED_LOCATION
+    # alone is not a hard error. CMake only WARNS
+    #     IMPORTED_IMPLIB not set for imported target "logos_core"
+    # then substitutes `logos_core-NOTFOUND` into the link line, and the build
+    # dies much later and far from the cause:
+    #     ninja: error: 'logos_core-NOTFOUND', needed by 'bin/logosctl.exe'
+    #
+    # find_library's Windows-GNU suffix list is ".dll.a;.a;.lib" and never
+    # matches a bare .dll, so LOGOS_CORE_LIBRARY above IS the import library
+    # and the DLL has to be located separately with find_file.
+    find_file(LOGOS_CORE_RUNTIME
+        NAMES liblogos_core.dll logos_core.dll
+        PATHS "${LOGOS_LIBLOGOS_ROOT}/lib" "${LOGOS_LIBLOGOS_ROOT}/bin"
+        NO_DEFAULT_PATH
+    )
+    if(NOT LOGOS_CORE_RUNTIME)
+        message(FATAL_ERROR
+            "liblogos_core.dll not found under ${LOGOS_LIBLOGOS_ROOT} "
+            "(the import library ${LOGOS_CORE_LIBRARY} is present, so the DLL "
+            "is missing from the package rather than from the build)")
+    endif()
+    set_target_properties(logos_core PROPERTIES
+        IMPORTED_LOCATION "${LOGOS_CORE_RUNTIME}"
+        IMPORTED_IMPLIB   "${LOGOS_CORE_LIBRARY}"
+    )
+else()
+    set_target_properties(logos_core PROPERTIES
+        IMPORTED_LOCATION "${LOGOS_CORE_LIBRARY}"
+    )
+endif()
 
 # ── SDK stack (imported targets) ──────────────────────────────────────────────
 # Since the Qt split: logos-qt-sdk carries the Qt developer layer (provider
@@ -171,6 +205,13 @@ target_link_libraries(${_tgt} PRIVATE
 # logos::transportSetToJsonString, and other symbols needed by core_service).
 target_link_libraries(${_tgt} PRIVATE logos-qt-sdk::logos_qt_sdk)
 
+if(WIN32)
+    # PortAllocator's probe socket. Winsock is not in the default link set the
+    # way libc's sockets are on POSIX, so without this the build fails at link
+    # with undefined `socket`/`bind`/`getsockname`/`WSAStartup`.
+    target_link_libraries(${_tgt} PRIVATE ws2_32)
+endif()
+
 target_include_directories(${_tgt} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${LOGOS_CPP_SDK_ROOT}/include/cpp
@@ -182,8 +223,13 @@ target_include_directories(${_tgt} PRIVATE
     ${LOGOS_LIBLOGOS_ROOT}/include/cpp
 )
 
-# RPATH so the binary finds liblogos_core at runtime
-if(APPLE)
+# RPATH so the binary finds liblogos_core at runtime.
+# PE has no RPATH at all -- an import table carries DLL BASE NAMES and Windows
+# resolves them from the executable's own directory -- so there is nothing to
+# set here and the packaging stages the DLLs into bin/ instead.
+if(WIN32)
+    # nothing to do
+elseif(APPLE)
     set(_rpath "@loader_path/../lib")
     if(DEFINED Qt${QT_VERSION_MAJOR}_DIR)
         get_filename_component(_qt_lib_dir "${Qt${QT_VERSION_MAJOR}_DIR}/../.." REALPATH)
@@ -202,23 +248,36 @@ endif()
 endforeach()
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
-find_package(GTest QUIET)
+#
+# Not built for a Windows host. The suites are POSIX by construction, not by
+# accident: test_integration.cpp drives the daemon over AF_UNIX (sys/un.h) and
+# reaps it with fork/waitpid, and test_cli.cpp shells out through
+# popen/WEXITSTATUS. There is nothing to gate at the case level -- the
+# translation units do not compile.
+#
+# Skipping the whole block (rather than just the test targets) is deliberate
+# for a second reason: `find_package(GTest)` falling through to the
+# FetchContent branch would try to DOWNLOAD googletest, which in a Nix sandbox
+# fails as an opaque "downloading ... failed" long after the real cause.
+if(NOT WIN32)
+    find_package(GTest QUIET)
 
-if(NOT GTest_FOUND)
-    message(STATUS "GoogleTest not found via find_package, using FetchContent")
-    include(FetchContent)
-    FetchContent_Declare(googletest
-        URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
-    )
-    FetchContent_MakeAvailable(googletest)
-else()
-    message(STATUS "Using system GoogleTest")
+    if(NOT GTest_FOUND)
+        message(STATUS "GoogleTest not found via find_package, using FetchContent")
+        include(FetchContent)
+        FetchContent_Declare(googletest
+            URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+        )
+        FetchContent_MakeAvailable(googletest)
+    else()
+        message(STATUS "Using system GoogleTest")
+    endif()
+
+    enable_testing()
+    include(GoogleTest)
+
+    add_subdirectory(tests)
 endif()
-
-enable_testing()
-include(GoogleTest)
-
-add_subdirectory(tests)
 
 # ── Install ───────────────────────────────────────────────────────────────────
 

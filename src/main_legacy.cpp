@@ -14,6 +14,7 @@
 
 #include "config.h"
 #include "paths.h"
+#include "platform_compat.h"
 #include "daemon/daemon.h"
 #include "daemon/daemon_state.h"
 #include "client/client_state.h"
@@ -355,7 +356,7 @@ int main(int argc, char *argv[])
             return 1;
         }
         Config::setConfigDir(absCfgPath.string());
-        setenv("LOGOSCORE_CONFIG_DIR", absCfgPath.string().c_str(), 1);
+        logosctl::setEnvVar("LOGOSCORE_CONFIG_DIR", absCfgPath.string().c_str());
     }
 
     // ── Daemon mode ──────────────────────────────────────────────────────────

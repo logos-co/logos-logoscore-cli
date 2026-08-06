@@ -82,6 +82,13 @@ private:
     int m_originalStdout = -1;
     int m_originalStderr = -1;
 
+    // Windows only: the STD_OUTPUT_HANDLE / STD_ERROR_HANDLE that were in
+    // place before start() repointed them at the pipe, so stop() can put them
+    // back. Held as void* to keep windows.h out of this header; they are
+    // HANDLEs. Unused on POSIX, where dup2 alone is the whole story.
+    void* m_originalStdoutHandle = nullptr;
+    void* m_originalStderrHandle = nullptr;
+
     std::thread       m_readerThread;
     std::atomic<bool> m_running{false};
     bool              m_started = false;

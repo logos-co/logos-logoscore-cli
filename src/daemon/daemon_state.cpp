@@ -5,7 +5,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include "../platform_compat.h"
+
+#ifndef _WIN32
 #include <grp.h>        // getgrnam_r — resolve --access-group to a gid
+#endif
 #include <sys/stat.h>
 #include <unistd.h>     // getpid — for unique temp-file names
 
@@ -32,7 +36,7 @@ std::string currentUtcIso8601()
     auto now = std::chrono::system_clock::now();
     auto tt = std::chrono::system_clock::to_time_t(now);
     struct tm utc{};
-    gmtime_r(&tt, &utc);
+    logosctl::gmtimeR(&tt, &utc);
     std::ostringstream ss;
     ss << std::put_time(&utc, "%Y-%m-%dT%H:%M:%SZ");
     return ss.str();
@@ -329,7 +333,8 @@ bool atomicWriteText(const fs::path& path, const std::string& text,
     // any pre-existing file's perms or the process umask. Fail (and drop the
     // temp) if chmod fails, rather than publishing a credential file at the
     // umask default.
-    if (::chmod(tmp.c_str(), mode) != 0) {
+    // fs::path::c_str() is const wchar_t* on Windows, so go through string().
+    if (logosctl::chmodPosix(tmp.string().c_str(), mode) != 0) {
         std::error_code ignored;
         fs::remove(tmp, ignored);
         return false;
@@ -628,6 +633,17 @@ std::vector<std::string> findTlsListenersMissingMaterial(const DaemonConfig& cfg
 // the group database.
 bool resolveOsGroupGid(const std::string& spec, gid_t& out)
 {
+#ifdef _WIN32
+    // There is no group database to resolve against, and nothing downstream
+    // could use the answer: named pipes carry a security descriptor, not a
+    // gid, and Windows files have no group-execute bit to grant traversal
+    // with. daemon.cpp rejects --access-group up front so this is never
+    // reached with a non-empty spec by the daemon; the false here keeps the
+    // client-artifact path owner-only if anything else ever calls it.
+    (void)spec;
+    (void)out;
+    return false;
+#else
     if (!spec.empty() &&
         spec.find_first_not_of("0123456789") == std::string::npos) {
         errno = 0;
@@ -649,6 +665,7 @@ bool resolveOsGroupGid(const std::string& spec, gid_t& out)
         out = grp.gr_gid;
         return true;
     }
+#endif
 }
 
 bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
@@ -691,7 +708,8 @@ bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
         // private state reachable. daemon/ may not exist yet in isolated unit
         // tests — nothing to lock, nothing exposed.
         const std::string daemonDir = Config::daemonDir();
-        if (fs::exists(daemonDir, ec) && ::chmod(daemonDir.c_str(), S_IRWXU) != 0) {
+        if (fs::exists(daemonDir, ec)
+            && logosctl::chmodPosix(daemonDir.c_str(), S_IRWXU) != 0) {
             std::cerr << "writeLocalClientArtifacts: could not lock " << daemonDir
                       << " to owner-only (" << std::strerror(errno)
                       << ") — not sharing the config dir" << std::endl;
@@ -702,6 +720,10 @@ bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
     const mode_t fileMode = shareWithGroup ? static_cast<mode_t>(0640)
                                            : static_cast<mode_t>(S_IRUSR | S_IWUSR);
 
+#ifndef _WIN32
+    // Unreachable on Windows -- resolveOsGroupGid always fails there, so
+    // shareWithGroup is always false -- but compiled out as well, because
+    // chown() and uid_t do not exist in mingw-w64 at all.
     if (shareWithGroup) {
         // Grant the group access to just the client subtree:
         //   - client/ becomes group r-x + owned by the group;
@@ -718,6 +740,7 @@ bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
             ::chmod(configDir.c_str(), (cst.st_mode & 07777) | S_IXGRP);
         }
     }
+#endif
 
     // client/config.json — dial config matching what the daemon actually
     // bound (mirrors the resolved transports so a co-resident client just
@@ -788,8 +811,12 @@ bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
             ? atomicWriteText(fs::path(clientCfgPath), yaml_json::dump(client), fileMode)
             : atomicWriteJson(fs::path(clientCfgPath), client, fileMode);
         if (!wrote) return false;
+#ifndef _WIN32
+        // chown/uid_t do not exist in mingw-w64; shareWithGroup is always false
+        // on Windows anyway (resolveOsGroupGid refuses there).
         if (shareWithGroup)
             ::chown(clientCfgPath.c_str(), static_cast<uid_t>(-1), groupGid);
+#endif
     }
 
     // client/auto.json — same shape as daemon/tokens/<name>.json.
@@ -806,7 +833,9 @@ bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
     // this is the whole point of --access-group (the docker.sock trust model:
     // group membership grants access).
     if (!atomicWriteJson(fs::path(autoTokenPath), tokenFile, fileMode)) return false;
+#ifndef _WIN32
     if (shareWithGroup)
         ::chown(autoTokenPath.c_str(), static_cast<uid_t>(-1), groupGid);
+#endif
     return true;
 }

@@ -42,6 +42,14 @@ public:
                      bool persistConfig,
                      bool verbose);
 
+#ifdef _WIN32
+    // Entry point for the Win32 console control handler, which lives in an
+    // anonymous namespace in daemon.cpp and so cannot reach the private
+    // handler directly. Posts quit() to the main thread; safe to call from the
+    // dedicated thread Windows runs the control routine on.
+    static void requestShutdown();
+#endif
+
 private:
     static void setupSignalHandlers();
     static void signalHandler(int signal);

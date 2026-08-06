@@ -10,14 +10,20 @@
 #include <iostream>
 #include <optional>
 #include <fcntl.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 #include <map>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "config.h"
 #include "paths.h"
+#include "platform_compat.h"
 #include "daemon/daemon.h"
 #include "daemon/daemon_state.h"
 #include "daemon/log_sink.h"
@@ -29,6 +35,136 @@
 #include "version_info.h"
 
 static bool g_verbose = false;
+
+// usleep(3) lives in mingw's <unistd.h>, which the Windows branch above does
+// not include (it would drag in the CRT's POSIX-ish io layer next to
+// windows.h). One named helper beats an #ifdef in the middle of the readiness
+// poll.
+static void sleepMs(unsigned ms)
+{
+#ifdef _WIN32
+    ::Sleep(ms);
+#else
+    ::usleep(ms * 1000);
+#endif
+}
+
+#ifdef _WIN32
+namespace {
+
+// Quote one argument the way CommandLineToArgvW (and therefore every Windows
+// program's argv) parses it back. Windows has no argv vector at the API
+// boundary -- CreateProcess takes a single string -- so the split has to be
+// reconstructible or a --config-dir under "C:\Program Files\..." arrives at
+// the daemon as two arguments.
+//
+// The rule that is easy to get wrong: a backslash is only an escape when it
+// precedes a quote, so runs of backslashes are doubled *only* there. A blanket
+// doubling would turn every Windows path in the command line into a
+// double-separator mess.
+std::string quoteArg(const std::string& a)
+{
+    if (!a.empty() && a.find_first_of(" \t\n\v\"") == std::string::npos)
+        return a;
+
+    std::string out = "\"";
+    for (std::size_t i = 0; ; ) {
+        std::size_t backslashes = 0;
+        while (i < a.size() && a[i] == '\\') { ++i; ++backslashes; }
+        if (i == a.size()) {
+            // Trailing backslashes precede the closing quote we are about to
+            // add, so they do become escapes and must be doubled.
+            out.append(backslashes * 2, '\\');
+            break;
+        }
+        if (a[i] == '"') {
+            out.append(backslashes * 2 + 1, '\\');
+            out.push_back('"');
+        } else {
+            out.append(backslashes, '\\');
+            out.push_back(a[i]);
+        }
+        ++i;
+    }
+    out.push_back('"');
+    return out;
+}
+
+// The Windows analogue of fork + setsid + reopen-stdio + execv.
+//
+// There is no fork here and none is wanted: the POSIX side only forks in order
+// to immediately exec (see the comment at the call site -- macOS forbids
+// running on after fork once CoreFoundation is up), so the whole sequence
+// collapses into one CreateProcess.
+//
+//   DETACHED_PROCESS         is setsid(): the child gets no console at all, so
+//                            it neither holds the terminal nor dies with it.
+//   CREATE_NEW_PROCESS_GROUP keeps a Ctrl-C aimed at this console from
+//                            reaching it.
+//   STARTF_USESTDHANDLES     is the dup2 pair: stdin from NUL, stdout+stderr
+//                            into the startup file, which is exactly what the
+//                            POSIX branch does and for the same reason (early
+//                            failures must be readable before LogSink exists).
+//
+// bInheritHandles must be TRUE or STARTF_USESTDHANDLES is ignored and the
+// child silently inherits nothing usable.
+bool spawnDetached(const std::string& exePath,
+                   const std::vector<std::string>& args,
+                   const std::string& startupPath,
+                   PROCESS_INFORMATION& pi)
+{
+    std::string cmdline;
+    for (const auto& a : args) {
+        if (!cmdline.empty()) cmdline.push_back(' ');
+        cmdline += quoteArg(a);
+    }
+    // CreateProcess may modify the command-line buffer in place, so it cannot
+    // be a string literal or a c_str().
+    std::vector<char> mutableCmd(cmdline.begin(), cmdline.end());
+    mutableCmd.push_back('\0');
+
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+
+    HANDLE hIn = ::CreateFileA("NUL", GENERIC_READ,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                               OPEN_EXISTING, 0, nullptr);
+    HANDLE hOut = ::CreateFileA(startupPath.c_str(), GENERIC_WRITE,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hOut == INVALID_HANDLE_VALUE)
+        hOut = ::CreateFileA("NUL", GENERIC_WRITE,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                             OPEN_EXISTING, 0, nullptr);
+
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput  = hIn;
+    si.hStdOutput = hOut;
+    si.hStdError  = hOut;
+
+    const BOOL ok = ::CreateProcessA(exePath.c_str(), mutableCmd.data(),
+                                     nullptr, nullptr, TRUE,
+                                     DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                                     nullptr, nullptr, &si, &pi);
+    const DWORD err = ok ? 0 : ::GetLastError();
+
+    if (hIn  != INVALID_HANDLE_VALUE) ::CloseHandle(hIn);
+    if (hOut != INVALID_HANDLE_VALUE) ::CloseHandle(hOut);
+
+    if (!ok) {
+        fprintf(stderr, "Error: could not start detached daemon '%s' "
+                        "(CreateProcess failed, error %lu)\n",
+                exePath.c_str(), static_cast<unsigned long>(err));
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+#endif  // _WIN32
 
 static void messageHandler(QtMsgType type, const QMessageLogContext &context, const QString &msg) {
     QByteArray localMsg = msg.toLocal8Bit();
@@ -394,7 +530,7 @@ int main(int argc, char *argv[])
             return 1;
         }
         Config::setConfigDir(absCfgPath.string());
-        setenv("LOGOSCTL_CONFIG_DIR", absCfgPath.string().c_str(), 1);
+        logosctl::setEnvVar("LOGOSCTL_CONFIG_DIR", absCfgPath.string().c_str());
     }
 
     // ── `daemon <verb>` / `client <verb>` routing ────────────────────────────
@@ -473,7 +609,7 @@ int main(int argc, char *argv[])
             // this process's environment-derived default if the caller used
             // --config-dir, and an inherited-but-different session would be a
             // very confusing bug.
-            setenv("LOGOSCTL_CONFIG_DIR", Config::configDir().c_str(), 1);
+            logosctl::setEnvVar("LOGOSCTL_CONFIG_DIR", Config::configDir().c_str());
 
             const std::string statePath = Config::daemonStatePath();
             // A stale state file from a previous run would make the readiness
@@ -498,6 +634,24 @@ int main(int argc, char *argv[])
                 (std::filesystem::path(Config::daemonDir()) / "startup.err").string();
             { std::error_code ec; std::filesystem::remove(startupPath, ec); }
 
+#ifdef _WIN32
+            // One CreateProcess replaces fork + setsid + the stdio reopen +
+            // execv; see spawnDetached above.
+            PROCESS_INFORMATION childProc{};
+            if (!spawnDetached(self, childArgs, startupPath, childProc))
+                return 1;
+            const long childPid = static_cast<long>(childProc.dwProcessId);
+            // Has the child exited yet? A process handle is signalled exactly
+            // when the process has, which is the WNOHANG waitpid equivalent
+            // without GetExitCodeProcess's ambiguous STILL_ACTIVE (259).
+            auto childExited = [&childProc]() {
+                return ::WaitForSingleObject(childProc.hProcess, 0) == WAIT_OBJECT_0;
+            };
+            auto releaseChild = [&childProc]() {
+                ::CloseHandle(childProc.hThread);
+                ::CloseHandle(childProc.hProcess);
+            };
+#else
             const pid_t child = fork();
             if (child < 0) {
                 perror("Error: could not fork for --detach");
@@ -529,6 +683,13 @@ int main(int argc, char *argv[])
                 execv(self.c_str(), cargv.data());
                 _exit(127);  // exec failed
             }
+            const long childPid = static_cast<long>(child);
+            auto childExited = [child]() {
+                int status = 0;
+                return ::waitpid(child, &status, WNOHANG) == child;
+            };
+            auto releaseChild = []() {};
+#endif
 
             // Parent: wait for the child to publish state.json, which it
             // writes only after every transport has bound. Returning before
@@ -599,11 +760,11 @@ int main(int argc, char *argv[])
                 if (std::filesystem::exists(statePath, ec)) {
                     cleanupStartupFile();
                     fprintf(stdout, "Daemon started (pid %ld)\nLogs: %s\n",
-                            static_cast<long>(child), logPath.c_str());
+                            childPid, logPath.c_str());
+                    releaseChild();
                     return 0;
                 }
-                int status = 0;
-                if (waitpid(child, &status, WNOHANG) == child) {
+                if (childExited()) {
                     const std::string early = earlyOutput();
                     if (!early.empty()) {
                         // Print the child's own message. Prefixing it with
@@ -622,10 +783,12 @@ int main(int argc, char *argv[])
                             fprintf(stderr, "See %s\n", logPath.c_str());
                     }
                     cleanupStartupFile();
+                    releaseChild();
                     return 1;
                 }
-                usleep(100 * 1000);
+                sleepMs(100);
             }
+            releaseChild();
             {
                 const std::string early = earlyOutput();
                 fprintf(stderr, "Error: daemon did not become ready in 60s.\n");

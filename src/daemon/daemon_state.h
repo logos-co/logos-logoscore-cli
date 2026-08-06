@@ -10,6 +10,14 @@
 #include <cstdint>
 #include <sys/types.h>   // gid_t
 
+#ifdef _WIN32
+// mingw-w64's sys/types.h has no gid_t — Windows identifies principals by SID,
+// not by a small integer. Declared so the signatures below still compile; the
+// only producer, resolveOsGroupGid, always fails on Windows, so no value of
+// this type is ever meaningful there.
+using gid_t = unsigned int;
+#endif
+
 // `daemon/config.json` (operator preferences) and `daemon/state.json`
 // (live runtime state). Both use the same v2 schema number — the
 // previous unified daemon/daemon.json v2 was internal-only, so the version

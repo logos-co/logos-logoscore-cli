@@ -1,4 +1,5 @@
 #include "log_sink.h"
+#include "../platform_compat.h"
 
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/spdlog.h>
@@ -10,12 +11,31 @@
 #include <string>
 #include <vector>
 
+#include <cerrno>
 #include <fcntl.h>
+
+#ifdef _WIN32
+#include <io.h>
+#include <windows.h>
+#else
 #include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 
 namespace {
+
+// pipe(2). Windows' CRT spells it _pipe and wants a size and a text mode;
+// _O_BINARY because this carries arbitrary bytes and CRLF translation would
+// corrupt them (and duplicate every newline the reader splits on).
+int makePipe(int fds[2])
+{
+#ifdef _WIN32
+    return ::_pipe(fds, 64 * 1024, _O_BINARY);
+#else
+    return ::pipe(fds);
+#endif
+}
 
 // yyyymmdd_HHMMSS in local time, matching basecamp's session stamp so logs
 // from the two frontends sort and read the same way.
@@ -23,7 +43,7 @@ std::string sessionStamp()
 {
     const std::time_t t = std::time(nullptr);
     std::tm tm{};
-    localtime_r(&t, &tm);
+    logosctl::localtimeR(&t, &tm);
     char buf[32];
     std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &tm);
     return buf;
@@ -162,7 +182,7 @@ bool LogSink::start(const Options& opts)
     }
 
     int fds[2];
-    if (::pipe(fds) != 0) {
+    if (makePipe(fds) != 0) {
         cleanup();
         return false;
     }
@@ -177,6 +197,26 @@ bool LogSink::start(const Options& opts)
         cleanup();
         return false;
     }
+
+#ifdef _WIN32
+    // The dup2 above rebinds only the CRT's fd table. A MODULE SUBPROCESS does
+    // not inherit that table: CreateProcess passes the STARTUPINFO std handles,
+    // which default to the parent's STD_OUTPUT_HANDLE / STD_ERROR_HANDLE --
+    // still the console. Capturing module-host output is the entire reason this
+    // sink is pipe-based rather than a file redirect, so leaving the Win32 std
+    // handles alone would silently defeat it: the daemon's own lines would be
+    // logged and every logos_host line would keep going to the terminal.
+    //
+    // Take the handles from fd 1 / fd 2 AFTER the dup2, not from fds[1]: _dup2
+    // duplicates the underlying OS handle into the target slot, so these stay
+    // valid after the ::close(fds[1]) below, whereas fds[1]'s handle does not.
+    m_originalStdoutHandle = ::GetStdHandle(STD_OUTPUT_HANDLE);
+    m_originalStderrHandle = ::GetStdHandle(STD_ERROR_HANDLE);
+    ::SetStdHandle(STD_OUTPUT_HANDLE,
+                   reinterpret_cast<HANDLE>(::_get_osfhandle(_fileno(stdout))));
+    ::SetStdHandle(STD_ERROR_HANDLE,
+                   reinterpret_cast<HANDLE>(::_get_osfhandle(_fileno(stderr))));
+#endif
 
     // Line-buffer so a line reaches the reader as soon as it is complete,
     // rather than sitting in a 4K buffer until the daemon happens to fill it.
@@ -200,13 +240,16 @@ void LogSink::readerLoop()
     std::vector<char> buf(4096);
 
     for (;;) {
-        const ssize_t n = ::read(m_readFd, buf.data(), buf.size());
+        // `auto`, not ssize_t: the CRT's read() returns int and takes an
+        // unsigned int count, so the POSIX signature cannot be spelled here.
+        const auto n = ::read(m_readFd, buf.data(),
+                              static_cast<unsigned int>(buf.size()));
         if (n > 0) {
             // Mirror first: if the process dies mid-write, the terminal has
             // already seen it.
             if (m_console && m_originalStdout >= 0) {
-                ssize_t ignored = ::write(m_originalStdout, buf.data(),
-                                          static_cast<std::size_t>(n));
+                const auto ignored = ::write(m_originalStdout, buf.data(),
+                                             static_cast<unsigned int>(n));
                 (void)ignored;
             }
             pending.append(buf.data(), static_cast<std::size_t>(n));
@@ -255,6 +298,21 @@ void LogSink::stop()
     // mirroring to m_originalStdout and closing it here would race fd reuse.
     if (m_originalStdout >= 0) ::dup2(m_originalStdout, fileno(stdout));
     if (m_originalStderr >= 0) ::dup2(m_originalStderr, fileno(stderr));
+
+#ifdef _WIN32
+    // Put the Win32 std handles back in the same breath as the fds. The
+    // handles we installed in start() are the ones fd 1 / fd 2 own, so the
+    // dup2 above has just closed them -- leaving STD_OUTPUT_HANDLE dangling
+    // for anything (a child spawned during shutdown) that reads it.
+    if (m_originalStdoutHandle) {
+        ::SetStdHandle(STD_OUTPUT_HANDLE, m_originalStdoutHandle);
+        m_originalStdoutHandle = nullptr;
+    }
+    if (m_originalStderrHandle) {
+        ::SetStdHandle(STD_ERROR_HANDLE, m_originalStderrHandle);
+        m_originalStderrHandle = nullptr;
+    }
+#endif
 
     if (m_readerThread.joinable())
         m_readerThread.join();

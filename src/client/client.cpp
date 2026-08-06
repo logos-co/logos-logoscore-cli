@@ -1,5 +1,6 @@
 #include "client.h"
 #include "../config.h"
+#include "../platform_compat.h"
 #include "client_state.h"
 
 #include <logos_api.h>
@@ -98,7 +99,7 @@ bool RpcClient::connect()
     // remote clients (TCP / TCP-SSL) don't need it.
     if (!d->clientState.instanceId.empty()) {
         d->instanceId = d->clientState.instanceId;
-        setenv("LOGOS_INSTANCE_ID", d->instanceId.c_str(), 1);
+        logosctl::setEnvVar("LOGOS_INSTANCE_ID", d->instanceId.c_str());
     }
 
     // Keep the legacy self-identity entry (the CLI's LogosAPI is named
@@ -335,7 +336,7 @@ bool RpcClient::watchModuleEvents(const std::string& module,
             auto now = std::chrono::system_clock::now();
             std::time_t tt = std::chrono::system_clock::to_time_t(now);
             struct tm utc{};
-            gmtime_r(&tt, &utc);
+            logosctl::gmtimeR(&tt, &utc);
             char tsBuf[32];
             std::strftime(tsBuf, sizeof(tsBuf), "%Y-%m-%dT%H:%M:%SZ", &utc);
 
