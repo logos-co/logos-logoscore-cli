@@ -34,6 +34,8 @@
 #include <random>
 #include <string>
 #include <vector>
+#include "../process_util.h"
+
 #include <unistd.h>
 
 static volatile sig_atomic_t g_shutdownRequested = 0;
@@ -337,7 +339,7 @@ int Daemon::start(int argc, char* argv[],
     {
         const DaemonRuntimeState existing = DaemonRuntimeStateFile::read();
         if (existing.fileOk && existing.pid > 0
-            && ::kill(static_cast<pid_t>(existing.pid), 0) == 0) {
+            && logosctl::processAlive(existing.pid)) {
             fprintf(stderr,
                     "Error: a logosctl daemon is already running in this config dir "
                     "(pid %lld, instance %s). Refusing to start a second one — use "

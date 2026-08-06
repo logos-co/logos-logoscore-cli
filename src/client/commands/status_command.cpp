@@ -1,9 +1,7 @@
 #include "status_command.h"
 #include "../client_state.h"
 #include "../../daemon/daemon_state.h"
-
-#include <signal.h>
-#include <errno.h>
+#include "../../process_util.h"
 
 int StatusCommand::execute(const std::vector<std::string>& args)
 {
@@ -17,8 +15,7 @@ int StatusCommand::execute(const std::vector<std::string>& args)
 
     {
         const DaemonRuntimeState rs = DaemonRuntimeStateFile::read();
-        if (rs.fileOk && rs.pid > 0 && ::kill(static_cast<pid_t>(rs.pid), 0) != 0
-                                    && errno == ESRCH) {
+        if (rs.fileOk && rs.pid > 0 && !logosctl::processAlive(rs.pid)) {
             LogosMap result{{"daemon", LogosMap{
                 {"status", "not_running"},
                 {"reason", "stale state file (daemon crashed; pid no longer alive)"},
