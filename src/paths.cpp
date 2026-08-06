@@ -5,19 +5,56 @@
 #include <cstdlib>
 #include <cstring>
 
-#include <unistd.h>   // access(), X_OK — needed on every platform here
+#include <unistd.h>   // access() — present on mingw-w64 too
 
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
+#elif defined(_WIN32)
+#include <windows.h>
 #endif
+
+namespace {
+#ifdef _WIN32
+// Windows has no execute permission bit -- executability is decided by the
+// file's contents, and `access(p, X_OK)` is not even declarable (there is no
+// X_OK). Existence plus the is_regular_file() check callers already do is the
+// meaningful test here.
+constexpr int kExecAccessMode = 0;      // F_OK
+constexpr char kPathListSep = ';';
+#else
+constexpr int kExecAccessMode = X_OK;
+constexpr char kPathListSep = ':';
+#endif
+}  // namespace
 
 namespace fs = std::filesystem;
 
 namespace paths {
 
+#ifdef _WIN32
+// Shared by executablePath()/executableDir(): GetModuleFileNameW truncates
+// rather than failing when the buffer is too small (and on older Windows does
+// not even NUL-terminate), so grow until it fits.
+static std::wstring moduleFileNameW()
+{
+    std::wstring buf(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD n = ::GetModuleFileNameW(nullptr, buf.data(),
+                                             static_cast<DWORD>(buf.size()));
+        if (n == 0) return {};
+        if (n < buf.size()) { buf.resize(n); return buf; }
+        if (buf.size() > 32768) return {};   // far past MAX_PATH; give up
+        buf.resize(buf.size() * 2);
+    }
+}
+#endif
+
 std::string executablePath()
 {
-#ifdef __APPLE__
+#ifdef _WIN32
+    const std::wstring w = moduleFileNameW();
+    return w.empty() ? std::string{} : fs::path(w).string();
+#elif defined(__APPLE__)
     uint32_t size = 0;
     _NSGetExecutablePath(nullptr, &size);
     std::string buf(size, '\0');
@@ -36,7 +73,10 @@ std::string executablePath()
 
 std::string executableDir()
 {
-#ifdef __APPLE__
+#ifdef _WIN32
+    const std::wstring w = moduleFileNameW();
+    return w.empty() ? std::string{} : fs::path(w).parent_path().string();
+#elif defined(__APPLE__)
     uint32_t size = 0;
     _NSGetExecutablePath(nullptr, &size);
     std::string buf(size, '\0');
@@ -95,7 +135,7 @@ std::string relaunchPath(const char* argv0)
     auto usable = [](const fs::path& p) {
         std::error_code ec;
         return !p.empty() && fs::is_regular_file(p, ec)
-            && ::access(p.c_str(), X_OK) == 0;
+            && ::access(p.c_str(), kExecAccessMode) == 0;
     };
 
     // Map a portable bundle's hidden ELF back to the launcher beside it.
@@ -140,7 +180,7 @@ std::string relaunchPath(const char* argv0)
                 std::string dirs(pathEnv);
                 std::size_t start = 0;
                 while (start <= dirs.size()) {
-                    const std::size_t sep = dirs.find(':', start);
+                    const std::size_t sep = dirs.find(kPathListSep, start);
                     const std::string dir = dirs.substr(
                         start, sep == std::string::npos ? std::string::npos
                                                         : sep - start);
