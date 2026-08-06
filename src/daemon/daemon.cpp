@@ -34,30 +34,97 @@
 #include <random>
 #include <string>
 #include <vector>
+#include "../platform_compat.h"
 #include "../process_util.h"
 
+#ifdef _WIN32
+#include <process.h>   // getpid — mingw-w64 puts it here, not in unistd.h
+#include <windows.h>
+#else
 #include <unistd.h>
+#endif
 
 static volatile sig_atomic_t g_shutdownRequested = 0;
 
+#ifndef _WIN32
 // Self-pipe: the handler write()s one byte (async-signal-safe), and a
 // QSocketNotifier on the read end calls QCoreApplication::quit() in normal
 // context — quit() itself is not async-signal-safe to call from a handler.
 static int g_signalPipe[2] = {-1, -1};
+#endif
 
+// Ask the event loop to leave exec(), from wherever we are.
+//
+// On POSIX this runs in a signal handler and must stay async-signal-safe,
+// which is what the self-pipe is for. On Windows there is no self-pipe here,
+// and the reason is not stylistic: QEventDispatcherWin32 implements
+// QSocketNotifier with WSAAsyncSelect, which requires a real SOCKET. Handing
+// it a CRT pipe fd fails with WSAENOTSOCK, the dispatcher DISCARDS the return
+// value, and the notifier simply never fires — a daemon that ignores Ctrl-C
+// with no diagnostic at all. What Windows does instead is run the console
+// control routine on a dedicated thread the OS spawns for it, so the
+// constraint there is threading, not signal safety: post to the main thread.
 void Daemon::signalHandler(int signal)
 {
     (void)signal;
     g_shutdownRequested = 1;
+#ifdef _WIN32
+    if (QCoreApplication::instance())
+        QMetaObject::invokeMethod(QCoreApplication::instance(), "quit",
+                                  Qt::QueuedConnection);
+#else
     if (g_signalPipe[1] != -1) {
         const char byte = 1;
         ssize_t n = ::write(g_signalPipe[1], &byte, 1);
         (void)n;
     }
+#endif
 }
+
+#ifdef _WIN32
+namespace {
+// Ctrl-C, Ctrl-Break and the console-window/logoff/shutdown events all arrive
+// here. Returning TRUE means "handled", which for CTRL_C_EVENT stops the
+// default terminate-the-process behaviour and lets the shutdown below unwind
+// normally (unlinking state.json, closing the QtRO pipes).
+//
+// For CTRL_CLOSE/LOGOFF/SHUTDOWN Windows grants a bounded grace period and
+// then kills the process regardless — that is the OS contract, not something
+// this handler can extend.
+BOOL WINAPI consoleCtrlHandler(DWORD type)
+{
+    switch (type) {
+    case CTRL_C_EVENT:
+    case CTRL_BREAK_EVENT:
+    case CTRL_CLOSE_EVENT:
+    case CTRL_LOGOFF_EVENT:
+    case CTRL_SHUTDOWN_EVENT:
+        Daemon::requestShutdown();
+        return TRUE;
+    default:
+        return FALSE;
+    }
+}
+}  // namespace
+
+void Daemon::requestShutdown() { signalHandler(SIGTERM); }
+#endif
 
 void Daemon::setupSignalHandlers()
 {
+#ifdef _WIN32
+    // Ctrl-C reaches a console process through this, not through signal():
+    // the CRT's SIGINT emulation is itself implemented on top of it, and only
+    // this form sees CTRL_CLOSE_EVENT (the window's X button).
+    ::SetConsoleCtrlHandler(&consoleCtrlHandler, TRUE);
+
+    // Windows has no way for one process to send SIGTERM to another, so a
+    // raise() from inside this process is the only thing that can arrive here.
+    // Registered anyway so that path shuts down the same way rather than
+    // taking the CRT default of terminating outright.
+    std::signal(SIGINT, &Daemon::signalHandler);
+    std::signal(SIGTERM, &Daemon::signalHandler);
+#else
     // Create the self-pipe and wire its read end to a QSocketNotifier that
     // performs the actual (non-async-signal-safe) quit() in normal context.
     if (::pipe(g_signalPipe) == 0) {
@@ -78,6 +145,7 @@ void Daemon::setupSignalHandlers()
     sa.sa_flags = 0;
     sigaction(SIGINT, &sa, nullptr);
     sigaction(SIGTERM, &sa, nullptr);
+#endif
 }
 
 namespace {
@@ -304,7 +372,7 @@ int Daemon::start(int argc, char* argv[],
 
     int64_t pid = getpid();
 
-    setenv("LOGOS_INSTANCE_ID", instanceId.c_str(), 1);
+    logosctl::setEnvVar("LOGOS_INSTANCE_ID", instanceId.c_str());
 
     // Share the node with an OS group if the operator asked (--access-group).
     // Validate the group ONCE here, up front, so the socket policy and the
@@ -318,6 +386,22 @@ int Daemon::start(int argc, char* argv[],
     // requires. `effectiveAccessGroup` (empty when unset or invalid) is what
     // gets handed to writeLocalClientArtifacts below.
     std::string effectiveAccessGroup = cfg.accessGroup;
+#ifdef _WIN32
+    // Refused outright rather than degraded to owner-only. Every mechanism the
+    // feature is built from is POSIX: an OS group database (getgrnam_r), a gid
+    // on the socket (chown), and a 0660 mode that an AF_UNIX connect() checks.
+    // Windows has none of them — QLocalServer is a named pipe, whose access is
+    // a security descriptor set at creation, and there is no group to name.
+    // Accepting the flag and quietly not sharing would tell an operator their
+    // node is group-restricted when it is in fact only user-restricted.
+    if (!effectiveAccessGroup.empty()) {
+        fprintf(stderr,
+                "Error: --access-group is not supported on Windows. Sharing a "
+                "node with an OS group needs POSIX group ownership and socket "
+                "mode bits, which named pipes do not have.\n");
+        return 1;
+    }
+#else
     if (!effectiveAccessGroup.empty()) {
         gid_t gid = 0;
         if (!resolveOsGroupGid(effectiveAccessGroup, gid)) {
@@ -327,10 +411,11 @@ int Daemon::start(int argc, char* argv[],
                     effectiveAccessGroup.c_str());
             effectiveAccessGroup.clear();
         } else {
-            setenv("LOGOS_SOCKET_GROUP", effectiveAccessGroup.c_str(), 1);
-            setenv("LOGOS_SOCKET_MODE", "0660", 1);
+            logosctl::setEnvVar("LOGOS_SOCKET_GROUP", effectiveAccessGroup.c_str());
+            logosctl::setEnvVar("LOGOS_SOCKET_MODE", "0660");
         }
     }
+#endif
 
     // Refuse to start if a live daemon already owns this config-dir — two would
     // clobber the shared state.json and re-issue the auto-token. Checked before

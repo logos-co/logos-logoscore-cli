@@ -10,6 +10,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "../../platform_compat.h"
+
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -179,7 +181,8 @@ int ConfigCommand::set(const std::vector<std::string>& args)
     // with an OS group would otherwise silently lose its group access.
     struct stat st;
     if (::stat(path.c_str(), &st) == 0)
-        ::chmod(tmp.c_str(), st.st_mode & 07777);
+        // .string(): fs::path::c_str() is const wchar_t* on Windows.
+        logosctl::chmodPosix(tmp.string().c_str(), st.st_mode & 07777);
     fs::rename(tmp, path, ec);
     if (ec) {
         fs::remove(tmp, ec);

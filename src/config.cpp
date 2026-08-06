@@ -4,6 +4,34 @@
 #include <map>
 
 namespace {
+
+// Root under which a session directory is created when nothing overrides it.
+//
+// Windows has no $HOME. The per-user, NON-ROAMING application-data root is
+// %LOCALAPPDATA%, and non-roaming is the correct choice for everything a
+// session holds: pids, sockets, ports and logs are all machine-specific, so
+// following a roaming profile onto another machine would carry state that is
+// wrong there. %USERPROFILE% is the fallback for the (unusual) case of
+// LOCALAPPDATA being unset — never $HOME, which on Windows is normally absent
+// and, when present, is set by a POSIX-emulation shell that does not agree
+// with where the rest of the system thinks the user's files are.
+std::string homeBase()
+{
+#ifdef _WIN32
+    for (const char* var : { "LOCALAPPDATA", "USERPROFILE" }) {
+        const char* v = std::getenv(var);
+        if (v && *v) return std::string(v);
+    }
+    const char* tmp = std::getenv("TEMP");
+    return tmp && *tmp ? std::string(tmp) : std::string(".");
+#else
+    // Unset -> /tmp, exactly as before. An *empty* HOME still yields "" here,
+    // also as before; changing that would move where an existing session lives.
+    const char* home = std::getenv("HOME");
+    return std::string(home ? home : "/tmp");
+#endif
+}
+
 // Process-wide override set by setConfigDir(). Empty = not overridden.
 // This is a plain static (not thread-local) — set once at startup from main(),
 // read many times thereafter, never mutated concurrently with reads.
@@ -49,9 +77,7 @@ std::string Config::configDir()
     if (envDir && *envDir)
         return std::string(envDir);
 
-    const char* home = std::getenv("HOME");
-    return std::string(home ? home : "/tmp")
-         + (isModern() ? "/.logosctl" : "/.logoscore");
+    return homeBase() + (isModern() ? "/.logosctl" : "/.logoscore");
 }
 
 std::string Config::daemonDir()        { return configDir() + "/daemon"; }
@@ -79,10 +105,16 @@ std::string resolveOverride(const std::string& raw)
 {
     if (raw.empty()) return raw;
     if (raw[0] == '~' && (raw.size() == 1 || raw[1] == '/')) {
-        const char* home = std::getenv("HOME");
-        if (home && *home) return std::string(home) + raw.substr(1);
+        const std::string home = homeBase();
+        if (!home.empty()) return home + raw.substr(1);
     }
-    if (raw[0] == '/') return raw;
+    // "/x" is absolute everywhere this runs. On Windows it additionally has to
+    // accept "C:\x" and "\\server\share", which std::filesystem answers and a
+    // leading-slash test does not -- and getting that wrong would silently
+    // reparent an operator's explicit absolute path under the session dir.
+    // (fs::path("/x").is_absolute() is FALSE on Windows -- it is drive-relative
+    // -- so the leading-slash test has to stay as well.)
+    if (raw[0] == '/' || std::filesystem::path(raw).is_absolute()) return raw;
     return Config::configDir() + "/" + raw;
 }
 

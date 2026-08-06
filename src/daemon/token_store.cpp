@@ -1,6 +1,7 @@
 #include "token_store.h"
 #include "daemon_state.h"
 #include "../config.h"
+#include "../platform_compat.h"
 
 #include <nlohmann/json.hpp>
 #include <openssl/rand.h>
@@ -141,7 +142,7 @@ bool TokensFile::write(const std::vector<TokenEntry>& tokens)
     // 0600 before rename — once the file is at its final path, file
     // perms apply via the rename; doing it on the temp avoids any
     // window where a wider mode is visible at the destination.
-    ::chmod(tmp.c_str(), S_IRUSR | S_IWUSR);
+    logosctl::chmodPosix(tmp.string().c_str(), S_IRUSR | S_IWUSR);
     std::error_code rec;
     fs::rename(tmp, path, rec);
     if (rec) {
@@ -249,9 +250,9 @@ bool isExpired(const std::string& expiresAt) {
     // the on-disk safety net.
     if (expiresAt.empty()) return false;
     struct tm tm{};
-    if (!strptime(expiresAt.c_str(), "%Y-%m-%dT%H:%M:%SZ", &tm)) return true;
+    if (!logosctl::strptimeIso8601Utc(expiresAt.c_str(), tm)) return true;
     // timegm interprets `tm` as UTC.
-    time_t deadline = timegm(&tm);
+    time_t deadline = logosctl::timegmUtc(&tm);
     return std::chrono::system_clock::to_time_t(
                std::chrono::system_clock::now()) >= deadline;
 }
@@ -288,7 +289,7 @@ TokenStore::TokenStore()
     std::error_code ec;
     fs::create_directories(tokensDir, ec);
     // Belt-and-braces dir perms (0700) so umask can't widen.
-    if (!ec) ::chmod(tokensDir.c_str(), S_IRWXU);
+    if (!ec) logosctl::chmodPosix(tokensDir.c_str(), S_IRWXU);
 }
 
 namespace {
@@ -316,7 +317,7 @@ bool writeRawTokenFile(const std::string& path,
     // Tokens are credentials; force restrictive perms regardless of
     // umask so we never accidentally create world/group-readable
     // credential files.
-    ::chmod(path.c_str(), S_IRUSR | S_IWUSR);
+    logosctl::chmodPosix(path.c_str(), S_IRUSR | S_IWUSR);
     return true;
 }
 

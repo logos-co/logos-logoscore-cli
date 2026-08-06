@@ -134,8 +134,10 @@ std::string relaunchPath(const char* argv0)
 {
     auto usable = [](const fs::path& p) {
         std::error_code ec;
+        // .string(), not .c_str(): fs::path::value_type is wchar_t on Windows,
+        // so c_str() yields const wchar_t* and will not convert.
         return !p.empty() && fs::is_regular_file(p, ec)
-            && ::access(p.c_str(), kExecAccessMode) == 0;
+            && ::access(p.string().c_str(), kExecAccessMode) == 0;
     };
 
     // Map a portable bundle's hidden ELF back to the launcher beside it.
