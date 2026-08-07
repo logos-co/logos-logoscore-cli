@@ -206,6 +206,21 @@ target_link_libraries(${_tgt} PRIVATE
 target_link_libraries(${_tgt} PRIVATE logos-qt-sdk::logos_qt_sdk)
 
 if(WIN32)
+    # This binary links liblogos_core.dll, which since the single-provider
+    # change EXPORTS the shared C++ runtime -- so the static archives behind
+    # logos-qt-sdk::logos_qt_sdk must stop providing it too, or every exported
+    # symbol is defined twice and the link fails. See
+    # cmake/LogosSharedFromDll.cmake. The link interface above is deliberately
+    # left intact: the imported targets still carry their include dirs and
+    # Qt/OpenSSL/nlohmann usage requirements.
+    target_compile_definitions(${_tgt} PRIVATE LOGOS_SHARED_USE_DLL)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/LogosSharedFromDll.cmake")
+    logos_use_shared_runtime_from_dll(
+        logos-qt-sdk::logos_qt_sdk
+        logos-protocol::logos_protocol)
+endif()
+
+if(WIN32)
     # PortAllocator's probe socket. Winsock is not in the default link set the
     # way libc's sockets are on POSIX, so without this the build fails at link
     # with undefined `socket`/`bind`/`getsockname`/`WSAStartup`.
