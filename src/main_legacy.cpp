@@ -540,7 +540,35 @@ int main(int argc, char *argv[])
         if (anyCliFlag) configSource = "cli";
 
         if (modulesDirOpt->count() > 0)      mergedCfg.modulesDirs     = modulesDirs;
-        if (persistencePathOpt->count() > 0) mergedCfg.persistencePath = persistencePath;
+        // --persistence-path has to reach the field the daemon actually reads
+        // — dirs.data — and not only its older spelling. The alias that folds
+        // persistence_path into dirs.data lives inside daemonConfigFromJson,
+        // so it runs while READING a config file and never after this merge:
+        // assigning persistencePath alone left the flag with no consumer at
+        // all. Writing both gives this block the precedence it documents
+        // (explicit command line > config file > default) and keeps the two
+        // spellings agreeing in whatever --persist-config writes back.
+        //
+        // Absolutised first, because the two sources spell relative paths
+        // differently: a `dirs:` entry in config.json is relative to the config
+        // dir (Config::setSessionDirOverride resolves it there), while a path
+        // typed on the command line is relative to the shell's cwd — what this
+        // flag has always meant, and what --modules-dir still means. Pinning it
+        // here keeps `--persistence-path ./data` pointing at ./data instead of
+        // quietly reparenting it under ~/.logoscore. An explicit empty value
+        // stays empty: that is how both fields already encode "no override,
+        // use the default", and absolute("") would turn it into the cwd.
+        if (persistencePathOpt->count() > 0) {
+            std::string resolved = persistencePath;
+            if (!resolved.empty()) {
+                std::error_code ec;
+                std::filesystem::path abs =
+                    std::filesystem::absolute(resolved, ec);
+                if (!ec) resolved = abs.lexically_normal().string();
+            }
+            mergedCfg.persistencePath = resolved;
+            mergedCfg.dirs.data       = resolved;
+        }
         if (insecureTcpOpt->count() > 0)     mergedCfg.insecureTcp     = insecureTcp;
         if (accessGroupOpt->count() > 0)     mergedCfg.accessGroup     = accessGroupArg;
         // Resolve --access-policy (file-or-inline); abort on bad input.

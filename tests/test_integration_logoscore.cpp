@@ -117,6 +117,13 @@ public:
     }
 
     void start(const std::string& tag) {
+        prepare(tag);
+        launch();
+    }
+
+    // Lay out the isolated tree without starting anything, so a test can seed
+    // daemon/config.json or derive paths under `base` before the process runs.
+    void prepare(const std::string& tag) {
         base      = fs::temp_directory_path() / ("logoscore_it_" + tag + "_" + std::to_string(getpid()));
         configDir = base / "config";
         homeDir   = base / "home";
@@ -124,7 +131,14 @@ public:
         fs::create_directories(configDir);
         fs::create_directories(homeDir);
         if (!socketDir.empty()) fs::create_directories(socketDir);
-        pid = spawnBg({"daemon", "-m", modulesDir.string()}, daemonLog);
+    }
+
+    // Spawn the daemon into the tree `prepare` laid out. `extraArgs` is
+    // appended after the standard `daemon -m <modules>`.
+    void launch() {
+        std::vector<std::string> args{"daemon", "-m", modulesDir.string()};
+        args.insert(args.end(), extraArgs.begin(), extraArgs.end());
+        pid = spawnBg(args, daemonLog);
     }
 
     // fork + setsid + exec a logoscore subprocess (daemon or watch) with
@@ -215,6 +229,10 @@ public:
         std::error_code ec;
         if (!base.empty()) fs::remove_all(base, ec);
     }
+
+    // Extra CLI arguments for the daemon, appended after `daemon -m <modules>`.
+    // Empty for every test that only needs the stock daemon.
+    std::vector<std::string> extraArgs;
 
     fs::path binary, modulesDir, base, configDir, homeDir, daemonLog;
     // Optional private socket directory ($TMPDIR for the node). Empty ⇒
@@ -983,4 +1001,172 @@ TEST_F(SocketLifecycleTest, BootReapsStaleSocketsButSparesLiveOnesAndFiles)
     ASSERT_TRUE(fs::exists(plain))
         << "the reaper deleted a regular file sharing the prefix: " << plain;
     EXPECT_EQ(slurp(plain), "not a socket") << "regular file was modified";
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// --persistence-path must actually MOVE the data — not merely exist in --help
+//
+// Regression: the flag parsed and was then dropped. The CLI merge wrote only
+// DaemonConfig::persistencePath, while Daemon::start redirects the session's
+// data directory from cfg.dirs.data. The alias that folds one spelling into
+// the other lives inside daemonConfigFromJson, so it only ever ran while
+// READING a config file — never after the CLI merge. Net effect: with no
+// config.json the flag was ignored, and with one the FILE beat the command
+// line. The only coverage was an assertion that "--persistence-path" appears
+// in the help text, which the broken build passed.
+//
+// Asserted behaviourally rather than through the config plumbing: loading a
+// module makes logos_core resolve — and mkpath — <data dir>/<module>/<12hex>,
+// so the directory tree on disk is direct evidence of where the data went.
+// Each case checks both halves: it landed under the flag's directory, AND it
+// did not land in the directory that would win if the flag were still dead.
+// ═══════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// The per-instance directories logos_core created for `module` under `base`.
+// Empty when the module never persisted there (including when `base` itself
+// does not exist).
+std::vector<std::string> instanceDirs(const fs::path& base, const std::string& module)
+{
+    std::vector<std::string> out;
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(base / module, ec))
+        if (e.is_directory()) out.push_back(e.path().filename().string());
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// What the seeded daemon/config.json says about the data directory.
+enum class DiskConfig {
+    None,             // no config.json at all
+    DirsData,         // the new spelling, pointing at a decoy
+    PersistencePath,  // the old spelling, pointing at a decoy
+};
+
+}  // namespace
+
+class PersistencePathTest : public ::testing::Test {
+protected:
+    LogoscoreDaemon d;
+    fs::path        custom;  // what --persistence-path names
+    fs::path        decoy;   // what the seeded config.json names, if any
+
+    void SetUp() override {
+        std::string why;
+        if (!d.envReady(why)) GTEST_SKIP() << why;
+    }
+    void TearDown() override {
+        d.shutdown();
+        if (!cwdLitter.empty()) {
+            std::error_code ec;
+            fs::remove_all(fs::current_path() / cwdLitter, ec);
+        }
+    }
+
+    // Boot a daemon with `--persistence-path <flagValue>` over the given disk
+    // config, then load a module so something actually persists. `flagValue`
+    // empty ⇒ an absolute directory under this daemon's own tree, which is
+    // what every case but the relative-path one wants. Fatal assertions inside
+    // a helper only return from the helper, so every caller re-checks
+    // HasFatalFailure() before asserting on the result.
+    void bootAndLoad(const std::string& tag, DiskConfig disk,
+                     const std::string& flagValue = {}) {
+        d.prepare(tag);
+        custom = flagValue.empty() ? d.base / "custom-data" : fs::path(flagValue);
+        decoy  = d.base / "decoy-data";
+
+        if (disk != DiskConfig::None) {
+            nlohmann::json doc;
+            doc["version"] = 2;
+            if (disk == DiskConfig::DirsData) doc["dirs"]["data"]    = decoy.string();
+            else                              doc["persistence_path"] = decoy.string();
+            fs::create_directories(d.configDir / "daemon");
+            std::ofstream f(d.configDir / "daemon" / "config.json");
+            ASSERT_TRUE(f.good()) << "could not seed daemon/config.json";
+            f << doc.dump(2);
+            f.close();
+        }
+
+        d.extraArgs = {"--persistence-path", custom.string()};
+        d.launch();
+        ASSERT_TRUE(d.waitReady())
+            << "daemon did not become reachable.\n--- daemon log ---\n"
+            << slurp(d.daemonLog);
+
+        std::string out;
+        ASSERT_EQ(d.run("load-module test_basic_module", &out, kNegativeBudgetSecs), 0)
+            << "test_basic_module must load before its persistence dir means "
+               "anything.\n" << out << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+    }
+
+    // The directory the daemon falls back to when nothing redirects it.
+    fs::path defaultDataDir() const { return d.configDir / "data"; }
+
+    // Set by the relative-path case so TearDown can sweep the tree the daemon
+    // created next to the test binary.
+    std::string cwdLitter;
+};
+
+// No config.json: the flag is the only source of intent, and used to lose to
+// the built-in default.
+TEST_F(PersistencePathTest, FlagRedirectsModuleData) {
+    bootAndLoad("pp_default", DiskConfig::None);
+    if (HasFatalFailure() || IsSkipped()) return;
+
+    EXPECT_FALSE(instanceDirs(custom, "test_basic_module").empty())
+        << "--persistence-path was ignored: no instance directory under "
+        << custom << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+    EXPECT_FALSE(fs::exists(defaultDataDir() / "test_basic_module"))
+        << "module data went to the DEFAULT data dir (" << defaultDataDir()
+        << ") even though --persistence-path named " << custom;
+}
+
+// config.json carries the new spelling. Precedence is explicit command line >
+// config file, so the flag still wins.
+TEST_F(PersistencePathTest, FlagBeatsConfigFileDirsData) {
+    bootAndLoad("pp_dirsdata", DiskConfig::DirsData);
+    if (HasFatalFailure() || IsSkipped()) return;
+
+    EXPECT_FALSE(instanceDirs(custom, "test_basic_module").empty())
+        << "--persistence-path lost to dirs.data in config.json; nothing under "
+        << custom << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+    EXPECT_FALSE(fs::exists(decoy / "test_basic_module"))
+        << "config.json's dirs.data (" << decoy << ") beat the command line";
+}
+
+// config.json carries the OLD spelling. The file-level alias resolves it into
+// dirs.data while reading, which is correct as a file rule — but the flag,
+// being explicit operator intent, still has to win over it.
+TEST_F(PersistencePathTest, FlagBeatsConfigFilePersistencePath) {
+    bootAndLoad("pp_oldspelling", DiskConfig::PersistencePath);
+    if (HasFatalFailure() || IsSkipped()) return;
+
+    EXPECT_FALSE(instanceDirs(custom, "test_basic_module").empty())
+        << "--persistence-path lost to persistence_path in config.json; nothing "
+           "under " << custom << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+    EXPECT_FALSE(fs::exists(decoy / "test_basic_module"))
+        << "config.json's persistence_path (" << decoy << ") beat the command line";
+}
+
+// A relative --persistence-path is relative to the SHELL's cwd, the way this
+// flag has always behaved and the way --modules-dir still behaves. It is not
+// relative to the config dir: that rule belongs to `dirs:` entries written in
+// config.json, and letting it capture the command line too would silently
+// reparent `--persistence-path ./data` under ~/.logoscore.
+TEST_F(PersistencePathTest, RelativeFlagIsRelativeToCwd) {
+    cwdLitter = "logoscore_pp_rel_" + std::to_string(getpid());
+    bootAndLoad("pp_relative", DiskConfig::None, cwdLitter);
+    if (HasFatalFailure() || IsSkipped()) return;
+
+    const fs::path expected = fs::current_path() / cwdLitter;
+    EXPECT_FALSE(instanceDirs(expected, "test_basic_module").empty())
+        << "a relative --persistence-path did not resolve against the cwd: "
+           "nothing under " << expected << "\n--- daemon log ---\n"
+        << slurp(d.daemonLog);
+    EXPECT_FALSE(fs::exists(fs::path(d.configDir) / cwdLitter))
+        << "a relative --persistence-path was reparented under the config dir";
+    EXPECT_FALSE(fs::exists(defaultDataDir() / "test_basic_module"))
+        << "module data went to the DEFAULT data dir despite --persistence-path "
+        << cwdLitter;
 }

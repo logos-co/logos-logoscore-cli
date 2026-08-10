@@ -248,7 +248,6 @@ int Daemon::start(int argc, char* argv[],
                   bool verbose)
 {
     const auto& modulesDirs      = cfg.modulesDirs;
-    const auto& persistencePath  = cfg.persistencePath;
 
     // Apply the session-directory redirects before anything asks Config for a
     // path. Defaults keep every directory inside the config dir, which is what
