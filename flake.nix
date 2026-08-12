@@ -102,6 +102,17 @@
       # bundlers -- are never forced as long as the Windows branch of
       # `packages` does not name them. It does not.
       windowsBuildSystem = "x86_64-linux";
+      # The BUILD platform for a given target. Anything that RUNS during the
+      # build -- nix-bundle-dir is the only one here -- must be keyed by this
+      # and not by the target: nix-bundle-dir publishes outputs for the four
+      # native systems only (it is a host tool; `lib`/`bundlers` have no
+      # x86_64-windows key at all), and asking it for one is not a graceful
+      # degradation but an eval error, `attribute 'x86_64-windows' missing`,
+      # raised inside nix-bundle-dir's flake where the message names nothing
+      # about this repo. logos-basecamp already keys its dirBundler this way;
+      # nix-bundle-lgx spells the same helper `buildSystemFor`.
+      buildSystemFor = target:
+        if target == "x86_64-windows" then windowsBuildSystem else target;
       forAllTargets = f:
         nixpkgs.lib.genAttrs (systems ++ [ "x86_64-windows" ]) (system: f {
           inherit system;
@@ -121,7 +132,7 @@
           packageDownloaderModuleLib = logos-package-downloader-module.packages.${system}.lib;
           installDev = nix-bundle-logos-module-install.bundlers.${system}.dev;
           installPortable = nix-bundle-logos-module-install.bundlers.${system}.portable;
-          dirBundler = nix-bundle-dir.bundlers.${system}.qtCliApp;
+          dirBundler = nix-bundle-dir.bundlers.${buildSystemFor system}.qtCliApp;
           appBundler = nix-bundle-appimage.lib.${system}.mkAppImage;
         });
     in
@@ -362,6 +373,33 @@
 
             dontUnpack = true;
             dontWrapQtApps = true;
+
+            # Read by nix-bundle-dir's bundlers (`drv.extraDirs or []` /
+            # `drv.extraClosurePaths or []`), and by nothing else -- the raw
+            # `ctl` / `cli` outputs are unaffected by either.
+            #
+            # extraDirs is NOT cosmetic here. bundle.sh's Phase 1 copies bin/,
+            # lib/ and the declared extraDirs and NOTHING ELSE, so without this
+            # the bundled output would silently lose $out/modules -- every
+            # built-in module, including capability_module -- while exiting 0.
+            # Measured on a fixture built against the pinned bundler
+            # (f843b8ec): with the declaration the bundle is a superset of this
+            # derivation's tree; without it, modules/ is absent from the output
+            # and no message says so. `modules-pkg` is not listed because
+            # mkBinWindows does not produce it (see the Windows branch below).
+            #
+            # extraClosurePaths exists because a PE carries no rpath: the DLLs
+            # in bin/ are `cp -L` copies with no store references left in them,
+            # so closureInfo over this derivation alone can reach qtbase only by
+            # accident. bundle.sh detects Qt from bin/Qt6*.dll and then HARD
+            # FAILS if no Qt plugin tree for the target is anywhere in the
+            # closure -- deliberately, because a Windows Qt bundle without
+            # platforms/qwindows.dll cannot start. Naming qtbase here is what
+            # makes the plugin scan able to find one.
+            passthru = {
+              extraDirs = [ "modules" ];
+              extraClosurePaths = [ pkgs.qt6.qtbase pkgs.qt6.qtremoteobjects ];
+            };
 
             # win-dll-link.sh resolves each imported DLL BASE NAME against the
             # lib/ and bin/ of every buildInput, transitively through the
@@ -672,20 +710,49 @@
           binCtlWin    = mkBinWindows { binName = "logosctl";  };
         in
         if isWindows then {
-          # Windows ships the two binaries and nothing else.
+          # Windows ships the two binaries, plus a directory bundle of each.
           #
           # Left out, and why -- none of these is a silent omission:
           #   * modules-pkg/ (package_manager + package_downloader). Those are
           #     the *-module repos, which have no x86_64-windows target yet, so
           #     `logosctl package ...` has no backend on Windows.
-          #   * portable / *-bundle-dir / *-appimage. nix-bundle-dir and
-          #     nix-bundle-appimage are ELF/Mach-O tools; a PE needs no path
-          #     rewriting anyway, since win-dll-link has already staged every
-          #     dependency next to the executable.
+          #   * *-appimage. An AppImage is a Linux ELF runtime concatenated with
+          #     a squashfs image; there is no Windows analogue and
+          #     nix-bundle-appimage exposes no Windows target. This one is still
+          #     a format limit.
+          #   * portable. mkBinWindows IS the portable shape already -- every
+          #     dependency is staged beside the .exe by win-dll-link.sh, and
+          #     there is no @rpath/$ORIGIN variant to distinguish it from.
           #   * tests. The suites are POSIX by construction and CMake does not
           #     configure them for a Windows host.
+          #
+          # `*-bundle-dir` used to be on that list, on the premise that
+          # "nix-bundle-dir is an ELF/Mach-O tool". That premise has expired:
+          # nix-bundle-dir carries a merged PE path (f843b8ec, pinned by this
+          # flake) and dirBundler is now keyed by buildSystemFor, so the bundler
+          # itself is the Linux one that RUNS the build while the tree it reads
+          # is the PE one.
+          #
+          # It is worth having even though the raw output is already
+          # relocatable, because relocation was never the only job. On a PE the
+          # bundler (a) sweeps every import table to a fixpoint and FAILS the
+          # build naming any DLL that resolves to neither the bundle nor a
+          # Windows system DLL -- the exact defect that otherwise ships as an
+          # .exe exiting 0xC0000135 with no output before main() -- and (b)
+          # stages the Qt plugin tree and writes qt.conf, which no import table
+          # can reveal because plugins are LoadLibrary'd by name.
+          #
+          # COVERAGE, stated plainly: neither of these two outputs has ever been
+          # built. x86_64-windows realises on x86_64-linux and no Linux builder
+          # was reachable from where this change was made, so what is verified
+          # is the eval (both drvPaths resolve) plus a fixture built against the
+          # same pinned bundler proving this tree SHAPE -- bin/*.exe with DLLs
+          # staged beside it, plus a modules/ extraDir -- round-trips to a
+          # superset of itself. Nothing here has run on Windows.
           ctl = binCtlWin;
           cli = binLegacyWin;
+          ctl-bundle-dir = dirBundler binCtlWin;
+          cli-bundle-dir = dirBundler binLegacyWin;
           default = binCtlWin;
         } else {
           # `cli` / `cli-*` stay logoscore, so existing consumers -- including
