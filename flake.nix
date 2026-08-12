@@ -98,9 +98,17 @@
       # run what it produces.
       #
       # Nix attribute values are lazy, so the entries below that have no
-      # Windows target -- the two package-manager MODULE repos, and the three
-      # bundlers -- are never forced as long as the Windows branch of
-      # `packages` does not name them. It does not.
+      # Windows target are never forced as long as the Windows branch of
+      # `packages` does not name them. As of this commit that set is exactly
+      # two: `packageDownloaderModuleLib` (see the Windows branch of `packages`
+      # for the one blocker that keeps modules-pkg/ off Windows) and
+      # `appBundler` (nix-bundle-appimage exposes lib.{aarch64,x86_64}-linux
+      # only -- verified by eval, not assumed).
+      #
+      # `installDev` / `installPortable` DO have an x86_64-windows bundler
+      # (`nix-bundle-logos-module-install` at the rev this flake locks exposes
+      # bundlers.x86_64-windows.{dev,portable}), so they are no longer in that
+      # set even though nothing forces them yet.
       windowsBuildSystem = "x86_64-linux";
       forAllTargets = f:
         nixpkgs.lib.genAttrs (systems ++ [ "x86_64-windows" ]) (system: f {
@@ -121,7 +129,23 @@
           packageDownloaderModuleLib = logos-package-downloader-module.packages.${system}.lib;
           installDev = nix-bundle-logos-module-install.bundlers.${system}.dev;
           installPortable = nix-bundle-logos-module-install.bundlers.${system}.portable;
-          dirBundler = nix-bundle-dir.bundlers.${system}.qtCliApp;
+          # Keyed by the BUILD system, not the target, and that is the whole
+          # point rather than a workaround. nix-bundle-dir exposes
+          # bundlers.{aarch64,x86_64}-{darwin,linux} and NOTHING for
+          # x86_64-windows -- deliberately: a bundler is a program that runs on
+          # the builder, so `bundlers.x86_64-windows` would be a PE the Linux
+          # builder cannot execute. Whether the BUNDLED thing is a PE is a
+          # separate question, and mkBundle.nix answers it from `drv.stdenv`
+          # (`hostPlatform.isWindows`), which a cross derivation carries. Its
+          # own comment names this exact call shape.
+          #
+          # So: `nix-bundle-dir.bundlers.x86_64-windows` is not a gap waiting to
+          # be filled, and reaching for it is the error to avoid -- it evaluates
+          # to a missing-attribute throw, which the laziness note above would
+          # hide until something forced it.
+          dirBundler = nix-bundle-dir.bundlers.${
+            if system == "x86_64-windows" then windowsBuildSystem else system
+          }.qtCliApp;
           appBundler = nix-bundle-appimage.lib.${system}.mkAppImage;
         });
     in
@@ -362,6 +386,33 @@
 
             dontUnpack = true;
             dontWrapQtApps = true;
+
+            # Read by nix-bundle-dir when this derivation is handed to
+            # `dirBundler` (see `ctl-bundle-dir` / `cli-bundle-dir` below).
+            # Both entries exist because the bundler's defaults are wrong for
+            # a PE, in opposite directions:
+            #
+            # extraDirs: the bundler carries bin/ and lib/ and nothing else
+            # unless a directory is named here. modules/ is the built-in
+            # module tree this package stages by hand a few lines down; without
+            # this line the bundle is a STRICT SUBSET of the derivation it
+            # bundles -- no modules/, no message saying so, and a logosctl.exe
+            # that starts and then reports no modules.
+            #
+            # extraClosurePaths: a PE has no rpath, and the DLLs this package
+            # puts in bin/ are `cp -L` copies, so no store reference survives
+            # into $out. The bundler's import sweep therefore has an EMPTY
+            # closure to resolve against, and any base name win-dll-link.sh did
+            # not already stage has no provider. Naming Qt here gives the sweep
+            # somewhere to look. This one is insurance rather than a known gap:
+            # unresolved imports are a hard build failure in the bundler
+            # (pe_fail_on_unresolved), not a warning, so if it is unnecessary
+            # the cost is an unused closure path and if it is necessary the
+            # build says so instead of shipping an .exe that will not start.
+            passthru = {
+              extraDirs = [ "modules" ];
+              extraClosurePaths = [ pkgs.qt6.qtbase pkgs.qt6.qtremoteobjects ];
+            };
 
             # win-dll-link.sh resolves each imported DLL BASE NAME against the
             # lib/ and bin/ of every buildInput, transitively through the
@@ -672,20 +723,108 @@
           binCtlWin    = mkBinWindows { binName = "logosctl";  };
         in
         if isWindows then {
-          # Windows ships the two binaries and nothing else.
+          # Windows ships the two binaries plus a bundled directory for each.
           #
-          # Left out, and why -- none of these is a silent omission:
-          #   * modules-pkg/ (package_manager + package_downloader). Those are
-          #     the *-module repos, which have no x86_64-windows target yet, so
-          #     `logosctl package ...` has no backend on Windows.
-          #   * portable / *-bundle-dir / *-appimage. nix-bundle-dir and
-          #     nix-bundle-appimage are ELF/Mach-O tools; a PE needs no path
-          #     rewriting anyway, since win-dll-link has already staged every
-          #     dependency next to the executable.
-          #   * tests. The suites are POSIX by construction and CMake does not
-          #     configure them for a Windows host.
+          # STILL LEFT OUT, and why. Each reason below was re-checked by eval
+          # against the revs this flake locks, because the list this replaces
+          # had two entries whose stated reason had expired:
+          #
+          #   * modules-pkg/ (package_manager + package_downloader), so
+          #     `logosctl package ...` still has no backend on Windows.
+          #     ONE blocker, not the four the old comment implied. Measured:
+          #       - logos-package-manager-module   packages.x86_64-windows.lib
+          #         and .lib-portable    -- PRESENT
+          #       - logos-capability-module        packages.x86_64-windows.lib
+          #                              -- PRESENT
+          #       - nix-bundle-logos-module-install
+          #         bundlers.x86_64-windows.{dev,portable}  -- PRESENT (it
+          #         takes lgpm from the BUILD system and passes
+          #         `--platform windows-x86_64`, so the cross case is handled)
+          #       - logos-package-downloader-module
+          #         packages.x86_64-windows          -- ABSENT
+          #     Root cause of the one that is missing, and it is not in that
+          #     repo's own sources: logos-module-builder gates the
+          #     x86_64-windows target on its `logos-nix` input, and
+          #     package-downloader-module still pins module-builder 8e4ea1c,
+          #     whose lib/common.nix does not mention x86_64-windows at all.
+          #     package-manager-module and capability-module pin 9d3b7cc, which
+          #     does. So the fix is a pin bump in THAT repo, followed by a
+          #     re-lock here.
+          #
+          #     Why not ship the half that exists. Shipping package_manager
+          #     alone would be worse than shipping neither, not merely
+          #     incomplete: src/daemon/daemon.cpp:241 loads the two names in a
+          #     loop and `return`s on the first failure -- BEFORE the
+          #     setEmbeddedModulesDirectory / setUserModulesDirectory /
+          #     setKeyringDirectory calls below it. package_manager would come
+          #     up loaded but unconfigured, and installs would land wherever its
+          #     unset defaults point, after one warning on stderr.
+          #
+          #     What package_downloader's arrival does NOT settle: that the
+          #     daemon LOADS either module on Windows (never run anywhere), and
+          #     the size of what it installs -- the modules-pkg path goes
+          #     through .lgx, which has no host-runtime strip on the PE path
+          #     yet, so both packages would carry their own copy of the Qt,
+          #     OpenSSL and libstdc++ DLLs that sit beside logosctl.exe already.
+          #
+          #   * *-appimage. An AppImage is a Linux ELF runtime concatenated with
+          #     a squashfs image; there is no Windows analogue. Confirmed rather
+          #     than assumed: nix-bundle-appimage exposes `lib` for
+          #     aarch64-linux and x86_64-linux only. Do not force this one.
+          #
+          #   * portable. Not blocked -- redundant. mkBinWindows IS the portable
+          #     shape: win-dll-link.sh stages every dependency beside the .exe
+          #     because a PE import table carries base names and no rpath, so
+          #     there is no @rpath/$ORIGIN variant for a `portable` output to
+          #     differ from. This is the one entry the old comment got right,
+          #     though it gave the reason under the wrong heading.
+          #
+          #   * tests. Verified here rather than inherited from the old comment.
+          #     CMakeLists.txt:277 skips the whole test block under WIN32, and
+          #     the block could not be un-skipped by removing that gate:
+          #       - `unit_tests` is a SINGLE executable built from 9 translation
+          #         units (tests/CMakeLists.txt), and 4 of them -- test_paths,
+          #         test_daemon_state, test_log_sink, test_token_store -- use
+          #         <unistd.h> for getpid()/::sleep(), and test_token_store
+          #         asserts on ::chmod(dir, 0500), a POSIX permission model
+          #         Windows does not have. The 5 portable suites cannot be split
+          #         out without editing the target.
+          #       - cli_tests and integration_tests (both spellings) drive the
+          #         daemon over AF_UNIX (sys/un.h, sys/socket.h) and reap it with
+          #         fork/waitpid, and shell out via popen/WEXITSTATUS.
+          #     And compiling is not the binding constraint anyway: `checks` is
+          #     forAllSystems, not forAllTargets, because running these would
+          #     mean executing PE test binaries on the x86_64-linux builder.
+          #
+          # NOW SHIPPED, and what changed. `*-bundle-dir` used to be on the list
+          # above on the premise that "nix-bundle-dir is an ELF/Mach-O tool".
+          # That premise has expired -- bundle.sh has a full PE path (import
+          # table sweep, wrong-machine DLL refusal, hard failure on an
+          # unresolved import). What is still true, and is what the premise was
+          # probably reaching for, is that there is no
+          # `nix-bundle-dir.bundlers.x86_64-windows`; the bundler is taken from
+          # the BUILD system and detects the PE target from the derivation. See
+          # `dirBundler` above.
+          #
+          # What the bundle adds over the plain binary package, given that
+          # win-dll-link.sh has already staged the imports: it re-resolves the
+          # whole import closure and FAILS the build on anything it cannot
+          # satisfy, where the plain package's only check is that its own two
+          # copy loops moved a nonzero number of files. That is worth having on
+          # a target whose signature failure is 0xC0000135 before main() with no
+          # output at all.
+          #
+          # COVERAGE, stated plainly: NONE of these four outputs has ever been
+          # built, here or in CI -- this repo's workflows have no Windows job at
+          # all. x86_64-windows realises on x86_64-linux and no Linux builder
+          # was reachable while this was written, so what is verified is
+          # evaluation only: every drvPath below resolves. Nothing here has run
+          # on Windows, and a PE bundle that builds is not a PE bundle that
+          # starts.
           ctl = binCtlWin;
           cli = binLegacyWin;
+          ctl-bundle-dir = dirBundler binCtlWin;
+          cli-bundle-dir = dirBundler binLegacyWin;
           default = binCtlWin;
         } else {
           # `cli` / `cli-*` stay logoscore, so existing consumers -- including
