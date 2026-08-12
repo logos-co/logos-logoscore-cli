@@ -558,9 +558,19 @@ int main(int argc, char *argv[])
         // quietly reparenting it under ~/.logoscore. An explicit empty value
         // stays empty: that is how both fields already encode "no override,
         // use the default", and absolute("") would turn it into the cwd.
+        //
+        // A leading `~/` is left ALONE so that resolveOverride expands it
+        // (config.cpp:107). Absolutising it first would produce `$PWD/~/x` — a
+        // real directory literally named `~` — and would make the flag and a
+        // config.json `dirs.data` disagree about the same string. The shell
+        // expands an unquoted `~/x` before we ever see it, so this only governs
+        // a quoted or script-built value, which is exactly the case where the
+        // user cannot have meant a directory called `~`.
         if (persistencePathOpt->count() > 0) {
             std::string resolved = persistencePath;
-            if (!resolved.empty()) {
+            const bool tilde = !resolved.empty() && resolved[0] == '~'
+                            && (resolved.size() == 1 || resolved[1] == '/');
+            if (!resolved.empty() && !tilde) {
                 std::error_code ec;
                 std::filesystem::path abs =
                     std::filesystem::absolute(resolved, ec);

@@ -1170,3 +1170,24 @@ TEST_F(PersistencePathTest, RelativeFlagIsRelativeToCwd) {
         << "module data went to the DEFAULT data dir despite --persistence-path "
         << cwdLitter;
 }
+
+// A leading `~/` is the one relative-looking form that is NOT resolved against
+// the cwd: resolveOverride expands it against $HOME (src/config.cpp), and the
+// flag has to agree with a config.json `dirs.data` about the same string.
+// Absolutising it first would produce `$PWD/~/x` -- a real directory literally
+// named `~`. The shell expands an unquoted `~/x` before the binary sees it, so
+// this covers the quoted or script-built value, which is exactly the case where
+// the user cannot have meant a directory called `~`.
+TEST_F(PersistencePathTest, TildeFlagExpandsAgainstHome) {
+    bootAndLoad("pp_tilde", DiskConfig::None, "~/tilde-data");
+    if (HasFatalFailure() || IsSkipped()) return;
+
+    const fs::path expected = d.homeDir / "tilde-data";
+    EXPECT_FALSE(instanceDirs(expected, "test_basic_module").empty())
+        << "a `~/` --persistence-path did not expand against HOME: nothing "
+           "under " << expected << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+    EXPECT_FALSE(fs::exists(fs::current_path() / "~"))
+        << "`~` was absolutised into a literal directory beside the cwd";
+    EXPECT_FALSE(fs::exists(defaultDataDir() / "test_basic_module"))
+        << "module data went to the DEFAULT data dir despite --persistence-path";
+}
