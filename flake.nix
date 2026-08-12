@@ -411,7 +411,21 @@
             # build says so instead of shipping an .exe that will not start.
             passthru = {
               extraDirs = [ "modules" ];
-              extraClosurePaths = [ pkgs.qt6.qtbase pkgs.qt6.qtremoteobjects ];
+              # qtbase + qtremoteobjects are what the CLI itself links.  The
+              # other two come from Qt PLUGINS that qtCliApp stages anyway:
+              # `guiApp = false` suppresses the LAUNCHER, not the plugin scan,
+              # so imageformats/qjpeg.dll and sqldrivers/qsqlite.dll are in the
+              # tree and their imports have to resolve.  Nothing puts libjpeg
+              # or sqlite into closureInfo on its own -- a PE embeds no store
+              # path, so Nix records no reference -- and the bundler therefore
+              # failed the build naming both.  It was right to.
+              #
+              # `.bin` rather than the default output: that is where the DLLs
+              # actually are, checked rather than assumed.
+              extraClosurePaths = [
+                pkgs.qt6.qtbase pkgs.qt6.qtremoteobjects
+                pkgs.libjpeg.bin pkgs.sqlite.bin
+              ];
             };
 
             # win-dll-link.sh resolves each imported DLL BASE NAME against the
