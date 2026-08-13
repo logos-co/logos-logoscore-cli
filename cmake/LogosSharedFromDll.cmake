@@ -2,11 +2,12 @@
 # static archives.
 #
 # logosctl.exe / logoscore.exe link liblogos_core.dll AND, through
-# logos-qt-sdk::logos_qt_sdk, the liblogos_qt_sdk.a / liblogos_protocol.a static
-# archives. On ELF and Mach-O that is harmless:
-# liblogos_core exports the symbols and the loader interposes them, so there is
-# one LogosAPI, one TokenManager, one of everything. PE has no interposition, so
-# each image binds its own static copy and gets its own function-local statics.
+# logos-qt-sdk::logos_qt_sdk, the liblogos_qt_host.a / liblogos_protocol.a static
+# archives (the Qt one was liblogos_qt_sdk.a until the host runtime moved into
+# logos-qt-host). On ELF and Mach-O that is harmless: liblogos_core exports the
+# symbols and the loader interposes them, so there is one LogosAPI, one
+# TokenManager, one of everything. PE has no interposition, so each image binds
+# its own static copy and gets its own function-local statics.
 # Here the symptom is not subtle at all -- the link simply fails:
 #   multiple definition of `TokenManager::instance()'
 #   ... liblogos_core.dll.a(liblogos_core_dll_d000294.o): first defined here
@@ -20,7 +21,7 @@
 # __declspec(dllimport) via LOGOS_SHARED_USE_DLL. That alone is NOT enough,
 # because ld picks archive members by object file for reasons that have nothing
 # to do with our symbols: measured here, main_ui's AppsModel.cpp.obj referenced
-# std::string's move constructor, ld satisfied it out of liblogos_qt_sdk.a's
+# std::string's move constructor, ld satisfied it out of the Qt archive's
 # logos_api.cpp.obj, and that one object dragged in LogosAPI, LogosAPIClient and
 # TokenManager behind it -- each then colliding with the DLL's export
 # ("multiple definition of `LogosAPI::LogosAPI'"). No export list can prevent
@@ -54,10 +55,30 @@ function(logos_use_shared_runtime_from_dll)
         endif()
     endif()
 
+    # A target that is not there is a HARD ERROR, not a skip.
+    #
+    # This loop used to be `if(TARGET ...)`, so the one failure this function
+    # has -- being handed a name that no longer resolves -- produced no output
+    # at all and left the archive in the link. Here that shows up as a link
+    # failure ("multiple definition of `TokenManager::instance()'"), which is at
+    # least loud; in logos-basecamp, whose copy of this file is otherwise
+    # identical, the same mistake is silent and surfaces much later as refused
+    # cross-module calls. Every caller passes targets it has just
+    # find_package'd, so there is no legitimate absent case.
+    #
+    # This is exactly the shape the qt-sdk -> qt-host move would have tripped:
+    # `logos-qt-sdk::logos_qt_sdk` still exists, but it is an INTERFACE library
+    # with no archive now, and the archive to empty out is
+    # `logos-qt-host::logos_qt_host`.
     foreach(_tgt IN LISTS ARGN)
-        if(TARGET ${_tgt})
-            set_target_properties(${_tgt} PROPERTIES IMPORTED_LOCATION "${_stub}")
-            message(STATUS "Windows: ${_tgt} provided by liblogos_core.dll, static archive suppressed")
+        if(NOT TARGET ${_tgt})
+            message(FATAL_ERROR
+                "logos_use_shared_runtime_from_dll: ${_tgt} is not a target. It must be "
+                "an IMPORTED target whose archive can be replaced by the empty stand-in; "
+                "skipping it would leave a static copy of the shared runtime in this "
+                "image alongside liblogos_core.dll's exported one.")
         endif()
+        set_target_properties(${_tgt} PROPERTIES IMPORTED_LOCATION "${_stub}")
+        message(STATUS "Windows: ${_tgt} provided by liblogos_core.dll, static archive suppressed")
     endforeach()
 endfunction()
