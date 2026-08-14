@@ -4,6 +4,7 @@
 set(TEST_LIB_SOURCES
     ${CMAKE_SOURCE_DIR}/src/config.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/daemon_state.cpp
+    ${CMAKE_SOURCE_DIR}/src/daemon/access_policy_arg.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/port_allocator.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/token_store.cpp
     ${CMAKE_SOURCE_DIR}/src/client/client_state.cpp
@@ -41,6 +42,7 @@ target_link_libraries(logoscore_testlib PUBLIC
 # Unit tests
 add_executable(unit_tests
     test_config.cpp
+    test_access_policy_arg.cpp
     test_daemon_state.cpp
     test_output.cpp
     test_commands.cpp
