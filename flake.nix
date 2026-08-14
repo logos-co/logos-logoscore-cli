@@ -10,10 +10,22 @@
     # dead-strip. liblogos's own SDK pin still drives transitive deps.
     logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk";
     logos-cpp-sdk.inputs.logos-protocol.follows = "logos-protocol";
+    # NOTE: the lock deliberately sits on logos-protocol's per-client token
+    # store commit, not on its default branch. logos-qt-host calls
+    # TokenManager::forIdentity/isolateIdentity, which only exist there; an
+    # older or default-branch logos-protocol fails to COMPILE logos-qt-host.
     logos-protocol.url = "github:logos-co/logos-protocol";
-    logos-qt-sdk.url = "github:logos-co/logos-qt-sdk";
-    logos-qt-sdk.inputs.logos-protocol.follows = "logos-protocol";
-    logos-qt-sdk.inputs.logos-cpp-sdk.follows = "logos-cpp-sdk";
+    # The Qt HOST RUNTIME — LogosAPI, LogosAPIProvider, LogosProviderObject —
+    # which the daemon and its in-process core service are built on. It lives
+    # in logos-plugin-qt as `logos-qt-host`, not in logos-qt-sdk; this repo
+    # needs nothing else out of logos-qt-sdk (it emits no Qt consumer
+    # wrappers and has no UI plugin), so that input is gone entirely.
+    #
+    # TODO: drop the rev pin once the host split is on logos-plugin-qt's
+    # default branch — nix/qt-host.nix only exists on the split branch today.
+    logos-plugin-qt.url = "github:logos-co/logos-plugin-qt/8ccb1fc81642ee52e843b69ac3f90a1ec7084299";
+    logos-plugin-qt.inputs.logos-nix.follows = "logos-nix";
+    logos-plugin-qt.inputs.logos-protocol.follows = "logos-protocol";
     logos-liblogos.url = "github:logos-co/logos-liblogos";
     # liblogos is linked INTO this CLI, so its logos-protocol is the one the
     # crashing code path actually runs. Without this follows it brought its own,
@@ -38,7 +50,7 @@
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-qt-sdk, logos-liblogos, logos-capability-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
+  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-plugin-qt, logos-liblogos, logos-capability-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       # Build info baked into the logosctl binary so `--version` reports the
@@ -59,7 +71,7 @@
           { name = "logos-liblogos"; commit = revOf logos-liblogos; }
           { name = "logos-cpp-sdk"; commit = revOf logos-cpp-sdk; }
           { name = "logos-protocol"; commit = revOf logos-protocol; }
-          { name = "logos-qt-sdk"; commit = revOf logos-qt-sdk; }
+          { name = "logos-plugin-qt"; commit = revOf logos-plugin-qt; }
           { name = "logos-capability-module"; commit = revOf logos-capability-module; }
           { name = "logos-package-manager-module"; commit = revOf logos-package-manager-module; }
           { name = "logos-package-downloader-module"; commit = revOf logos-package-downloader-module; }
@@ -70,7 +82,7 @@
         pkgs = import nixpkgs { inherit system; };
         cppSdk = logos-cpp-sdk.packages.${system}.default;
         protocolPkg = logos-protocol.packages.${system}.default;
-        qtSdk = logos-qt-sdk.packages.${system}.default;
+        qtHost = logos-plugin-qt.packages.${system}.logos-qt-host;
         liblogos = logos-liblogos.packages.${system}.logos-liblogos;
         liblogosLib = logos-liblogos.packages.${system}.logos-liblogos-lib;
         liblogosPortable = logos-liblogos.packages.${system}.portable;
@@ -119,7 +131,7 @@
             else import nixpkgs { inherit system; };
           cppSdk = logos-cpp-sdk.packages.${system}.default;
           protocolPkg = logos-protocol.packages.${system}.default;
-          qtSdk = logos-qt-sdk.packages.${system}.default;
+          qtHost = logos-plugin-qt.packages.${system}.logos-qt-host;
           liblogos = logos-liblogos.packages.${system}.logos-liblogos;
           liblogosLib = logos-liblogos.packages.${system}.logos-liblogos-lib;
           liblogosPortable = logos-liblogos.packages.${system}.portable;
@@ -150,7 +162,7 @@
         });
     in
     {
-      packages = forAllTargets ({ pkgs, system, cppSdk, protocolPkg, qtSdk, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, installDev, installPortable, dirBundler, appBundler }:
+      packages = forAllTargets ({ pkgs, system, cppSdk, protocolPkg, qtHost, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, installDev, installPortable, dirBundler, appBundler }:
         let
           pname = "logos-logoscore-cli";
           # VERSION is only present on release branches; dev branches use a placeholder.
@@ -255,7 +267,7 @@
               pkgs.qt6.qtremoteobjects
               cppSdk
               protocolPkg
-              qtSdk
+              qtHost
               pkgs.stduuid
               pkgs.cli11
               pkgs.fmt
@@ -284,7 +296,7 @@
               # itself reference and would otherwise be dead-stripped).
               "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
               "-DLOGOS_PROTOCOL_ROOT=${protocolPkg}"
-              "-DLOGOS_QT_SDK_ROOT=${qtSdk}"
+              "-DLOGOS_QT_HOST_ROOT=${qtHost}"
             ];
           };
 
@@ -438,7 +450,7 @@
               pkgs.qt6.qtremoteobjects
               cppSdk
               protocolPkg
-              qtSdk
+              qtHost
               liblogosLib
               pkgs.yaml-cpp
               pkgs.spdlog
@@ -546,7 +558,7 @@
               # see the `build` derivation above for the rationale.
               cppSdk
               protocolPkg
-              qtSdk
+              qtHost
             ];
 
             cmakeFlags = [
@@ -554,7 +566,7 @@
               "-DLOGOS_LIBLOGOS_ROOT=${liblogos}"
               "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
               "-DLOGOS_PROTOCOL_ROOT=${protocolPkg}"
-              "-DLOGOS_QT_SDK_ROOT=${qtSdk}"
+              "-DLOGOS_QT_HOST_ROOT=${qtHost}"
             ];
 
             installPhase = ''
@@ -650,7 +662,7 @@
               pkgs.qt6.qtremoteobjects
               cppSdk
               protocolPkg
-              qtSdk
+              qtHost
               pkgs.gtest
               pkgs.stduuid
               pkgs.cli11
@@ -664,7 +676,7 @@
               "-DLOGOS_LIBLOGOS_ROOT=${liblogosPortable}"
               "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
               "-DLOGOS_PROTOCOL_ROOT=${protocolPkg}"
-              "-DLOGOS_QT_SDK_ROOT=${qtSdk}"
+              "-DLOGOS_QT_HOST_ROOT=${qtHost}"
             ];
           };
 

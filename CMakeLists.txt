@@ -76,19 +76,38 @@ else()
 endif()
 
 # ── SDK stack (imported targets) ──────────────────────────────────────────────
-# Since the Qt split: logos-qt-sdk carries the Qt developer layer (provider
-# objects, LogosAPI) and chains logos-protocol (transports, bridge helpers,
+# logos-qt-host (from logos-plugin-qt) is the Qt HOST RUNTIME: LogosAPI,
+# LogosAPIProvider and the LogosProviderObject base the in-process core
+# service derives. It chains logos-protocol (transports, bridge helpers,
 # logos::transportSetToJsonString). The Qt-free logos-cpp-sdk is header-only.
+#
+# This used to be logos-qt-sdk::logos_qt_sdk. The host runtime moved out of
+# logos-qt-sdk into logos-plugin-qt; nothing else logos-qt-sdk ships (the Qt
+# consumer emitter, the LpBridge headers, LogosUiPluginContext) is used here,
+# so logos-qt-sdk is not a dependency of this repo at all any more.
 if(NOT DEFINED LOGOS_PROTOCOL_ROOT AND DEFINED ENV{LOGOS_PROTOCOL_ROOT})
     set(LOGOS_PROTOCOL_ROOT "$ENV{LOGOS_PROTOCOL_ROOT}")
 endif()
-if(NOT DEFINED LOGOS_QT_SDK_ROOT AND DEFINED ENV{LOGOS_QT_SDK_ROOT})
-    set(LOGOS_QT_SDK_ROOT "$ENV{LOGOS_QT_SDK_ROOT}")
+if(NOT DEFINED LOGOS_QT_HOST_ROOT AND DEFINED ENV{LOGOS_QT_HOST_ROOT})
+    set(LOGOS_QT_HOST_ROOT "$ENV{LOGOS_QT_HOST_ROOT}")
+endif()
+# Fail loudly rather than letting find_package fall through to a system
+# prefix (or, worse, silently skipping a target-guarded block later on).
+if(NOT DEFINED LOGOS_QT_HOST_ROOT OR LOGOS_QT_HOST_ROOT STREQUAL "")
+    message(FATAL_ERROR
+        "LOGOS_QT_HOST_ROOT is not set. Pass -DLOGOS_QT_HOST_ROOT=<path to the "
+        "logos-qt-host prefix from logos-plugin-qt>, or set it in the environment.")
 endif()
 find_package(logos-protocol REQUIRED
     PATHS "${LOGOS_PROTOCOL_ROOT}/lib/cmake/logos-protocol" NO_DEFAULT_PATH)
-find_package(logos-qt-sdk REQUIRED
-    PATHS "${LOGOS_QT_SDK_ROOT}/lib/cmake/logos-qt-sdk" NO_DEFAULT_PATH)
+find_package(logos-qt-host REQUIRED
+    PATHS "${LOGOS_QT_HOST_ROOT}/lib/cmake/logos-qt-host" NO_DEFAULT_PATH)
+if(NOT TARGET logos-qt-host::logos_qt_host)
+    message(FATAL_ERROR
+        "find_package(logos-qt-host) succeeded but did not define "
+        "logos-qt-host::logos_qt_host — refusing to build a logoscore without "
+        "the Qt host runtime.")
+endif()
 
 # ── nlohmann_json (header-only) ───────────────────────────────────────────────
 find_package(nlohmann_json REQUIRED)
@@ -202,14 +221,17 @@ target_link_libraries(${_tgt} PRIVATE
     Qt${QT_VERSION_MAJOR}::RemoteObjects
 )
 
-# Link the SDK stack (provides LogosProviderObject, bridge helpers,
-# logos::transportSetToJsonString, and other symbols needed by core_service).
-target_link_libraries(${_tgt} PRIVATE logos-qt-sdk::logos_qt_sdk)
+# Link the Qt host runtime (provides LogosAPI, LogosAPIProvider,
+# LogosProviderObject). It PUBLIC-links logos-protocol, which is where the
+# bridge helpers and logos::transportSetToJsonString come from. Both
+# front-ends need it: the shared core_service is what derives from
+# LogosProviderObject.
+target_link_libraries(${_tgt} PRIVATE logos-qt-host::logos_qt_host)
 
 if(WIN32)
     # This binary links liblogos_core.dll, which since the single-provider
     # change EXPORTS the shared C++ runtime -- so the static archives behind
-    # logos-qt-sdk::logos_qt_sdk must stop providing it too, or every exported
+    # logos-qt-host::logos_qt_host must stop providing it too, or every exported
     # symbol is defined twice and the link fails. See
     # cmake/LogosSharedFromDll.cmake. The link interface above is deliberately
     # left intact: the imported targets still carry their include dirs and
@@ -217,7 +239,7 @@ if(WIN32)
     target_compile_definitions(${_tgt} PRIVATE LOGOS_SHARED_USE_DLL)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/LogosSharedFromDll.cmake")
     logos_use_shared_runtime_from_dll(
-        logos-qt-sdk::logos_qt_sdk
+        logos-qt-host::logos_qt_host
         logos-protocol::logos_protocol)
 endif()
 
@@ -231,8 +253,8 @@ endif()
 target_include_directories(${_tgt} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${LOGOS_CPP_SDK_ROOT}/include/cpp
-    ${LOGOS_QT_SDK_ROOT}/include
-    ${LOGOS_QT_SDK_ROOT}/include/cpp
+    ${LOGOS_QT_HOST_ROOT}/include
+    ${LOGOS_QT_HOST_ROOT}/include/cpp
     ${LOGOS_PROTOCOL_ROOT}/include
     ${LOGOS_PROTOCOL_ROOT}/include/cpp
     ${LOGOS_LIBLOGOS_ROOT}/include
