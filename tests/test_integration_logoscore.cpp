@@ -55,6 +55,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1190,4 +1192,112 @@ TEST_F(PersistencePathTest, TildeFlagExpandsAgainstHome) {
         << "`~` was absolutised into a literal directory beside the cwd";
     EXPECT_FALSE(fs::exists(defaultDataDir() / "test_basic_module"))
         << "module data went to the DEFAULT data dir despite --persistence-path";
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// `--access-policy enforce` — the shorthand, on a real daemon
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The runtime gate itself is proved against the surviving tool in
+// test_integration.cpp, which arms the same policy through the session config.
+// What is logoscore-only, and therefore what this file has to cover, is the
+// SPELLING: the literal `enforce` expanding to the deny-by-default document
+// (src/daemon/access_policy_arg.h) and reaching the runtime from a flag.
+//
+// One daemon, both directions, because a shorthand that resolved to "refuse
+// everything" would satisfy the denial on its own:
+//   test_ipc_module   declares [test_basic_module, test_extlib_module]
+//   test_basic_module declares []   ← so basic -> extlib is UNdeclared
+namespace {
+
+// requestModule is the two-arg gate every inter-module call passes through:
+// it returns the minted token, or "" when the policy refuses. nullopt means
+// the client call itself failed (a broken daemon, not a policy decision).
+std::optional<std::string> requestModuleToken(const LogoscoreDaemon& d,
+                                              const std::string& caller,
+                                              const std::string& target,
+                                              std::string* raw)
+{
+    std::string out;
+    const std::string cmd =
+        "call capability_module requestModule " + caller + " " + target;
+    const int rc = d.run(cmd, &out, /*timeoutSecs=*/20);
+    if (raw) *raw = out;
+    if (rc != 0) return std::nullopt;
+    nlohmann::json env = lastJsonObject(out);
+    if (env.value("status", std::string{}) != "ok") return std::nullopt;
+    const nlohmann::json result = env.value("result", nlohmann::json{});
+    if (result.is_string()) return result.get<std::string>();
+    if (result.is_null()) return std::string{};
+    return std::nullopt;
+}
+
+// True when the daemon log carries a refusal naming BOTH modules, caller
+// first. Matched structurally rather than by exact text: capability_module has
+// more than one implementation in this tree and they quote the names
+// differently ('x' vs "x"). What must not vary is that both names are there.
+bool logDeniesPair(const std::string& log,
+                   const std::string& caller,
+                   const std::string& target)
+{
+    std::istringstream in(log);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.find("denies") == std::string::npos) continue;
+        const auto c = line.find(caller);
+        const auto t = line.find(target);
+        if (c != std::string::npos && t != std::string::npos && c < t) return true;
+    }
+    return false;
+}
+
+} // namespace
+
+TEST(AccessPolicyFlagTest, EnforceShorthandDeniesUndeclaredAndKeepsDeclared) {
+    LogoscoreDaemon d;
+    std::string why;
+    if (!d.envReady(why)) GTEST_SKIP() << why;
+
+    d.extraArgs = {"--access-policy", "enforce"};
+    d.start("access_policy_enforce");
+    struct Cleanup { LogoscoreDaemon* p; ~Cleanup() { p->shutdown(); } } cleanup{&d};
+
+    ASSERT_TRUE(d.waitReady())
+        << "daemon did not become reachable.\n--- daemon log ---\n"
+        << slurp(d.daemonLog);
+
+    // test_ipc_module declares both others, so one load pulls all three.
+    std::string out;
+    if (d.run("load-module test_ipc_module", &out, /*timeoutSecs=*/30) != 0)
+        GTEST_SKIP() << "test_ipc_module not available in this modules dir:\n" << out;
+    ASSERT_EQ(d.run("list-modules --loaded", &out), 0) << out;
+    for (const char* m : {"test_ipc_module", "test_basic_module", "test_extlib_module"})
+        ASSERT_NE(out.find(m), std::string::npos)
+            << m << " must be loaded before probing the gate.\n" << out
+            << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+
+    // Undeclared: refused, and the refusal names both modules. A silent denial
+    // presents as a call returning empty, which is the failure mode this
+    // codebase has been debugged for twice.
+    std::string raw;
+    auto denied = requestModuleToken(d, "test_basic_module", "test_extlib_module", &raw);
+    ASSERT_TRUE(denied.has_value()) << "requestModule call failed outright:\n" << raw;
+    EXPECT_TRUE(denied->empty())
+        << "an undeclared pair must be REFUSED under --access-policy enforce — "
+           "the shorthand did not arm the policy.\n"
+        << raw << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+    EXPECT_TRUE(logDeniesPair(slurp(d.daemonLog), "test_basic_module", "test_extlib_module"))
+        << "the refusal must be logged with both module names.\n"
+        << slurp(d.daemonLog);
+
+    // Declared: still minted. This is the half that matters — a shorthand that
+    // refused everything would pass the assertion above and break every real
+    // deployment.
+    auto allowed = requestModuleToken(d, "test_ipc_module", "test_basic_module", &raw);
+    ASSERT_TRUE(allowed.has_value()) << "requestModule call failed outright:\n" << raw;
+    EXPECT_FALSE(allowed->empty())
+        << "a DECLARED caller must still be allowed under enforce — otherwise "
+           "the shorthand just breaks everything.\n"
+        << raw << "\n--- daemon log ---\n" << slurp(d.daemonLog);
 }

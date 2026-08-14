@@ -148,6 +148,7 @@ set(SHARED_SOURCES
     # Daemon path
     src/daemon/daemon.cpp
     src/daemon/daemon_state.cpp
+    src/daemon/access_policy_arg.cpp
     src/daemon/port_allocator.cpp
     src/daemon/token_store.cpp
     src/daemon/log_sink.cpp

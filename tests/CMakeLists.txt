@@ -6,6 +6,7 @@ set(TEST_LIB_SOURCES
     ${CMAKE_SOURCE_DIR}/src/paths.cpp
     ${CMAKE_SOURCE_DIR}/src/yaml_json.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/daemon_state.cpp
+    ${CMAKE_SOURCE_DIR}/src/daemon/access_policy_arg.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/port_allocator.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/token_store.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/log_sink.cpp
@@ -50,6 +51,7 @@ target_link_libraries(logosctl_testlib PUBLIC
 add_executable(unit_tests
     test_config.cpp
     test_log_sink.cpp
+    test_access_policy_arg.cpp
     test_daemon_state.cpp
     test_paths.cpp
     test_output.cpp
