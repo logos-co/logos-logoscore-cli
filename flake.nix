@@ -8,13 +8,19 @@
     # public symbols (e.g. logos::transportSetToJsonString) without
     # relying on the symbol surviving liblogos_core's link-time
     # dead-strip. liblogos's own SDK pin still drives transitive deps.
-    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk";
+    # Rev-pinned: a04b2788 is logos-cpp-sdk's b3 codegen tip, which the rest of
+    # this stack (logos-plugin-qt's qt-host, logos-liblogos) is built against.
+    # It is a strict descendant of cpp-sdk master, so this is forward-only.
+    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk/a04b27888e1d126578f639ed46dae0c777990a10";
     logos-cpp-sdk.inputs.logos-protocol.follows = "logos-protocol";
     # NOTE: the lock deliberately sits on logos-protocol's per-client token
     # store commit, not on its default branch. logos-qt-host calls
     # TokenManager::forIdentity/isolateIdentity, which only exist there; an
     # older or default-branch logos-protocol fails to COMPILE logos-qt-host.
-    logos-protocol.url = "github:logos-co/logos-protocol";
+    # Rev-pinned rather than lock-pinned: an unpinned URL lets `nix flake update`
+    # walk this off the token-store commit and back onto the default branch,
+    # which is exactly the failure the note above describes.
+    logos-protocol.url = "github:logos-co/logos-protocol/c8bab12834dbf92155b483546875e6078d17c74e";
     # The Qt HOST RUNTIME — LogosAPI, LogosAPIProvider, LogosProviderObject —
     # which the daemon and its in-process core service are built on. It lives
     # in logos-plugin-qt as `logos-qt-host`, not in logos-qt-sdk; this repo
@@ -23,10 +29,13 @@
     #
     # TODO: drop the rev pin once the host split is on logos-plugin-qt's
     # default branch — nix/qt-host.nix only exists on the split branch today.
-    logos-plugin-qt.url = "github:logos-co/logos-plugin-qt/8ccb1fc81642ee52e843b69ac3f90a1ec7084299";
+    logos-plugin-qt.url = "github:logos-co/logos-plugin-qt/cc24fa1c0c43b2d96c1dc165ee545a0321318b59";
     logos-plugin-qt.inputs.logos-nix.follows = "logos-nix";
     logos-plugin-qt.inputs.logos-protocol.follows = "logos-protocol";
-    logos-liblogos.url = "github:logos-co/logos-liblogos";
+    # Rev-pinned at the liblogos that is itself built on logos-qt-host: it and
+    # this CLI share one host runtime in one process image, so they cannot be
+    # allowed to drift apart.
+    logos-liblogos.url = "github:logos-co/logos-liblogos/f2a15ef3022d8fb71dac3d612c8edec839fc51e7";
     # liblogos is linked INTO this CLI, so its logos-protocol is the one the
     # crashing code path actually runs. Without this follows it brought its own,
     # older protocol while cpp-sdk and qt-sdk followed the root pin — three
@@ -34,7 +43,16 @@
     # nothing. Measured: 4 SIGSEGVs in 2000 client calls with the root pin
     # already on the fixed protocol.
     logos-liblogos.inputs.logos-protocol.follows = "logos-protocol";
-    logos-capability-module.url = "github:logos-co/logos-capability-module";
+    # Rev-pinned at capability_module's master tip, which is also what
+    # logos-liblogos and logos-standalone-app lock — one capability_module
+    # across the stack. NOT the `interface: "universal"` port (07dba1f): that
+    # one declares metadata.json#host_services and fails closed until a host
+    # calls logos_module_grant_host_services, and nothing in this stack does
+    # yet (grep: neither logos-liblogos nor logos-plugin-qt calls it). Under
+    # that build the daemon's capability gate refuses EVERY requestModule with
+    # "not granted the token_registry host service", so no module can call
+    # another. Bump this once the granting side lands in the host.
+    logos-capability-module.url = "github:logos-co/logos-capability-module/0cb33fb21c689076295ad6a75eaf1188012aa5fe";
     # Bundled alongside capability_module so the CLI can manage packages
     # itself: package_manager installs/uninstalls and owns the dependency
     # graph, package_downloader owns the catalogs and downloads. Same pair
