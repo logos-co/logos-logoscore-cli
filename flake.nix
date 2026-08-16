@@ -62,7 +62,21 @@
     logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module";
     # Real test-module plugins (test_basic_module) used by the
     # daemon-backed integration tests in tests/test_integration.cpp.
-    logos-test-modules.url = "github:logos-co/logos-test-modules";
+    #
+    # Rev-pinned, and the pin is load-bearing rather than cosmetic. These
+    # plugins are loaded BY the daemon this repo builds, so they and it share
+    # one host runtime in one process image — the same constraint that already
+    # rev-pins logos-liblogos above. a639b934 is the b4 tip that links the test
+    # modules against logos-qt-host (not logos-qt-sdk) and carries the matching
+    # B4 stack pins; master (f8077fab) predates that repoint and would load
+    # plugins built against the other host.
+    #
+    # Why the URL and not the lock: an UNPINNED url resolves to the default
+    # branch, and f8077fab IS master's tip — so `nix flake update
+    # logos-test-modules` here is a silent no-op that leaves the ten b4 commits
+    # behind while reporting success. f8077fab is a strict ancestor of
+    # a639b934 (verified, non-shallow clone), so this is forward-only.
+    logos-test-modules.url = "github:logos-co/logos-test-modules/a639b93475bf135d283288c31b8499b7f4d09f92";
     nix-bundle-logos-module-install.url = "github:logos-co/nix-bundle-logos-module-install";
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
