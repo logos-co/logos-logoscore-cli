@@ -133,9 +133,83 @@ jobs:
           name: macos-${{ matrix.tool.bin }}-aarch64-darwin
           path: ${{ matrix.tool.bin }}-aarch64-macos.tar.gz
 
+  # ────────────────────────────────────────────────────────────────────────
+  # Windows. A CROSS build on a Linux runner -- nix does not run on Windows, so
+  # there is no windows-latest runner here. Executing the result on real Windows
+  # is covered separately by logos-windows-ci.
+  #
+  # Same two tools and the same bundle-dir outputs the macOS job packages, so
+  # this is one more leg of an established shape rather than a new one.
+  build-windows-bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        tool:
+          - { bin: logoscore, output: cli-bundle-dir }
+          - { bin: logosctl, output: ctl-bundle-dir }
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - uses: cachix/cachix-action@v15
+        with:
+          name: logos-co
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+
+      # ubuntu-latest ships ~14 GiB free; the mingw closure is large.
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:-}" || true
+          df -h /
+
+      - name: Build ${{ matrix.tool.output }} for Windows
+        run: nix build .#packages.x86_64-windows.${{ matrix.tool.output }} -L
+
+      # NO smoke test here, and that is deliberate rather than an omission: this
+      # runner cannot execute a PE. Running the binary is what logos-windows-ci's
+      # native-smoke leg does, on a real windows-latest runner. Asserting
+      # `--help` under wine would be a weaker claim dressed as the same one.
+      - name: Package bundle as a zip
+        run: |
+          set -euo pipefail
+          dst="${{ matrix.tool.bin }}-x86_64-windows"
+          src=$(readlink -f result)
+          staged=$(find -L "$src" -type f | wc -l | tr -d ' ')
+          [ "$staged" -gt 0 ] || { echo "::error::the bundle is empty"; exit 1; }
+          # -L DEREFERENCES. The bundle's DLLs are symlinks into the nix store,
+          # and an archive of dangling links extracts to a tree that cannot
+          # start. nix-bundle-lgx shipped exactly that: `cp -a` implied
+          # --no-dereference, the payload lost 75% of its files, and the step
+          # exited 0. The count check below is why that cannot recur quietly.
+          rm -rf "$dst" && mkdir "$dst"
+          cp -rL "$src"/. "$dst/"
+          chmod -R u+w "$dst"
+          zip -qr "$dst.zip" "$dst"
+          zipped=$(unzip -l "$dst.zip" | tail -1 | awk '{print $2}')
+          echo "bundle $staged file(s) -> zip $zipped entr(ies)"
+          if [ "$zipped" -lt "$staged" ]; then
+            echo "::error::the zip holds $zipped entries but the bundle has $staged files."
+            echo "::error::Something was not dereferenced; the extracted tree would be"
+            echo "::error::missing DLLs and could not start."
+            exit 1
+          fi
+          n_exe=$(find "$dst" -name '*.exe' | wc -l | tr -d ' ')
+          [ "$n_exe" -gt 0 ] || { echo "::error::no .exe in the bundle"; exit 1; }
+          echo "exe(s): $n_exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.tool.bin }}-x86_64
+          path: ${{ matrix.tool.bin }}-x86_64-windows.zip
+
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
-    needs: [build-appimage, build-macos-bundle]
+    needs: [build-appimage, build-macos-bundle, build-windows-bundle]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -201,5 +275,13 @@ jobs:
             ```
 
             Now `logoscore` runs from anywhere.
+          # NOTE: `files:` below is a LITERAL block scalar -- every line in it is
+          # a glob handed to the action, and a '#' line would be passed as a
+          # pattern rather than ignored. Commentary belongs out here.
+          #
+          # The Windows bundles are .zip because Explorer opens one and nothing
+          # on Windows opens a .tar.gz. `merge-multiple: true` above flattens
+          # every artifact into artifacts/, so a depth-1 glob reaches them.
           files: |
             artifacts/*.tar.gz
+            artifacts/*-windows.zip
