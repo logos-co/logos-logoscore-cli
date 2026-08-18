@@ -1009,7 +1009,7 @@ TEST_F(SocketLifecycleTest, BootReapsStaleSocketsButSparesLiveOnesAndFiles)
 // timeout policy in the way.
 //
 // The (caller, target) pairs come from logos-test-modules' declared metadata:
-//   test_ipc_module   declares  [test_basic_module, test_extlib_module]
+//   test_ipc_new_api_module   declares  [test_basic_module, test_extlib_module]
 //   test_basic_module declares  []            ← so basic -> extlib is UNdeclared
 //
 // Both directions matter, and the DECLARED one carries the weight: an
@@ -1087,13 +1087,13 @@ protected:
             << "daemon did not become reachable.\n--- daemon log ---\n"
             << slurp(d.daemonLog);
 
-        // test_ipc_module declares both others, so one load pulls all three.
+        // test_ipc_new_api_module declares both others, so one load pulls all three.
         std::string out;
-        if (d.run("load-module test_ipc_module", &out, /*timeoutSecs=*/30) != 0)
-            GTEST_SKIP() << "test_ipc_module not available in this modules dir:\n"
+        if (d.run("load-module test_ipc_new_api_module", &out, /*timeoutSecs=*/30) != 0)
+            GTEST_SKIP() << "test_ipc_new_api_module not available in this modules dir:\n"
                          << out;
         ASSERT_EQ(d.run("list-modules --loaded", &out), 0) << out;
-        for (const char* m : {"test_ipc_module", "test_basic_module", "test_extlib_module"})
+        for (const char* m : {"test_ipc_new_api_module", "test_basic_module", "test_extlib_module"})
             ASSERT_NE(out.find(m), std::string::npos)
                 << m << " must be loaded before probing the gate.\n" << out
                 << "\n--- daemon log ---\n" << slurp(d.daemonLog);
@@ -1153,10 +1153,10 @@ TEST_F(AccessPolicyFixture, EnforcePolicy_StillAllowsADeclaredPair) {
     if (::testing::Test::IsSkipped() || ::testing::Test::HasFatalFailure()) return;
 
     // The half that matters: enforcement that refused everything would pass
-    // the test above and break every real deployment. test_ipc_module DECLARED
+    // the test above and break every real deployment. test_ipc_new_api_module DECLARED
     // test_basic_module, so it must still be minted a token.
     std::string raw;
-    auto token = requestModuleToken(d, "test_ipc_module", "test_basic_module", &raw);
+    auto token = requestModuleToken(d, "test_ipc_new_api_module", "test_basic_module", &raw);
     ASSERT_TRUE(token.has_value()) << "requestModule call failed outright:\n" << raw;
     EXPECT_FALSE(token->empty())
         << "a DECLARED caller must still be allowed under enforce — otherwise "

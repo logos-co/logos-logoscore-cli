@@ -933,10 +933,10 @@
               logos-test-modules.modules.${system}.test_basic_module.install
               # The access-policy tests need a declared and an undeclared
               # (caller, target) pair from real module metadata:
-              #   test_ipc_module   declares [test_basic_module, test_extlib_module]
+              #   test_ipc_new_api_module   declares [test_basic_module, test_extlib_module]
               #   test_basic_module declares []  → basic -> extlib is undeclared
               logos-test-modules.modules.${system}.test_extlib_module.install
-              logos-test-modules.modules.${system}.test_ipc_module.install
+              logos-test-modules.modules.${system}.test_ipc_new_api_module.install
             ];
           };
         in rec {
