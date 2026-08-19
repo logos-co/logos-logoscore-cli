@@ -8,28 +8,40 @@
     # public symbols (e.g. logos::transportSetToJsonString) without
     # relying on the symbol surviving liblogos_core's link-time
     # dead-strip. liblogos's own SDK pin still drives transitive deps.
-    # Rev-pinned: a04b2788 is logos-cpp-sdk's b3 codegen tip, which the rest of
-    # this stack (logos-plugin-qt's qt-host, logos-liblogos) is built against.
-    # It is a strict descendant of cpp-sdk master, so this is forward-only.
-    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk/a04b27888e1d126578f639ed46dae0c777990a10";
+    # Master-tracking. This was rev-pinned at a04b2788, the b3 codegen tip the
+    # rest of this stack (logos-plugin-qt's qt-host, logos-liblogos) was built
+    # against while the capability split lived only on that branch. It has
+    # merged (logos-cpp-sdk#138, master 95d7b3a): master carries
+    # cpp/logos_host_services.h and the rest of the split, so the pin's whole
+    # rationale is gone. Verified against master's FILES, not by ancestry —
+    # #138 was SQUASH-merged, so `merge-base --is-ancestor a04b2788 master` is
+    # correctly false even though every line of it is in master.
+    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk";
     logos-cpp-sdk.inputs.logos-protocol.follows = "logos-protocol";
-    # NOTE: the lock deliberately sits on logos-protocol's per-client token
-    # store commit, not on its default branch. logos-qt-host calls
-    # TokenManager::forIdentity/isolateIdentity, which only exist there; an
-    # older or default-branch logos-protocol fails to COMPILE logos-qt-host.
-    # Rev-pinned rather than lock-pinned: an unpinned URL lets `nix flake update`
-    # walk this off the token-store commit and back onto the default branch,
-    # which is exactly the failure the note above describes.
-    logos-protocol.url = "github:logos-co/logos-protocol/c8bab12834dbf92155b483546875e6078d17c74e";
+    # Master-tracking. This was rev-pinned at c8bab128, on logos-protocol's
+    # per-client token store branch, because logos-qt-host calls
+    # TokenManager::forIdentity/isolateIdentity and an older or default-branch
+    # logos-protocol failed to COMPILE logos-qt-host. That branch has merged
+    # (logos-protocol#59, master f4407ff): master's cpp/token_manager.h has
+    # forIdentity/isolateIdentity and cpp/logos_protocol.h has
+    # lp_grant_host_services/lp_token_keys, so an unpinned URL can no longer
+    # walk this back off the token-store surface. Checked by reading master's
+    # files — #59 was squash-merged, so ancestry says nothing here.
+    logos-protocol.url = "github:logos-co/logos-protocol";
     # The Qt HOST RUNTIME — LogosAPI, LogosAPIProvider, LogosProviderObject —
     # which the daemon and its in-process core service are built on. It lives
     # in logos-plugin-qt as `logos-qt-host`, not in logos-qt-sdk; this repo
     # needs nothing else out of logos-qt-sdk (it emits no Qt consumer
     # wrappers and has no UI plugin), so that input is gone entirely.
     #
-    # TODO: drop the rev pin once the host split is on logos-plugin-qt's
-    # default branch — nix/qt-host.nix only exists on the split branch today.
-    logos-plugin-qt.url = "github:logos-co/logos-plugin-qt/cc24fa1c0c43b2d96c1dc165ee545a0321318b59";
+    # The rev pin that used to sit here (cc24fa1c) is retired: the host split
+    # HAS landed on logos-plugin-qt's default branch (logos-plugin-qt#19,
+    # master 9b2c64e). nix/qt-host.nix is on master and flake.nix publishes
+    # `logos-qt-host` through forAllTargets, so `packages.x86_64-windows
+    # .logos-qt-host` — which the Windows leg below names — resolves too.
+    # Confirmed by fetching master's files; #19 was squash-merged, so the
+    # commit is not an ancestor of master and ancestry is the wrong test.
+    logos-plugin-qt.url = "github:logos-co/logos-plugin-qt";
     logos-plugin-qt.inputs.logos-nix.follows = "logos-nix";
     logos-plugin-qt.inputs.logos-protocol.follows = "logos-protocol";
     # Rev-pinned at the liblogos that is itself built on logos-qt-host: it and
