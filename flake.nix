@@ -825,7 +825,10 @@ ${pkgs.lib.optionalString withPkgModules ''
           #     because package_manager is first in the list, its failure means
           #     package_downloader is never attempted even when it would load.
           #     That is a product defect with its own fix, not a packaging
-          #     constraint, and it is tracked separately.
+          #     constraint. It is now fixed: the loop lives in
+          #     src/daemon/package_bootstrap.cpp, loads each module
+          #     independently, and unloads package_manager rather than let it
+          #     enforce less than the session advertises.
           #
           #   * *-appimage. An AppImage is a Linux ELF runtime concatenated with
           #     a squashfs image; there is no Windows analogue. Confirmed rather

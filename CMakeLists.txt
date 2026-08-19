@@ -151,6 +151,7 @@ set(SHARED_SOURCES
     src/daemon/port_allocator.cpp
     src/daemon/token_store.cpp
     src/daemon/log_sink.cpp
+    src/daemon/package_bootstrap.cpp
 
     # Client path
     src/client/client.cpp

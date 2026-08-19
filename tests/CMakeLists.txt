@@ -9,6 +9,7 @@ set(TEST_LIB_SOURCES
     ${CMAKE_SOURCE_DIR}/src/daemon/port_allocator.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/token_store.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/log_sink.cpp
+    ${CMAKE_SOURCE_DIR}/src/daemon/package_bootstrap.cpp
     ${CMAKE_SOURCE_DIR}/src/client/client_state.cpp
     ${CMAKE_SOURCE_DIR}/src/client/output.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/command.cpp
@@ -57,6 +58,7 @@ add_executable(unit_tests
     test_mode_detection.cpp
     test_token_store.cpp
     test_port_allocator.cpp
+    test_package_bootstrap.cpp
 )
 
 target_include_directories(unit_tests PRIVATE

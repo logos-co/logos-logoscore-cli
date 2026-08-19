@@ -212,6 +212,15 @@ check, `warn` (the default when the key is absent) installs and prints a
 warning, `require` refuses the install. It takes effect on the next daemon
 start, like everything else in this file.
 
+If the value cannot be delivered to the package manager at startup — the module
+did not load, or its object could not be acquired — the daemon unloads the
+package manager rather than leave it enforcing its own `warn` default while
+this file, `logosctl config get` and `state.json` all still say `require`.
+Package commands are unavailable for that session, and the reason is on stderr.
+A failure to set the *directories* is not treated the same way: every directory
+fails closed on its own (an install refuses with `User modules directory is not
+set`), so that case warns and leaves the manager up.
+
 A `local` listener is always added to every module, so same-host clients and the
 daemon's own cross-module calls keep working whatever else you configure. Any
 `tcp`/`tcp_ssl` entries are additional, outward-facing listeners.
