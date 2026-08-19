@@ -12,23 +12,32 @@ This project will live in its own repository. liblogos is consumed as an externa
 ## Project Structure
 
 ```
-logosctl-cli/
+logos-logoscore-cli/
 ├── src/                              # All CLI source code
-│   ├── main.cpp                      # Entry point — detects mode, dispatches
+│   ├── main.cpp                      # logosctl entry point — detects mode, dispatches
+│   ├── main_legacy.cpp               # logoscore entry point — same daemon/client/core_service
+│   │                                 # code below, frozen surface (see the README)
 │   ├── config.cpp/h                  # Token + config file resolution
+│   ├── paths.cpp/h                   # Executable/bundle-relative path resolution (no Qt)
 │   │
 │   ├── daemon/                       # Daemon path (logosctl daemon start)
-│   │   ├── daemon.cpp/h              # Start core, load core_service, run event loop,
+│   │   ├── daemon.cpp/h              # Start core, register core_service, run event loop,
 │   │   │                             # open each --module-transport listener
 │   │   ├── daemon_state.cpp/h        # DaemonConfig (config.json) + DaemonRuntimeState
 │   │   │                             # (state.json) — operator preferences (writes only
 │   │   │                             # on --persist-config) + live runtime state.
+│   │   ├── access_policy_arg.cpp/h   # Resolve --access-policy into the JSON document
+│   │   │                             # handed to logos_core_set_access_policy()
+│   │   ├── log_sink.cpp/h            # Pipe-based capture of daemon + module-host
+│   │   │                             # stdout/stderr into a rotating log file
+│   │   ├── port_allocator.cpp/h      # Reserve an ephemeral TCP port before spawning a child
 │   │   └── token_store.cpp/h         # Named-token table — TokensFile owns daemon/tokens.json
 │   │                                 # (hashed entries) + raw daemon/tokens/<name>.json
 │   │
 │   ├── client/                       # Client path (all subcommands)
-│   │   ├── client.cpp/h              # Read <configDir>/client/config.json, connect to
+│   │   ├── client.cpp/h              # Client interface + RpcClient — connect to the
 │   │   │                             # daemon's core_service via LogosAPIClient
+│   │   ├── client_state.cpp/h        # Read/write <configDir>/client/config.json (dial spec)
 │   │   ├── output.cpp/h              # Output formatter (human / JSON / NDJSON)
 │   │   └── commands/                 # Subcommand implementations
 │   │       ├── command.cpp/h         # Base command class
@@ -42,28 +51,48 @@ logosctl-cli/
 │   │       ├── watch_command.cpp/h
 │   │       ├── stats_command.cpp/h
 │   │       ├── stop_command.cpp/h
+│   │       ├── package_command.cpp/h        # install / remove / update (plan + apply)
+│   │       ├── catalog_command.cpp/h        # Browse + download from the online catalog
+│   │       ├── config_command.cpp/h         # Inspect/edit the config tree
 │   │       ├── issue_token_command.cpp/h    # Mints named tokens (daemon/tokens/<name>.json)
 │   │       ├── revoke_token_command.cpp/h   # Revokes by name
 │   │       └── list_tokens_command.cpp/h    # Lists issued tokens (name + metadata, no plaintext)
 │   │
 │   └── core_service/                 # Built-in module — CLI ↔ daemon RPC gateway
-│       ├── core_service_impl.h       # LOGOS_PROVIDER class with LOGOS_METHOD declarations
+│       ├── core_service_impl.h       # Plain C++ class deriving LogosProviderObject; its
+│       │                             # public methods ARE the API (no marker macro — there
+│       │                             # used to be LOGOS_PROVIDER/LOGOS_METHOD here)
 │       ├── core_service_impl.cpp     # Method implementations (delegates to liblogos C API)
-│       ├── core_service_loader.h     # LogosProviderPlugin loader
+│       ├── package_ops.cpp/h         # Daemon-side plan/apply for package operations
 │       ├── metadata.json             # Plugin metadata
-│       └── core_service_dispatch.cpp    # Manual callMethod/getMethods dispatch
+│       └── core_service_dispatch.cpp # Hand-written callMethodStd/getMethodsStd dispatch
+│                                     # (no core_service_loader.h: the daemon registers the
+│                                     # object in-process, it is never discovered as a plugin)
 │
 ├── tests/
-│   ├── test_core_service.cpp         # core_service method tests
-│   ├── test_cli_commands.cpp         # Mode detection, subcommand dispatch
-│   ├── test_cli_output.cpp           # Output formatter tests
-│   ├── test_cli_daemon.cpp           # Daemon lifecycle, state file
-│   └── test_cli_client.cpp           # Client connection to core_service
+│   ├── test_commands.cpp             # Subcommands against a mock Client
+│   ├── test_mode_detection.cpp       # Mode detection, subcommand dispatch
+│   ├── test_output.cpp               # Output formatter tests
+│   ├── test_daemon_state.cpp         # daemon/state.json + tokens round-trip
+│   ├── test_token_store.cpp          # Token issue / revoke / list / persistence
+│   ├── test_config.cpp               # Token + config-dir resolution
+│   ├── test_paths.cpp                # Executable/bundle path resolution
+│   ├── test_port_allocator.cpp       # Ephemeral-port allocation
+│   ├── test_access_policy_arg.cpp    # --access-policy argument resolution
+│   ├── test_log_sink.cpp             # Log capture + rotation
+│   ├── test_cli.cpp                  # End-to-end logosctl CLI
+│   ├── test_integration.cpp          # logosctl against a live daemon
+│   ├── test_cli_logoscore.cpp        # End-to-end logoscore CLI (frozen duplicate)
+│   └── test_integration_logoscore.cpp # logoscore against a live daemon (frozen duplicate)
 │
 ├── docs/
+│   ├── index.md                      # Doc index
 │   ├── spec.md                       # CLI specification (user-facing behavior)
-│   └── project.md                    # This file (implementation details)
+│   ├── project.md                    # This file (implementation details)
+│   ├── logoscore.md                  # logoscore user guide
+│   └── logosctl.md                   # logosctl user guide
 │
+├── doctests/                         # Executable documentation specs
 ├── CMakeLists.txt                    # Build configuration
 ├── flake.nix                         # Nix flake
 └── nix/                              # Nix build modules
@@ -74,13 +103,19 @@ logosctl-cli/
 | Dependency | Type | Purpose |
 |---|---|---|
 | **liblogos** | C library (external) | Core runtime: plugin discovery, loading, dependency resolution, event loop, process stats |
-| **logos-cpp-sdk** | C++ library (external) | RPC client/provider classes: LogosAPI, LogosAPIClient, LogosProviderBase, TokenManager |
-| **logos-cpp-generator** | Build tool (external) | Code generator for LOGOS_METHOD dispatch tables |
+| **logos-cpp-sdk** | C++ library (external) | Qt-free SDK surface the CLI links directly (`logos_sdk`), incl. `logos::transportSetToJsonString` |
+| **logos-protocol** | C++ library (external) | Transport + provider protocol: `LogosProviderObject`, `ModuleProxy`, `TokenManager` |
+| **logos-qt-host** (in logos-plugin-qt) | C++ library (external) | The Qt host runtime the daemon and its in-process core service are built on: `LogosAPI`, `LogosAPIClient`, `LogosAPIProvider`. Comes from `logos-plugin-qt`, not `logos-qt-sdk` |
 | **Qt6 Core** | Framework | Event loop, JSON handling, process management |
 | **Qt6 RemoteObjects** | Framework | IPC between daemon and module host processes |
 | **CMake 3.14+** | Build system | — |
 | **Google Test** | Test framework | — |
 | **Nix** | Package manager | Reproducible builds |
+
+**No code generator is in this build.** `core_service` used to be listed here
+as depending on `logos-cpp-generator` to emit a `LOGOS_METHOD` dispatch table;
+that marker macro and that generator mode are gone from this repo's path —
+`core_service_dispatch.cpp` is hand-written (see *Build integration* below).
 
 ### liblogos C API surface used
 
@@ -219,7 +254,7 @@ main.cpp
        transport config (LogosAPI itself stays on the local-socket default)
     6. Authenticate with token
   → Command::execute(args)
-    1. Call LOGOS_METHOD on core_service via LogosAPIClient
+    1. Call a core_service method by name via LogosAPIClient
     2. Format result (human / JSON)
     3. Print to stdout, exit
 ```
@@ -253,7 +288,13 @@ daemon starts clean; `-m`/`--persistence-path` configure daemon startup only
 
 ## CoreService Module
 
-The `core_service` module is the RPC gateway between CLI clients and the daemon. It is a proper Logos module built with the new SDK API (`LOGOS_PROVIDER`, `LOGOS_METHOD`), but it lives in the CLI codebase (not in liblogos) because it is the CLI's concern — it exists to serve CLI clients.
+The `core_service` module is the RPC gateway between CLI clients and the daemon. It is a proper Logos module — it implements the same `LogosProviderObject` interface the runtime calls on every module — but it lives in the CLI codebase (not in liblogos) because it is the CLI's concern — it exists to serve CLI clients.
+
+Its business methods are **Qt-free**: they take and return `std::string` /
+`LogosMap` / `LogosList` / `StdLogosResult`, and the Qt side of
+`LogosProviderObject` is satisfied by trivial delegates in
+`core_service_dispatch.cpp`. Its plain public methods *are* its API — see
+**Definition** below for what replaced the old marker-macro spelling.
 
 ### Why a module?
 
@@ -270,48 +311,85 @@ The `core_service` module is the RPC gateway between CLI clients and the daemon.
 ```cpp
 #include <logos_provider_object.h>
 
-class CoreServiceImpl : public LogosProviderBase
+class CoreServiceImpl : public LogosProviderObject
 {
-    LOGOS_PROVIDER(CoreServiceImpl, "core_service", "1.0.0")
-
 public:
+    // Emitted events go out through this hook, installed by
+    // setEventListenerStd() (see core_service_dispatch.cpp).
+    std::function<void(const std::string& eventName,
+                       const std::string& data)> emitEvent;
+
     // Module lifecycle
-    LOGOS_METHOD QVariant loadModule(const QString& name);
-    LOGOS_METHOD QVariant unloadModule(const QString& name);
-    LOGOS_METHOD QVariant reloadModule(const QString& name);
+    StdLogosResult loadModule(const std::string& name);
+    // withDependents cascades the unload to dependents, leaves-first.
+    StdLogosResult unloadModule(const std::string& name, bool withDependents);
+    StdLogosResult reloadModule(const std::string& name);
+
+    // Re-scan the module directories so packages installed since boot
+    // become discoverable without restarting the daemon.
+    LogosMap refreshModules();
+
+    // Package operations, split plan/apply so the client can prompt.
+    LogosMap planPackageOperation(const std::string& op,
+                                  const LogosList& names, const LogosMap& opts);
+    LogosMap applyPackageOperation(const std::string& op,
+                                   const LogosList& names, const LogosMap& opts);
+    LogosMap downloadPackage(const std::string& name, const LogosMap& opts);
 
     // Queries
-    LOGOS_METHOD QJsonArray listModules(const QString& filter);
-    LOGOS_METHOD QJsonObject getStatus();
-    LOGOS_METHOD QJsonObject getModuleInfo(const QString& name);
-    LOGOS_METHOD QJsonArray  getModuleStats();
+    LogosList listModules(const std::string& filter);
+    LogosMap  getStatus();
+    LogosMap  getModuleInfo(const std::string& name);
+    LogosList getModuleStats();
 
     // Proxied call — delegates to target module
-    LOGOS_METHOD QVariant callModuleMethod(const QString& module,
-                                          const QString& method,
-                                          const QVariantList& args);
+    StdLogosResult callModuleMethod(const std::string& module,
+                                    const std::string& method,
+                                    const LogosList& args);
 
     // Event forwarding
-    LOGOS_METHOD bool watchModuleEvents(const QString& module,
-                                       const QString& eventName);
+    bool watchModuleEvents(const std::string& module,
+                           const std::string& eventName);
 
     // Daemon lifecycle
-    LOGOS_METHOD QJsonObject shutdown();
+    LogosMap shutdown();
 
-protected:
-    void onInit(LogosAPI* api) override;
+    void onInit(LogosAPI* api);
+
+    // LogosProviderObject — Qt side (trivial delegates to the std bridge)
+    QVariant   callMethod(const QString& methodName, const QVariantList& args) override;
+    QJsonArray getMethods() override;
+    QString    providerName() const override;
+    QString    providerVersion() const override;
+    void       setEventListener(EventCallback callback) override;
+    bool       informModuleToken(const QString& moduleName, const QString& token) override;
+    void       init(void* apiInstance) override;
+
+    // LogosProviderObject — universal (Qt-free) dispatch
+    nlohmann::json callMethodStd(const std::string& methodName,
+                                 const nlohmann::json& args) override;
+    std::vector<LogosMethodMetadata> getMethodsStd() override;
+    void setEventListenerStd(UniversalEventCallback callback) override;
 
 private:
+    EventCallback m_eventCallback;
     LogosAPI* m_api = nullptr;
 };
 ```
 
+There is no marker macro on these declarations. (There used to be a
+`LOGOS_PROVIDER(...)` line and a `LOGOS_METHOD` prefix on each callable
+method, scanned by a code generator; neither is used here any more.)
+
 ### How each method works
 
-| LOGOS_METHOD | What it does (daemon-side) |
+| Method | What it does (daemon-side) |
 |---|---|
 | `loadModule(name)` | Calls `logos_core_load_module(name, true)`. Returns `{"status":"ok","module":"...","version":"...","dependencies_loaded":[...]}` |
-| `unloadModule(name)` | Calls `logos_core_unload_module(name, false)`. Returns `{"status":"ok","module":"..."}` |
+| `unloadModule(name, withDependents)` | Calls `logos_core_unload_module(name, withDependents)`. With `withDependents` (the CLI default) liblogos cascades the unload to every module that depends on `name`, leaves-first, so nothing is left talking to a dead provider. Returns `{"status":"ok","module":"...","dependents_unloaded":[...]}` |
+| `refreshModules()` | Re-scans the daemon's module directories so a package installed since boot becomes loadable without a restart — this is what lets `install` be followed by `load` in one session |
+| `planPackageOperation(op, names, opts)` / `applyPackageOperation(op, names, opts)` | Daemon-side plan/apply for `install` / `remove` / `update` (see `src/core_service/package_ops.h`). The split exists so the client can show what would change and prompt; `--dry-run` stops after the plan |
+| `downloadPackage(name, opts)` | Fetches a `.lgx` without installing it. Daemon-side because the downloader drops the file in the *daemon's* `$TMPDIR`, so the move to the requested directory has to happen on that host |
 | `reloadModule(name)` | Checks if loaded/crashed → unload if needed → load. Returns result with `previous_status`. Non-destructive on failure: if the module was loaded before and the reload's load step fails, it attempts to restore the prior instance and reports `restored: true/false` plus an explanatory error rather than leaving the module down |
 | `listModules(filter)` | Calls `logos_core_get_modules_info()` (name + loaded flag + embedded metadata per module). Emits `version` from metadata + status enum. Returns JSON array |
 | `getStatus()` | Reads daemon state (PID, uptime, version) + calls `listModules("all")`. Returns `{"daemon":{...},"modules_summary":{...},"modules":[...]}` |
@@ -321,29 +399,22 @@ private:
 | `watchModuleEvents(module, event)` | Registers an event listener on the target module via `m_api->getClient(module)->onEvent()`. Forwards received events by calling `emitEvent()` on core_service, which the CLI client receives over its own event subscription |
 | `shutdown()` | Schedules `QCoreApplication::quit()` after a 200ms delay (to allow the RPC response to be sent), then the daemon performs its normal cleanup (unload modules, remove `daemon/state.json`, exit) |
 
-### Loader
+### Loader — there isn't one
 
-**Files:** `src/core_service/core_service_loader.h`
-
-```cpp
-class CoreServiceLoader : public QObject, public PluginInterface, public LogosProviderPlugin
-{
-    Q_OBJECT
-    Q_PLUGIN_METADATA(IID LogosProviderPlugin_iid FILE "metadata.json")
-    Q_INTERFACES(PluginInterface LogosProviderPlugin)
-
-public:
-    QString name() const override { return "core_service"; }
-    QString version() const override { return "1.0.0"; }
-    LogosProviderObject* createProviderObject() override {
-        return new CoreServiceImpl();
-    }
-};
-```
+`core_service` is **not** discovered as a plugin, so it has no
+`Q_PLUGIN_METADATA` loader class. (This section used to document a
+`src/core_service/core_service_loader.h` holding a `CoreServiceLoader :
+QObject, PluginInterface, LogosProviderPlugin` with a `createProviderObject()`
+factory. That file no longer exists.) The daemon constructs `CoreServiceImpl`
+itself and hands it to the provider — see **Registration (daemon-side)** below.
 
 ### Metadata
 
 **Files:** `src/core_service/metadata.json`
+
+Declarative identity only — nothing in the build reads it, because there is no
+plugin to attach it to. `CoreServiceImpl::name()` / `::version()` return the
+same values in code.
 
 ```json
 {
@@ -361,28 +432,37 @@ The daemon registers `core_service` as an in-process module during startup, befo
 
 ```cpp
 // In Daemon::start()
-auto* coreServiceApi = new LogosAPI("core_service");
+auto* coreServiceApi = new LogosAPI("core_service", coreTransports);
 auto* coreServiceImpl = new CoreServiceImpl();
 coreServiceImpl->init(coreServiceApi);
 
 auto* provider = coreServiceApi->getProvider();
+// Accept operator-issued named tokens, not just the boot `auto` token.
+// Installed before registerObject so the proxy is validated from its
+// first published call.
+provider->setTokenValidator(...);
 provider->registerObject("core_service", static_cast<LogosProviderObject*>(coreServiceImpl));
 ```
 
-This registers the module directly into the runtime using the C++ SDK classes (`LogosAPI`, `LogosAPIProvider`) without directory scanning. The daemon also saves a client token via `TokenManager::instance().saveToken("cli_client", token)` so CLI clients can authenticate.
+This registers the module directly into the runtime using the Qt host classes (`LogosAPI`, `LogosAPIProvider`) without directory scanning. The daemon also saves a client token via `TokenManager::instance().saveToken("cli_client", token)` so CLI clients can authenticate.
 
 ### Build integration
 
-The `core_service_dispatch.cpp` file provides a manual `callMethod()` dispatch table and `getMethods()` metadata for `CoreServiceImpl`. Unlike dynamically loaded modules that use `logos-cpp-generator`, core_service uses a hand-written dispatch because it is statically linked into the daemon binary.
+The `core_service_dispatch.cpp` file provides a hand-written `callMethodStd()` dispatch table and `getMethodsStd()` metadata for `CoreServiceImpl`, plus the trivial Qt-side delegates (`callMethod`, `getMethods`, `setEventListener`, …) that bridge to them. Dynamically loaded modules get this glue generated for them from their header; core_service is written by hand because it is statically linked into the daemon binary and never goes through a module build.
 
 The dispatch wraps argument coercion in a try/catch: a malformed RPC (e.g. a number where a string arg is expected, which makes `args[i].get<std::string>()` throw `nlohmann::json::type_error`) is converted into a structured `{status:"error", code:"INVALID_ARGS", message:...}` response instead of an uncaught exception that would propagate through the Qt event loop and terminate the whole daemon. This keeps one authenticated client from crashing the daemon with a single bad argument.
 
 ```cpp
 // core_service_dispatch.cpp — maps method names to CoreServiceImpl methods
-QVariant CoreServiceImpl::callMethod(const QString& method, const QVariantList& args) {
-    if (method == "loadModule") return loadModule(args.value(0).toString());
-    if (method == "shutdown") return QVariant::fromValue(shutdown());
+nlohmann::json CoreServiceImpl::callMethodStd(const std::string& methodName,
+                                              const nlohmann::json& args) {
+  try {
+    if (methodName == "loadModule" && args.size() >= 1)
+        return stdLogosResultToJson(loadModule(args[0].get<std::string>()));
+    if (methodName == "shutdown") return shutdown();
     // ... etc
+    return nullptr;
+  } catch (const std::exception& e) { /* -> INVALID_ARGS envelope */ }
 }
 ```
 
@@ -594,9 +674,12 @@ For `tcp_ssl`, each module entry also accepts `"ca": "<path>"` and
 
 **Files:** `src/client/client.cpp/h`
 
-**Purpose:** Connect to the daemon's `core_service` module via `LogosAPIClient` and invoke its LOGOS_METHODs.
+**Purpose:** Connect to the daemon's `core_service` module via `LogosAPIClient` and invoke its methods by name.
 
-The client is a thin wrapper around `LogosAPIClient`. Each method maps 1:1 to a LOGOS_METHOD on `core_service`:
+`Client` is an abstract interface (so tests can substitute a mock);
+`RpcClient` is the real implementation and is a thin wrapper around
+`LogosAPIClient`. Its surface is **Qt-free** — `std::string` in, `LogosMap` /
+`LogosList` out — and each method maps 1:1 to a `core_service` method:
 
 **API:**
 
@@ -604,22 +687,29 @@ The client is a thin wrapper around `LogosAPIClient`. Each method maps 1:1 to a 
 |--------|---------------------------|
 | `Client::connect() -> bool` | Read `<configDir>/client/config.json`, set `LOGOS_INSTANCE_ID` from `instance_id`, build `LogosTransportConfig` from the dial spec, load token from `token_file` (or `LOGOSCTL_TOKEN` env), create `LogosAPIClient` targeting `"core_service"`, authenticate |
 | `Client::isConnected() -> bool` | — |
-| `Client::loadModule(name) -> QVariant` | `core_service.loadModule(name)` |
-| `Client::unloadModule(name) -> QVariant` | `core_service.unloadModule(name)` |
-| `Client::reloadModule(name) -> QVariant` | `core_service.reloadModule(name)` |
-| `Client::listModules(filter) -> QJsonArray` | `core_service.listModules(filter)` |
-| `Client::getStatus() -> QJsonObject` | `core_service.getStatus()` |
-| `Client::getModuleInfo(name) -> QJsonObject` | `core_service.getModuleInfo(name)` |
-| `Client::getModuleStats() -> QJsonArray` | `core_service.getModuleStats()` |
-| `Client::callModuleMethod(module, method, args) -> QVariant` | `core_service.callModuleMethod(module, method, args)` |
-| `Client::shutdown() -> QJsonObject` | `core_service.shutdown()` |
-| `Client::watchModuleEvents(module, event, callback)` | `core_service.watchModuleEvents(module, event)` + event subscription |
+| `Client::lastError() -> std::string` | — (last connect/RPC failure reason) |
+| `Client::loadModule(name) -> LogosMap` | `core_service.loadModule(name)` |
+| `Client::unloadModule(name, withDependents) -> LogosMap` | `core_service.unloadModule(name, withDependents)` |
+| `Client::reloadModule(name) -> LogosMap` | `core_service.reloadModule(name)` |
+| `Client::refreshModules() -> LogosMap` | `core_service.refreshModules()` |
+| `Client::planPackageOperation(op, names, opts) -> LogosMap` | `core_service.planPackageOperation(...)` |
+| `Client::applyPackageOperation(op, names, opts) -> LogosMap` | `core_service.applyPackageOperation(...)` |
+| `Client::downloadPackage(name, opts) -> LogosMap` | `core_service.downloadPackage(name, opts)` |
+| `Client::listModules(filter) -> LogosList` | `core_service.listModules(filter)` |
+| `Client::getStatus() -> LogosMap` | `core_service.getStatus()` |
+| `Client::getModuleInfo(name) -> LogosMap` | `core_service.getModuleInfo(name)` |
+| `Client::getModuleStats() -> LogosList` | `core_service.getModuleStats()` |
+| `Client::callModuleMethod(module, method, args) -> LogosMap` | `core_service.callModuleMethod(module, method, args)` |
+| `Client::shutdown() -> LogosMap` | `core_service.shutdown()` |
+| `Client::watchModuleEvents(module, event, callback) -> bool` | `core_service.watchModuleEvents(module, event)` + event subscription |
 
 **Implementation pattern:**
 
 ```cpp
-QVariant Client::loadModule(const QString& name) {
-    return m_apiClient->invokeRemoteMethod("core_service", "loadModule", name);
+LogosMap RpcClient::loadModule(const std::string& name) {
+    nlohmann::json ret = d->invoke("loadModule", nlohmann::json::array({name}));
+    if (ret.is_object()) return ret;
+    return LogosMap{{"status","error"},{"code","RPC_FAILED"}, /* ... */};
 }
 ```
 
@@ -687,7 +777,7 @@ Parallel daemons run side-by-side when invoked with distinct `--config-dir` valu
 
 ## CLI Commands
 
-All client-path commands connect to the daemon's `core_service` module via `LogosAPIClient` and call its LOGOS_METHODs. They never call liblogos C API functions directly.
+All client-path commands connect to the daemon's `core_service` module via `LogosAPIClient` and call its methods by name. They never call liblogos C API functions directly.
 
 ### logosctl daemon
 
@@ -700,7 +790,7 @@ logosctl daemon [--modules-dir <path>]...
 
 **Behavior:**
 1. `logos_core_init(argc, argv)`, add module directories, `logos_core_start()`
-2. Register `core_service` in-process via `logos_core_register_module()`
+2. Register `core_service` in-process via `LogosAPIProvider::registerObject()` (not `logos_core_register_module()`, which only maps a plugin *name* to a file path for on-disk discovery)
 3. Write `~/.logosctl/daemon/state.json` (listeners + hashed-token table) and emit `~/.logosctl/client/config.json` + `~/.logosctl/client/auto.json` for the local client
 4. `logos_core_exec()` (Qt event loop — blocks)
 5. On SIGINT/SIGTERM: `logos_core_cleanup()`, remove `daemon/state.json`, exit
@@ -914,18 +1004,18 @@ Only the daemon path calls liblogos C API functions directly:
 | Daemon operation | liblogos functions |
 |---|---|
 | Start core | `logos_core_init`, `logos_core_add_modules_dir`, `logos_core_start` |
-| Register core_service | `LogosAPI`, `LogosAPIProvider::registerObject` (C++ SDK) |
+| Register core_service | `LogosAPI`, `LogosAPIProvider::registerObject` (Qt host runtime, `logos-qt-host`) |
 | Run event loop | `logos_core_exec` |
 | Shutdown | `logos_core_cleanup` |
 
 ### Client path — core_service method mapping
 
-Client commands call core_service LOGOS_METHODs, which delegate to liblogos internally:
+Client commands call core_service methods, which delegate to liblogos internally:
 
 | CLI command | core_service method | liblogos function called internally |
 |---|---|---|
 | `load-module` | `loadModule(name)` | `logos_core_load_module(name, true)` |
-| `unload-module` | `unloadModule(name)` | `logos_core_unload_module(name, false)` |
+| `unload-module` | `unloadModule(name, withDependents)` | `logos_core_unload_module(name, withDependents)` — liblogos does the leaves-first cascade |
 | `reload-module` | `reloadModule(name)` | `logos_core_unload_module(name, false)` + `logos_core_load_module(name, true)` |
 | `list-modules` | `listModules(filter)` | `logos_core_get_known_modules`, `logos_core_get_loaded_modules` |
 | `status` | `getStatus()` | reads daemon state + `listModules` |
@@ -1104,13 +1194,18 @@ done
 | `test_token_store.cpp` | Token issuance (including `--expires` and `--local-only`), duplicate-name rejection (unless `--replace`), revocation, list, persistence round-trip. Confirms `tokens.json["tokens"]` stores hashes only; plaintext lives in `daemon/tokens/<name>.json`. Fail-closed invariants: an empty token never authenticates, `issueToken` Ok implies a non-empty token, a failed `--replace` preserves the prior raw token, and issuing against an unsupported-schema-version file refuses instead of clobbering it. |
 | `test_config.cpp` | Token resolution order (env var → `client/<token_file>`); `client/config.json` parsing; `clientTokenPath` accepts plain filenames and rejects path-traversal (`../`, absolute, sub-dirs). |
 | `test_port_allocator.cpp` | Ephemeral-port allocation: bad host returns 0, an IPv6 any-address (`::`) allocates a port, consecutive allocations are distinct. |
+| `test_access_policy_arg.cpp` | `--access-policy` resolution: the `enforce` alias expands to the deny-by-default document, the alias beats the file branch, inline JSON and file paths pass through unchanged, and a bad path / malformed JSON fails with a reason rather than degrading to "no policy". |
+| `test_log_sink.cpp` | Pipe-based stdout/stderr capture into the rotating daemon log. |
+| `test_paths.cpp` | Executable / bundle-relative path resolution (`paths.h`). |
 | `test_cli.cpp` | End-to-end CLI tests: help, version, no-args, client commands without daemon, daemon startup with --verbose; rejection of an invalid `--module-transport` port, an invalid `--client-codec`, and a `--token-file` that carries no usable token. |
+| `test_integration.cpp` | Daemon-backed integration: a real `logosctl` daemon against a real module directory, driven through the client subcommands — error paths, the full `test_basic_module` API surface, event subscription via `watch`, and many simultaneous clients on one daemon. |
+| `test_cli_logoscore.cpp` / `test_integration_logoscore.cpp` | The same two suites frozen against `logoscore`'s surface, so shared-runtime changes can't regress the tool people actually use. They get deleted with the binary. |
 
 ---
 
 ## Known Issues
 
-1. **Event forwarding** — The `watch` command requires `core_service` to forward events from target modules to CLI clients. The approach is: `core_service.watchModuleEvents()` registers a listener on the target module via `LogosAPIClient::onEvent()`, then re-emits received events via `LogosProviderBase::emitEvent()`. The CLI client subscribes to `core_service` events. This creates a relay chain (target module → core_service → CLI client) which adds latency. An alternative would be having the CLI client connect directly to the target module, but that bypasses the core_service gateway pattern.
+1. **Event forwarding** — The `watch` command requires `core_service` to forward events from target modules to CLI clients. The approach is: `core_service.watchModuleEvents()` registers a listener on the target module via `LogosAPIClient::onEvent()`, then re-emits received events through `CoreServiceImpl::emitEvent` — the `std::function` hook the runtime installs via `setEventListenerStd()`, emitted under the name `module_event`. The CLI client subscribes to `core_service` events. This creates a relay chain (target module → core_service → CLI client) which adds latency. An alternative would be having the CLI client connect directly to the target module, but that bypasses the core_service gateway pattern.
 
 2. **Stale state file** — If the daemon crashes without removing `<configDir>/daemon/state.json` (and the auto-emitted `client/` tree), the files stay on disk. Clients no longer pre-probe PID liveness (that only works for local daemons); instead the first RPC fails with a connect error and the `status` command turns that into a "not running" report. The only cost of a stale file is that the first attempt after a crash wastes one RPC timeout; in practice that's fine.
 
@@ -1124,7 +1219,7 @@ done
 2. **TUI mode** — Interactive terminal UI with autocomplete (like Obsidian CLI).
 3. **Batch mode** — Execute multiple commands from a file (`logosctl batch commands.txt`).
 4. **`module-logs` command** — Stream or tail module process logs (`logosctl module-logs chat --tail 50`). Referenced by error messages but not yet specified.
-5. **Extract core_service** — If core_service grows, it could be extracted into a standalone plugin loaded from disk rather than statically linked. The LOGOS_PROVIDER API makes this trivial.
+5. **Extract core_service** — If core_service grows, it could be extracted into a standalone plugin loaded from disk rather than statically linked. It already implements the plain `LogosProviderObject` interface, so the extraction is mostly adding a plugin entry point and a module build.
 6. **Capability-scoped tokens** — Today all tokens are admin-equivalent. Named tokens (`issue-token --name …`) create separate identities but each one is still fully authorised against the daemon. A scope/capability system would let e.g. a read-only token call `list-modules` / `status` but reject `load-module` / `stop`.
 7. **Client-cert TLS** — The `tcp_ssl` transport today authenticates the daemon to the client (server cert); mutual TLS + client-cert auth would be a natural extension once we have scoped tokens, and subsumes the token-file distribution problem for many deployments.
 
