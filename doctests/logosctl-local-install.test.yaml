@@ -1,0 +1,283 @@
+name: "Installing a Local .lgx with logosctl"
+output: logosctl-local-install.md
+release: ""
+
+intro: |
+  [`logosctl-packages`](logosctl-packages.md) installs from the public
+  catalog. This one never touches it.
+
+  A `.lgx` you already have — one you just built, one a colleague sent you,
+  one pulled from a private release — installs straight from disk. The catalog
+  is never consulted, no key has to be trusted, and nothing is fetched: the
+  file on disk *is* the package, and the daemon reads it where it lies.
+
+  That makes this the doc-test to read if you are developing a module, because
+  the local file is the only thing you have. It is also fully hermetic, so it
+  runs offline once the two builds are done.
+
+  Three spellings do the same thing:
+
+  | Command | When |
+  |---|---|
+  | `logosctl install ./mod.lgx` | A path. Anything ending in `.lgx` is read as a file. |
+  | `logosctl install --file ./mod.lgx` | The same, said explicitly. |
+  | `logosctl install --dir ./drop` | Every `.lgx` in a directory, in one operation. |
+
+  The rules from the catalog doc-test still hold here — **installing does not
+  load**, and the daemon does not need restarting afterwards.
+
+what_you_build: "A logosctl session with a locally built .lgx installed from disk, loaded, and called — without consulting a catalog or the network."
+
+what_you_learn:
+  - How to install a `.lgx` that is already on disk, by path, by `--file`, and by `--dir`
+  - Why an argument ending in `.lgx` is read as a path rather than a catalog name
+  - How to inspect a `.lgx` before installing it
+  - Why catalog names and local files cannot be combined in one command
+
+prerequisites:
+  - |
+    **Nix** with flakes enabled. Install from [nixos.org](https://nixos.org/download.html), then enable flakes:
+
+    ```bash
+    mkdir -p ~/.config/nix
+    echo 'experimental-features = nix-command flakes' >> ~/.config/nix/nix.conf
+    ```
+
+    Verify: `nix flake --help >/dev/null 2>&1 && echo "Flakes enabled"`
+
+sections:
+  - title: "Build logosctl and a package to install"
+    step: true
+    # Every section here is linux/macos: the .lgx built below carries a
+    # variant for the build host's platform only, so there is nothing for a
+    # Windows runner to install.
+    platform: [linux, macos]
+    text: |
+      Two builds. The first is the CLI; the second is a real module packaged
+      as a `.lgx` — `test_basic_module`, which exposes an `echo` method the
+      last step calls to prove the installed files actually run.
+
+      This uses the **dev** build (`#ctl`) rather than the portable bundle,
+      because a nix-built `.lgx` carries a `-dev` variant. A portable
+      `logosctl` looks for the unsuffixed variant and would correctly refuse
+      this package — that mismatch is the variant contract working, not a
+      failure. The
+      [catalog doc-test](logosctl-packages.md) is the other way round: released
+      packages are portable, so it builds the portable bundle.
+    steps:
+      - title: "Build the CLI"
+        run: 'nix build "github:logos-co/logos-logoscore-cli{release}#ctl" -o ctl'
+        code_block: "nix build 'github:logos-co/logos-logoscore-cli#ctl' -o ctl"
+        check_file: "ctl/bin/logosctl{exe}"
+
+      - title: "Build a module as a .lgx"
+        text: |
+          The `.lgx` lives under a per-system attribute, so the current system
+          is resolved first. From inside a module's own clone this is just
+          `nix build '.#lgx'` — which is what you would actually run while
+          developing one.
+        run: |
+          SYS=$(nix eval --impure --raw --expr builtins.currentSystem)
+          nix build "github:logos-co/logos-test-modules{release}#modules.$SYS.test_basic_module.lgx" -o test-lgx
+          # Copy it out of the read-only store so the rest of the doc-test can
+          # treat it like any other file sitting in a directory.
+          cp test-lgx/*.lgx ./test_basic_module.lgx
+          chmod +w ./test_basic_module.lgx
+          ls -l ./test_basic_module.lgx
+        code_block: |
+          # In a module's own checkout:
+          nix build '.#lgx' -o test-lgx
+          cp test-lgx/*.lgx ./test_basic_module.lgx
+        check_file: "test_basic_module.lgx"
+
+  - title: "Start a session"
+    step: true
+    platform: [linux, macos]
+    text: |
+      A session is one directory holding config, installed packages and
+      per-module state. Note what is *not* done here: no `catalog add`, no
+      `catalog refresh`, no keys added. A local install needs none of it —
+      the default catalog stays exactly as it was, unread.
+    steps:
+      - title: "Start the daemon"
+        text: |
+          `--detach` returns only once the daemon is accepting commands, so
+          the next command cannot race the boot.
+        run: "./ctl/bin/logosctl{exe} --config-dir ./session daemon start --detach"
+        code_block: "logosctl --config-dir ./session daemon start --detach"
+        expect_contains:
+          - "Daemon started"
+
+      - title: "Nothing is installed yet"
+        text: |
+          The two `embedded` entries are the package modules that ship inside
+          the binary. Anything this doc-test installs shows up alongside them
+          as `user`.
+        run: "./ctl/bin/logosctl{exe} --human --config-dir ./session package ls"
+        code_block: "logosctl package ls"
+        expect_contains:
+          - "package_manager"
+          - "embedded"
+
+  - title: "Look before you install"
+    step: true
+    platform: [linux, macos]
+    text: |
+      `package show` takes a path as readily as a name, so a `.lgx` can be
+      inspected before anything is written to the session. This is the step
+      worth taking with a file you did not build yourself: it reports the
+      signature status, and whether some version of it is already installed.
+    steps:
+      - title: "Inspect the file"
+        run: "./ctl/bin/logosctl{exe} --human --config-dir ./session package show ./test_basic_module.lgx"
+        code_block: "logosctl package show ./test_basic_module.lgx"
+        expect_contains:
+          - "test_basic_module"
+          - "1.0.0"
+          - "unsigned"
+
+      - title: "Preview the install"
+        text: |
+          `--dry-run` plans the operation and stops. The package is read off
+          disk to do it, which is why the plan can name a version for
+          something no catalog has ever heard of.
+        run: "./ctl/bin/logosctl{exe} --human --config-dir ./session package install ./test_basic_module.lgx --dry-run"
+        code_block: "logosctl package install ./test_basic_module.lgx --dry-run"
+        expect_contains:
+          - "install"
+          - "test_basic_module"
+          - "dry run"
+
+  - title: "Install it"
+    step: true
+    platform: [linux, macos]
+    text: |
+      The path is a positional argument — `install` reads anything ending in
+      `.lgx` as a file, because a catalog name cannot carry that suffix. Being
+      explicit with `--file` does exactly the same thing.
+
+      `-y` is required in a script: a mutating command with no `-y` and no
+      terminal to prompt on is refused rather than assumed-yes.
+    steps:
+      - title: "Install from the local file"
+        run: "./ctl/bin/logosctl{exe} --human --config-dir ./session install ./test_basic_module.lgx -y"
+        code_block: "logosctl install ./test_basic_module.lgx -y"
+        expect_contains:
+          - "Installed: test_basic_module"
+          - "Load with: logosctl module load test_basic_module"
+
+      - title: "It is installed into the session"
+        text: |
+          Its source is `user` — it lives in the session's writable `modules/`
+          directory, unlike the `embedded` package modules that ship inside
+          the binary.
+        run: "./ctl/bin/logosctl{exe} --human --config-dir ./session package ls"
+        code_block: "logosctl package ls"
+        expect_contains:
+          - "test_basic_module"
+          - "user"
+
+  - title: "It really runs"
+    step: true
+    platform: [linux, macos]
+    text: |
+      Installing put files on disk and stopped there. Loading is the separate,
+      explicit act — and calling a method is what proves the installed copy is
+      a working module rather than a well-formed archive.
+    steps:
+      - title: "Load the module"
+        run: "./ctl/bin/logosctl{exe} --human --config-dir ./session module load test_basic_module"
+        code_block: "logosctl module load test_basic_module"
+        expect_contains:
+          - "Loaded module: test_basic_module"
+
+      - title: "Call a method on it"
+        run: "./ctl/bin/logosctl{exe} --human --config-dir ./session call test_basic_module echo hello"
+        code_block: "logosctl call test_basic_module echo hello"
+        expect_contains:
+          - "hello"
+
+  - title: "A directory of packages"
+    step: true
+    platform: [linux, macos]
+    text: |
+      `--dir` takes every `.lgx` in a directory as one operation — the shape
+      you want when a build drops several packages side by side.
+
+      Re-running it over a package that is already installed is a
+      **reinstall**, and because `test_basic_module` is loaded right now, the
+      plan says so: it has to be stopped and restarted around the file
+      replacement.
+    steps:
+      - title: "Drop the package in a directory"
+        run: |
+          mkdir -p drop
+          cp ./test_basic_module.lgx drop/
+          ls drop
+        code_block: "cp ./test_basic_module.lgx drop/"
+        expect_contains:
+          - "test_basic_module.lgx"
+
+      - title: "Plan an install from the directory"
+        run: "./ctl/bin/logosctl{exe} --human --config-dir ./session package install --dir ./drop --dry-run"
+        code_block: "logosctl package install --dir ./drop --dry-run"
+        expect_contains:
+          - "reinstall"
+          - "stopped and restarted"
+
+  - title: "What is refused, and why"
+    step: true
+    platform: [linux, macos]
+    text: |
+      Two refusals are worth seeing, because both replaced a silent wrong
+      answer.
+
+      A local file and a catalog name resolve by completely different rules —
+      one is read off disk, the other is looked up and downloaded — and the
+      daemon plans one way or the other. A request carrying both used to
+      install the files and quietly drop the names. It is now refused, so
+      "install these four things" never means "install two of them".
+
+      A path that does not exist is reported as a missing file. Before, it
+      fell through to the catalog resolver and came back as `no candidate
+      matches './typo.lgx'`, which reads like the package was rejected rather
+      than never found.
+    steps:
+      - title: "Mixing a name and a file is refused"
+        run: |
+          out=$(./ctl/bin/logosctl{exe} --human --config-dir ./session \
+                  package install some_catalog_package ./test_basic_module.lgx -y 2>&1) && {
+            echo "UNEXPECTED: mixing was accepted"; exit 1; }
+          echo "$out"
+        code_block: "logosctl package install some_catalog_package ./test_basic_module.lgx -y"
+        expect_contains:
+          - "Cannot mix catalog packages with local .lgx files"
+
+      - title: "A missing file is reported as a missing file"
+        run: |
+          out=$(./ctl/bin/logosctl{exe} --human --config-dir ./session \
+                  package install ./typo.lgx -y 2>&1) && {
+            echo "UNEXPECTED: a missing file was accepted"; exit 1; }
+          echo "$out"
+        code_block: "logosctl package install ./typo.lgx -y"
+        expect_contains:
+          - "No such .lgx file: ./typo.lgx"
+
+  - title: "Clean up"
+    step: true
+    platform: [linux, macos]
+    text: |
+      `remove` takes the package **name**, not the file it came from — once
+      installed, the `.lgx` has done its job and the session tracks the
+      package by name like any other. It stops the module first, since its
+      files are about to disappear.
+    steps:
+      - title: "Remove the package"
+        run: "./ctl/bin/logosctl{exe} --human --config-dir ./session package remove test_basic_module -y"
+        code_block: "logosctl package remove test_basic_module -y"
+        expect_contains:
+          - "Removed: test_basic_module"
+
+      - title: "Stop the daemon"
+        run: "./ctl/bin/logosctl{exe} --config-dir ./session daemon stop"
+        code_block: "logosctl daemon stop"

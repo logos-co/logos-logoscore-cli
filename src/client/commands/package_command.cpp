@@ -78,7 +78,7 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
     CLI::App cli{"package " + op};
     cli.set_help_flag();
     std::vector<std::string> names;
-    cli.add_option("names", names, "Package name(s)");
+    cli.add_option("names", names, "Package name(s), or path(s) to .lgx files");
     std::string file, dir, version, rootHash, catalog;
     cli.add_option("--file", file, "Install from a local .lgx file");
     cli.add_option("--dir", dir, "Install every .lgx in a directory");
@@ -95,24 +95,62 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
         parseArgs(cli, args);
     } catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS",
-            "Usage: logosctl package " + op + " <name...> [--version V] [-y] [--dry-run]");
+            "Usage: logosctl package " + op + " <name|file.lgx ...> "
+            "[--version V] [-y] [--dry-run]");
         return 1;
     }
 
-    // Expand --file / --dir into concrete paths up front so the daemon is
-    // handed a settled list rather than re-deriving it.
+    // `remove` names an installed package; there is nothing on disk for it to
+    // read. Both flags were accepted and then ignored by the daemon, so the
+    // command reported "already up to date" and removed nothing.
+    if (op == "remove" && (!file.empty() || !dir.empty())) {
+        output().printError("INVALID_ARGS",
+            "--file / --dir apply to install and upgrade. "
+            "Give remove the package name.");
+        return 1;
+    }
+
+    // Expand --file / --dir / positional paths into concrete paths up front so
+    // the daemon is handed a settled list rather than re-deriving it.
     LogosList localFiles = LogosList::array();
-    if (!file.empty()) localFiles.push_back(std::filesystem::absolute(file).string());
+    auto addFile = [&](const std::string& p) {
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(p, ec)) {
+            output().printError("INVALID_ARGS", "No such .lgx file: " + p);
+            return false;
+        }
+        localFiles.push_back(std::filesystem::absolute(p).string());
+        return true;
+    };
+
+    // A positional argument ending in `.lgx` is a path, not a catalog name.
+    // `package show` has read it that way all along, and the catalog cannot
+    // hold a name with a `.lgx` suffix anyway, so the alternative reading was
+    // never useful -- it just sent the path to the resolver, which failed with
+    // "no candidate matches './foo.lgx'" and read like the file was rejected.
+    if (op != "remove") {
+        std::vector<std::string> catalogNames;
+        for (const auto& n : names) {
+            if (!endsWithLgx(n)) { catalogNames.push_back(n); continue; }
+            if (!addFile(n)) return 1;
+        }
+        names = catalogNames;
+    }
+
+    if (!file.empty() && !addFile(file)) return 1;
     if (!dir.empty()) {
         std::error_code ec;
         if (!std::filesystem::is_directory(dir, ec)) {
             output().printError("INVALID_ARGS", "Not a directory: " + dir);
             return 1;
         }
+        // Count what the directory itself contributed: sharing the emptiness
+        // test with --file let an empty --dir pass unreported.
+        const size_t before = localFiles.size();
         for (const auto& e : std::filesystem::directory_iterator(dir, ec))
             if (e.is_regular_file() && e.path().extension() == ".lgx")
                 localFiles.push_back(std::filesystem::absolute(e.path()).string());
-        if (localFiles.empty()) {
+        if (localFiles.size() == before) {
             output().printError("INVALID_ARGS", "No .lgx files found in: " + dir);
             return 1;
         }
@@ -120,7 +158,21 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
 
     if (names.empty() && localFiles.empty()) {
         output().printError("INVALID_ARGS",
-            "Nothing to " + op + ". Name a package, or pass --file / --dir.");
+            op == "remove"
+                ? std::string("Nothing to remove. Name an installed package.")
+                : "Nothing to " + op + ". Name a package, or give a path to an "
+                  ".lgx file (or --file / --dir).");
+        return 1;
+    }
+
+    // The daemon plans one way or the other -- local files bypass the catalog
+    // entirely -- so a request carrying both silently dropped the named
+    // packages and installed only the files. Refuse it instead of doing half
+    // of what was asked.
+    if (!names.empty() && !localFiles.empty()) {
+        output().printError("INVALID_ARGS",
+            "Cannot mix catalog packages with local .lgx files in one "
+            + op + ". Run them as separate commands.");
         return 1;
     }
 

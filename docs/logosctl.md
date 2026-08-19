@@ -312,11 +312,13 @@ logosctl call MODULE METHOD [args...]
 logosctl watch MODULE [--event NAME]
 
 # Packages — what is on disk
-# install/upgrade/remove share one option set:
+# install/upgrade share one option set:
 #   --file X.lgx  --dir D  --version V  --root-hash H  --catalog C
 #   -y|--yes  --dry-run  --no-deps  --no-dependents
-logosctl package install NAME...     # or --file X.lgx / --dir D
-logosctl package upgrade NAME
+# remove takes names only:  -y  --dry-run  --no-dependents
+logosctl package install NAME|FILE.lgx ...   # a path installs from disk
+logosctl package install --dir D             # every .lgx in a directory
+logosctl package upgrade NAME|FILE.lgx
 logosctl package remove NAME         # + dependents by default
 logosctl package ls [--type core|ui]
 logosctl package show NAME|FILE.lgx  # installed detail, or inspect an .lgx
@@ -361,6 +363,12 @@ some tools do:
 - **`module load` always resolves dependencies.** There is no `--no-deps` on
   it — that flag exists only on `package install` / `package upgrade`, which
   are about files on disk, not about what is running.
+- **An argument ending in `.lgx` is a path, not a name.** `install` and
+  `upgrade` read it as a file on disk and skip the catalog entirely, so a
+  local package installs with no catalog configured and no network. `--file`
+  says so explicitly and `--dir` takes every `.lgx` in a directory. Catalog
+  names and local files cannot be mixed in one command — they resolve by
+  different rules, so run them separately.
 
 Installing does not require a daemon restart: the daemon re-scans afterwards,
 and only modules that were *already running* are stopped and restarted.
@@ -429,6 +437,15 @@ logosctl package show storage_module    # or a path to an .lgx to inspect it
 logosctl package deps storage_module -r
 logosctl package upgrade storage_module -y
 logosctl package remove storage_module -y
+```
+
+A package you already have on disk needs none of that — no catalog, no
+network. Give `install` the path:
+
+```bash
+logosctl install ./storage_module.lgx -y      # or: --file ./storage_module.lgx
+logosctl install --dir ./downloads -y         # every .lgx in a directory
+logosctl package show ./storage_module.lgx    # inspect one without installing
 ```
 
 `install` puts files on disk; it does **not** load anything. Loading is a

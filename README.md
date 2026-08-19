@@ -45,7 +45,10 @@ Both come in two flavors: a **dev** build for local iteration and a
 **portable** build for distribution. The dev build links against dev
 `logos-liblogos` and works with **dev** modules; the portable build is
 self-contained and works with **portable** modules — which is what the public
-catalog ships, so `logosctl`'s package commands need the portable bundle.
+catalog ships, so installing *from the catalog* needs the portable bundle.
+Installing a locally built `.lgx` is the mirror image: a nix module build
+produces a `-dev` variant, so the dev build is the one that takes it. See
+[installing a local .lgx](doctests/logosctl-local-install.test.yaml).
 
 #### Dev Build
 
