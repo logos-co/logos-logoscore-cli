@@ -451,10 +451,10 @@
 
               mkdir -p $out/bin $out/modules
 
-              exe="${build}/bin/${binName}${exeExt}"
+              exe="${buildPortable}/bin/${binName}${exeExt}"
               if [ ! -f "$exe" ]; then
                 echo "Error: $exe not found" >&2
-                ls -la ${build}/bin >&2 || true
+                ls -la ${buildPortable}/bin >&2 || true
                 exit 1
               fi
               cp "$exe" $out/bin/
@@ -473,14 +473,14 @@
               # interpolated literal path survives into the array and the guard
               # passes vacuously.
               staged=0
-              for dll in ${liblogosLib}/lib/*.dll; do
+              for dll in ${liblogosPortable}/lib/*.dll; do
                 [ -f "$dll" ] || continue
                 cp -L "$dll" $out/bin/
                 staged=$((staged + 1))
               done
               if [ "$staged" -eq 0 ]; then
-                echo "Error: no DLLs under ${liblogosLib}/lib; ${binName}${exeExt} would start with no output" >&2
-                ls -la ${liblogosLib}/lib >&2 || true
+                echo "Error: no DLLs under ${liblogosPortable}/lib; ${binName}${exeExt} would start with no output" >&2
+                ls -la ${liblogosPortable}/lib >&2 || true
                 exit 1
               fi
 
@@ -489,14 +489,14 @@
               # script; there is no wrapper on a PE, so the host has to sit
               # beside the CLI where the default lookup finds it.
               hosts=0
-              for host in ${liblogos}/bin/*.exe; do
+              for host in ${liblogosPortable}/bin/*.exe; do
                 [ -f "$host" ] || continue
                 cp -L "$host" $out/bin/
                 hosts=$((hosts + 1))
               done
               if [ "$hosts" -eq 0 ]; then
-                echo "Error: no module-host .exe under ${liblogos}/bin" >&2
-                ls -la ${liblogos}/bin >&2 || true
+                echo "Error: no module-host .exe under ${liblogosPortable}/bin" >&2
+                ls -la ${liblogosPortable}/bin >&2 || true
                 exit 1
               fi
               chmod -R +w $out/bin
@@ -504,7 +504,7 @@
               # Built-in modules, from the SAME install-bundler path the native
               # builds use (installPortable -> nix-bundle-lgx), NOT a hand copy.
               #
-              # This used to be `cp -r ${liblogos}/modules/.`, and that is where
+              # This used to be `cp -r ''${liblogos}/modules/.`, and that is where
               # the first shipped Windows bundle got a capability_module whose
               # manifest named **Qt6Core.dll** as the plugin. Two Unix-shaped
               # assumptions in logos-liblogos/nix/modules.nix combine: it globs
@@ -694,8 +694,12 @@ ${pkgs.lib.optionalString withPkgModules ''
               pkgs.cmake
               pkgs.ninja
               pkgs.pkg-config
-              pkgs.qt6.wrapQtAppsNoGuiHook
-            ];
+            ]
+            # Same two-part guard as `build`: the Qt wrapper hooks cannot even
+            # evaluate for a mingw host and would skip a PE anyway, and dropping
+            # the hook alone makes qtbase's setup hook error with "depends on
+            # qtbase, but no wrapping behavior was specified".
+            ++ pkgs.lib.optional (!isWindows) pkgs.qt6.wrapQtAppsNoGuiHook;
 
             buildInputs = [
               # cppSdk propagates Boost, OpenSSL, nlohmann_json (but
@@ -714,7 +718,7 @@ ${pkgs.lib.optionalString withPkgModules ''
               pkgs.spdlog
             ];
 
-            cmakeFlags = [
+            cmakeFlags = (pkgs.logosQtCrossCmakeFlags or [ ]) ++ [
               "-GNinja"
               "-DLOGOS_LIBLOGOS_ROOT=${liblogosPortable}"
               "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
@@ -828,12 +832,28 @@ ${pkgs.lib.optionalString withPkgModules ''
           #     than assumed: nix-bundle-appimage exposes `lib` for
           #     aarch64-linux and x86_64-linux only. Do not force this one.
           #
-          #   * portable. Not blocked -- redundant. mkBinWindows IS the portable
-          #     shape: win-dll-link.sh stages every dependency beside the .exe
-          #     because a PE import table carries base names and no rpath, so
-          #     there is no @rpath/$ORIGIN variant for a `portable` output to
-          #     differ from. This is the one entry the old comment got right,
-          #     though it gave the reason under the wrong heading.
+          #   * portable. NO LONGER LEFT OUT, and the reason it was is worth
+          #     keeping because it was wrong in an instructive way. The old
+          #     entry argued portable was "redundant" on Windows: a PE import
+          #     table carries base names and no rpath, win-dll-link.sh stages
+          #     every dependency beside the .exe, so there is no @rpath/$ORIGIN
+          #     variant for a portable output to differ from.
+          #
+          #     All of that is true and none of it is the whole story. `portable`
+          #     is not only a LAYOUT distinction -- it is a compile-time one.
+          #     LGPM_PORTABLE_BUILD (logos-package-manager/CMakeLists.txt:58)
+          #     decides what platformVariantsToTry() returns: without it, the
+          #     binary appends "-dev" and accepts ONLY dev variants
+          #     (package_manager_lib.cpp:1005-1008). So a dev-built logosctl.exe
+          #     beside modules installed as `windows-x86_64` refuses all three
+          #     with "installed for variant 'windows-x86_64' which is not
+          #     supported on this platform". mkBinWindows therefore builds from
+          #     buildPortable/liblogosPortable, matching the installPortable
+          #     modules it stages.
+          #
+          #     buildPortable needed two Windows fixes to be usable here, both
+          #     of which `build` already had: the Qt host-tool cmakeFlags, and
+          #     the !isWindows guard on wrapQtAppsNoGuiHook.
           #
           #   * tests. Verified here rather than inherited from the old comment.
           #     CMakeLists.txt:277 skips the whole test block under WIN32, and
