@@ -54,15 +54,19 @@ prerequisites:
 sections:
   - title: "Build logosctl"
     step: true
+    # nix only exists on the build machine. Everything below drives the binary
+    # this section produces, so it runs anywhere -- including a real Windows
+    # runner, which is the point of marking this one.
+    platform: [linux, macos]
     text: |
       Build the CLI from this commit. The build bundles each module into an
       `.lgx` package and installs it into the output's `modules/` directory, so
       what you get is exactly what a released binary would ship.
     steps:
       - title: "Build the CLI"
-        run: 'nix build "github:logos-co/logos-logoscore-cli{release}#ctl" -o result'
+        run: 'nix build "github:logos-co/logos-logoscore-cli{release}#ctl" -o ctl'
         code_block: "nix build 'github:logos-co/logos-logoscore-cli#ctl'"
-        check_file: "result/bin/logosctl"
+        check_file: "ctl/bin/logosctl{exe}"
 
   - title: "Confirm the bundled modules"
     step: true
@@ -73,8 +77,8 @@ sections:
       separate tools.
     steps:
       - title: "List the bundled modules"
-        run: "ls result/modules result/modules-pkg"
-        code_block: "ls result/modules result/modules-pkg"
+        run: "ls ctl/modules ctl/modules-pkg"
+        code_block: "ls ctl/modules ctl/modules-pkg"
         expect_contains:
           - "capability_module"
           - "package_manager"
@@ -85,8 +89,8 @@ sections:
           The bundler runs the package manager at build time, so every entry is
           a proper installed package — a `manifest.json`, a `variant` marker,
           and the plugin binary — not a loose library dropped in a folder.
-        run: "ls result/modules-pkg/package_manager"
-        code_block: "ls result/modules-pkg/package_manager"
+        run: "ls ctl/modules-pkg/package_manager"
+        code_block: "ls ctl/modules-pkg/package_manager"
         expect_contains:
           - "manifest.json"
 
@@ -99,15 +103,21 @@ sections:
     steps:
       - title: "Start the daemon"
         run: |
-          ./result/bin/logosctl --config-dir ./session -D > daemon.log 2>&1 &
+          ./ctl/bin/logosctl{exe} --config-dir ./session -D > daemon.log 2>&1 &
+          # Capture, then test -- NOT `status --json | grep -q`. grep -q exits on
+          # its first match, the producer takes SIGPIPE (141), and under
+          # `set -o pipefail` the pipeline reports 141 rather than 0, so the
+          # `&& break` never fires and the wait runs all 60 iterations before
+          # giving up on a daemon that came up immediately.
           for _ in $(seq 1 60); do
-            ./result/bin/logosctl --config-dir ./session status --json 2>/dev/null | grep -q '"running"' && break
+            st=$(./ctl/bin/logosctl{exe} --config-dir ./session status --json 2>/dev/null || true)
+            case "$st" in *'"running"'*) break ;; esac
             sleep 1
           done
         code_block: "logosctl --config-dir ./session -D &"
 
       - title: "The bundled modules are discoverable"
-        run: "./result/bin/logosctl --config-dir ./session module ls"
+        run: "./ctl/bin/logosctl{exe} --config-dir ./session module ls"
         code_block: "logosctl module ls"
         expect_contains:
           - "capability_module"
@@ -115,5 +125,5 @@ sections:
           - "package_downloader"
 
       - title: "Stop the daemon"
-        run: "./result/bin/logosctl --config-dir ./session stop"
+        run: "./ctl/bin/logosctl{exe} --config-dir ./session stop"
         code_block: "logosctl daemon stop"

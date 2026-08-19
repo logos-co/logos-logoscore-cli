@@ -436,7 +436,7 @@
           # unset, every objdump call fails, and the hook reports "Created 0
           # DLL link(s)" -- a silent no-op that only shows up as an .exe that
           # will not start on the target machine.
-          mkBinWindows = { binName }: pkgs.stdenv.mkDerivation {
+          mkBinWindows = { binName, withPkgModules }: pkgs.stdenv.mkDerivation {
             pname = "${pname}-${binName}";
             inherit version meta;
 
@@ -449,8 +449,8 @@
             # a PE, in opposite directions:
             #
             # extraDirs: the bundler carries bin/ and lib/ and nothing else
-            # unless a directory is named here. modules/ is the built-in
-            # module tree this package stages by hand a few lines down; without
+            # unless a directory is named here. modules/ (and modules-pkg/ for
+            # logosctl) is the built-in module tree staged below; without
             # this line the bundle is a STRICT SUBSET of the derivation it
             # bundles -- no modules/, no message saying so, and a logosctl.exe
             # that starts and then reports no modules.
@@ -466,7 +466,7 @@
             # the cost is an unused closure path and if it is necessary the
             # build says so instead of shipping an .exe that will not start.
             passthru = {
-              extraDirs = [ "modules" ];
+              extraDirs = [ "modules" ] ++ pkgs.lib.optional withPkgModules "modules-pkg";
               # qtbase + qtremoteobjects are what the CLI itself links.  The
               # other two come from Qt PLUGINS that qtCliApp stages anyway:
               # `guiApp = false` suppresses the LAUNCHER, not the plugin scan,
@@ -507,10 +507,10 @@
 
               mkdir -p $out/bin $out/modules
 
-              exe="${build}/bin/${binName}${exeExt}"
+              exe="${buildPortable}/bin/${binName}${exeExt}"
               if [ ! -f "$exe" ]; then
                 echo "Error: $exe not found" >&2
-                ls -la ${build}/bin >&2 || true
+                ls -la ${buildPortable}/bin >&2 || true
                 exit 1
               fi
               cp "$exe" $out/bin/
@@ -529,14 +529,14 @@
               # interpolated literal path survives into the array and the guard
               # passes vacuously.
               staged=0
-              for dll in ${liblogosLib}/lib/*.dll; do
+              for dll in ${liblogosPortable}/lib/*.dll; do
                 [ -f "$dll" ] || continue
                 cp -L "$dll" $out/bin/
                 staged=$((staged + 1))
               done
               if [ "$staged" -eq 0 ]; then
-                echo "Error: no DLLs under ${liblogosLib}/lib; ${binName}${exeExt} would start with no output" >&2
-                ls -la ${liblogosLib}/lib >&2 || true
+                echo "Error: no DLLs under ${liblogosPortable}/lib; ${binName}${exeExt} would start with no output" >&2
+                ls -la ${liblogosPortable}/lib >&2 || true
                 exit 1
               fi
 
@@ -545,27 +545,82 @@
               # script; there is no wrapper on a PE, so the host has to sit
               # beside the CLI where the default lookup finds it.
               hosts=0
-              for host in ${liblogos}/bin/*.exe; do
+              for host in ${liblogosPortable}/bin/*.exe; do
                 [ -f "$host" ] || continue
                 cp -L "$host" $out/bin/
                 hosts=$((hosts + 1))
               done
               if [ "$hosts" -eq 0 ]; then
-                echo "Error: no module-host .exe under ${liblogos}/bin" >&2
-                ls -la ${liblogos}/bin >&2 || true
+                echo "Error: no module-host .exe under ${liblogosPortable}/bin" >&2
+                ls -la ${liblogosPortable}/bin >&2 || true
                 exit 1
               fi
               chmod -R +w $out/bin
 
-              # Built-in modules. ${liblogos}/modules already carries
-              # capability_module with a windows-x86_64-dev manifest key (see
-              # logos-liblogos/nix/modules.nix, which keys off the TARGET
-              # platform rather than uname), so this is the same tree the
-              # native builds get -- no lgx bundling involved.
-              if [ -d ${liblogos}/modules ]; then
-                cp -r ${liblogos}/modules/. $out/modules/
-                chmod -R +w $out/modules
+              # Built-in modules, from the SAME install-bundler path the native
+              # builds use (installPortable -> nix-bundle-lgx), NOT a hand copy.
+              #
+              # This used to be `cp -r ''${liblogos}/modules/.`, and that is where
+              # the first shipped Windows bundle got a capability_module whose
+              # manifest named **Qt6Core.dll** as the plugin. Two Unix-shaped
+              # assumptions in logos-liblogos/nix/modules.nix combine: it globs
+              # `lib/*.dll` -- which matches only the plugin on Unix, but on
+              # Windows linkDLLsInfolder has staged 14 dependency DLLs beside it
+              # -- and then picks the entry point by taking the FIRST file in
+              # the directory, alphabetically Qt6Core.dll. Neither is visible
+              # natively, and the build succeeded either way.
+              #
+              # Going through the bundler fixes both at once and is what
+              # logos-basecamp already does (binBundleDir = dirBundler
+              # appDistributed -> installPortable): the manifest comes from the
+              # module's own metadata rather than a directory listing, and
+              # nix-bundle-lgx's mkWindowsPayload strips the host-provided
+              # runtime DLLs that bin/ already ships.
+              modcount=0
+              for m in ${modulesPortable}/modules/*; do
+                [ -d "$m" ] || continue
+                cp -r "$m" $out/modules/
+                modcount=$((modcount + 1))
+              done
+              if [ "$modcount" -eq 0 ]; then
+                echo "Error: no modules under ${modulesPortable}/modules" >&2
+                ls -laR ${modulesPortable} >&2 || true
+                exit 1
               fi
+${pkgs.lib.optionalString withPkgModules ''
+              mkdir -p $out/modules-pkg
+              pkgcount=0
+              for m in ${modulesPortable}/modules-pkg/*; do
+                [ -d "$m" ] || continue
+                cp -r "$m" $out/modules-pkg/
+                pkgcount=$((pkgcount + 1))
+              done
+              if [ "$pkgcount" -eq 0 ]; then
+                echo "Error: no modules under ${modulesPortable}/modules-pkg;" >&2
+                echo "       ${binName}${exeExt} would start with no package backend" >&2
+                exit 1
+              fi
+              ''}
+              chmod -R +w $out/modules ${pkgs.lib.optionalString withPkgModules "$out/modules-pkg"}
+
+              # Guard the defect class the change above removes: a manifest
+              # whose "main" names something that is not that module's plugin.
+              # The convention is modules/<name>/<name>_plugin.<ext>, so any
+              # other value is wrong by construction. This fails the BUILD
+              # rather than shipping a bundle that starts and then cannot load
+              # -- which is exactly what happened, because every structural
+              # check (file counts, PE counts, zip entries) passed on it.
+              for man in $out/modules/*/manifest.json ${pkgs.lib.optionalString withPkgModules "$out/modules-pkg/*/manifest.json"}; do
+                [ -f "$man" ] || continue
+                mod=$(basename "$(dirname "$man")")
+                bad=$(${pkgs.buildPackages.jq}/bin/jq -r '.main | if type=="object" then to_entries[].value else . end' "$man" \
+                        | sort -u | grep -v "^''${mod}_plugin\." || true)
+                if [ -n "$bad" ]; then
+                  echo "Error: $man declares an entry point that is not $mod's plugin:" >&2
+                  echo "$bad" >&2
+                  exit 1
+                fi
+              done
 
               runHook postInstall
             '';
@@ -695,8 +750,12 @@
               pkgs.cmake
               pkgs.ninja
               pkgs.pkg-config
-              pkgs.qt6.wrapQtAppsNoGuiHook
-            ];
+            ]
+            # Same two-part guard as `build`: the Qt wrapper hooks cannot even
+            # evaluate for a mingw host and would skip a PE anyway, and dropping
+            # the hook alone makes qtbase's setup hook error with "depends on
+            # qtbase, but no wrapping behavior was specified".
+            ++ pkgs.lib.optional (!isWindows) pkgs.qt6.wrapQtAppsNoGuiHook;
 
             buildInputs = [
               # cppSdk propagates Boost, OpenSSL, nlohmann_json (but
@@ -715,7 +774,7 @@
               pkgs.spdlog
             ];
 
-            cmakeFlags = [
+            cmakeFlags = (pkgs.logosQtCrossCmakeFlags or [ ]) ++ [
               "-GNinja"
               "-DLOGOS_LIBLOGOS_ROOT=${liblogosPortable}"
               "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
@@ -789,65 +848,71 @@
           logoscoreCli = pkgs.symlinkJoin { name = pname;            paths = [ binLegacy ]; };
           logosctlCli  = pkgs.symlinkJoin { name = "${pname}-ctl";   paths = [ binCtl ];    };
 
-          binLegacyWin = mkBinWindows { binName = "logoscore"; };
-          binCtlWin    = mkBinWindows { binName = "logosctl";  };
+          binLegacyWin = mkBinWindows { binName = "logoscore"; withPkgModules = false; };
+          binCtlWin    = mkBinWindows { binName = "logosctl";  withPkgModules = true;  };
         in
         if isWindows then {
           # Windows ships the two binaries plus a bundled directory for each.
           #
           # STILL LEFT OUT, and why. Each reason below was re-checked by eval
-          # against the revs this flake locks, because the list this replaces
-          # had two entries whose stated reason had expired:
+          # against the revs this flake locks.
           #
-          #   * modules-pkg/ (package_manager + package_downloader), so
-          #     `logosctl package ...` still has no backend on Windows.
-          #     ONE blocker, not the four the old comment implied. Measured:
-          #       - logos-package-manager-module   packages.x86_64-windows.lib
-          #         and .lib-portable    -- PRESENT
-          #       - logos-capability-module        packages.x86_64-windows.lib
-          #                              -- PRESENT
-          #       - nix-bundle-logos-module-install
-          #         bundlers.x86_64-windows.{dev,portable}  -- PRESENT (it
-          #         takes lgpm from the BUILD system and passes
-          #         `--platform windows-x86_64`, so the cross case is handled)
-          #       - logos-package-downloader-module
-          #         packages.x86_64-windows          -- ABSENT
-          #     Root cause of the one that is missing, and it is not in that
-          #     repo's own sources: logos-module-builder gates the
-          #     x86_64-windows target on its `logos-nix` input, and
-          #     package-downloader-module still pins module-builder 8e4ea1c,
-          #     whose lib/common.nix does not mention x86_64-windows at all.
-          #     package-manager-module and capability-module pin 9d3b7cc, which
-          #     does. So the fix is a pin bump in THAT repo, followed by a
-          #     re-lock here.
+          # modules-pkg/ USED TO BE LISTED HERE and no longer is: package_manager
+          # and package_downloader now ship on Windows. The blocker was real but
+          # cleared upstream -- logos-package-downloader-module gained
+          # packages.x86_64-windows when it bumped logos-module-builder
+          # 8e4ea1c -> 9d3b7cc (that file's systems list is a hardcoded 4-element
+          # array with no x86_64-windows at the older rev). This flake was simply
+          # 3 commits behind; a single-input re-lock was the whole fix.
           #
-          #     Why not ship the half that exists. Shipping package_manager
-          #     alone would be worse than shipping neither, not merely
-          #     incomplete: src/daemon/daemon.cpp:241 loads the two names in a
-          #     loop and `return`s on the first failure -- BEFORE the
-          #     setEmbeddedModulesDirectory / setUserModulesDirectory /
-          #     setKeyringDirectory calls below it. package_manager would come
-          #     up loaded but unconfigured, and installs would land wherever its
-          #     unset defaults point, after one warning on stderr.
+          # Two things the old entry got WRONG, recorded because both were
+          # believed and acted on:
           #
-          #     What package_downloader's arrival does NOT settle: that the
-          #     daemon LOADS either module on Windows (never run anywhere), and
-          #     the size of what it installs -- the modules-pkg path goes
-          #     through .lgx, which has no host-runtime strip on the PE path
-          #     yet, so both packages would carry their own copy of the Qt,
-          #     OpenSSL and libstdc++ DLLs that sit beside logosctl.exe already.
+          #   * Its stated consequence of shipping package_manager alone --
+          #     "installs would land wherever its unset defaults point" -- is
+          #     FALSE. Every one of those directories fails closed when unset.
+          #     The real hazard is narrower and worse: a configured
+          #     `signature_policy: require` is read and then silently DISARMED
+          #     in the half-configured state.
+          #
+          #   * It framed daemon.cpp's first-failure `return` as a reason not to
+          #     ship half. It is not a Windows fact at all -- the same early
+          #     return leaves the daemon half-configured on every platform, and
+          #     because package_manager is first in the list, its failure means
+          #     package_downloader is never attempted even when it would load.
+          #     That is a product defect with its own fix, not a packaging
+          #     constraint. It is now fixed: the loop lives in
+          #     src/daemon/package_bootstrap.cpp, loads each module
+          #     independently, and unloads package_manager rather than let it
+          #     enforce less than the session advertises.
           #
           #   * *-appimage. An AppImage is a Linux ELF runtime concatenated with
           #     a squashfs image; there is no Windows analogue. Confirmed rather
           #     than assumed: nix-bundle-appimage exposes `lib` for
           #     aarch64-linux and x86_64-linux only. Do not force this one.
           #
-          #   * portable. Not blocked -- redundant. mkBinWindows IS the portable
-          #     shape: win-dll-link.sh stages every dependency beside the .exe
-          #     because a PE import table carries base names and no rpath, so
-          #     there is no @rpath/$ORIGIN variant for a `portable` output to
-          #     differ from. This is the one entry the old comment got right,
-          #     though it gave the reason under the wrong heading.
+          #   * portable. NO LONGER LEFT OUT, and the reason it was is worth
+          #     keeping because it was wrong in an instructive way. The old
+          #     entry argued portable was "redundant" on Windows: a PE import
+          #     table carries base names and no rpath, win-dll-link.sh stages
+          #     every dependency beside the .exe, so there is no @rpath/$ORIGIN
+          #     variant for a portable output to differ from.
+          #
+          #     All of that is true and none of it is the whole story. `portable`
+          #     is not only a LAYOUT distinction -- it is a compile-time one.
+          #     LGPM_PORTABLE_BUILD (logos-package-manager/CMakeLists.txt:58)
+          #     decides what platformVariantsToTry() returns: without it, the
+          #     binary appends "-dev" and accepts ONLY dev variants
+          #     (package_manager_lib.cpp:1005-1008). So a dev-built logosctl.exe
+          #     beside modules installed as `windows-x86_64` refuses all three
+          #     with "installed for variant 'windows-x86_64' which is not
+          #     supported on this platform". mkBinWindows therefore builds from
+          #     buildPortable/liblogosPortable, matching the installPortable
+          #     modules it stages.
+          #
+          #     buildPortable needed two Windows fixes to be usable here, both
+          #     of which `build` already had: the Qt host-tool cmakeFlags, and
+          #     the !isWindows guard on wrapQtAppsNoGuiHook.
           #
           #   * tests. Verified here rather than inherited from the old comment.
           #     CMakeLists.txt:277 skips the whole test block under WIN32, and

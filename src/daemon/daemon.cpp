@@ -5,12 +5,14 @@
 #include "port_allocator.h"
 #include "token_store.h"
 #include "log_sink.h"
+#include "package_bootstrap.h"
 #include "../config.h"
 #include "../paths.h"
 #include "logos_core.h"
 
 #include <logos_api.h>
 #include <logos_api_client.h>
+#include <logos_call_error.h>
 #include <logos_api_provider.h>
 #include <logos_socket_paths.h>
 #include <logos_transport_config.h>
@@ -233,80 +235,63 @@ std::vector<TransportInfo> toAdvertised(const LogosTransportSet& set)
 // session's directories. Best-effort throughout: a daemon that cannot manage
 // packages is still fully usable for loading and calling modules, so nothing
 // here is allowed to abort startup.
+//
+// The sequencing — which failure skips what — lives in package_bootstrap so it
+// can be tested without a running core. This function is only the wiring from
+// those hooks to logos_core and the live LogosAPI.
 void bootstrapPackageModules(LogosAPI* api,
                              const std::string& bundledDir,
                              const std::string& signaturePolicy,
                              bool verbose)
 {
-    for (const char* name : {"package_manager", "package_downloader"}) {
-        if (!logos_core_load_module(name, /*with_dependencies=*/true)) {
-            fprintf(stderr,
-                    "Warning: failed to load bundled module '%s'. Package "
-                    "commands will be unavailable in this session.\n", name);
-            return;
-        }
-        if (verbose)
-            fprintf(stderr, "Loaded bundled module: %s\n", name);
-    }
+    package_bootstrap::Hooks hooks;
 
-    LogosAPIClient* pm = api ? api->getClient("package_manager") : nullptr;
-    if (!pm) {
-        fprintf(stderr,
-                "Warning: could not reach package_manager to configure its "
-                "directories. Package commands will not see this session's "
-                "installed packages.\n");
-        return;
-    }
+    hooks.loadModule = [](const std::string& name) {
+        return logos_core_load_module(name.c_str(), /*with_dependencies=*/true);
+    };
+    hooks.unloadModule = [](const std::string& name) {
+        logos_core_unload_module(name.c_str(), /*with_dependents=*/true);
+    };
+    hooks.warn = [](const std::string& line) {
+        fprintf(stderr, "%s\n", line.c_str());
+    };
+    if (verbose)
+        hooks.note = [](const std::string& line) {
+            fprintf(stderr, "%s\n", line.c_str());
+        };
 
-    // Embedded (read-only, ships with the binary) vs user (writable, this
-    // session). The manager scans both and lets the user copy win on a name
-    // collision, which is how a session can override a bundled module.
+    // The CallError overload rather than the json one: a setter returns void,
+    // so a dispatched call and a call that never reached the module are
+    // indistinguishable in the return value. `err` is what tells them apart
+    // ("object_unavailable" when the target object cannot be acquired), and
+    // that distinction is what the signature-policy fail-closed rests on.
+    hooks.configure = [api](const std::string& method,
+                            const std::vector<std::string>& args) {
+        LogosAPIClient* pm =
+            api ? api->getClient(package_bootstrap::kPackageManager) : nullptr;
+        if (!pm) return false;
+        QVariantList qargs;
+        for (const auto& a : args)
+            qargs.push_back(QString::fromStdString(a));
+        logos::CallError err;
+        pm->invokeRemoteMethod(QString::fromLatin1(package_bootstrap::kPackageManager),
+                               QString::fromStdString(method),
+                               qargs, Timeout(), &err);
+        return err.ok();
+    };
+
+    package_bootstrap::Dirs dirs;
     // bundledDir is <bin>/../modules; its plugins sibling is alongside it.
     if (!bundledDir.empty()) {
-        const std::string bundledPlugins =
+        dirs.embeddedModules   = bundledDir;
+        dirs.embeddedUiPlugins =
             (std::filesystem::path(bundledDir).parent_path() / "plugins").string();
-        pm->invokeRemoteMethod("package_manager", "setEmbeddedModulesDirectory",
-                               nlohmann::json::array({bundledDir}));
-        pm->invokeRemoteMethod("package_manager", "setEmbeddedUiPluginsDirectory",
-                               nlohmann::json::array({bundledPlugins}));
     }
-    pm->invokeRemoteMethod("package_manager", "setUserModulesDirectory",
-                           nlohmann::json::array({Config::modulesDir()}));
-    pm->invokeRemoteMethod("package_manager", "setUserUiPluginsDirectory",
-                           nlohmann::json::array({Config::pluginsDir()}));
+    dirs.userModules   = Config::modulesDir();
+    dirs.userUiPlugins = Config::pluginsDir();
+    dirs.keyring       = Config::keyringDir();
 
-    // Trust is per-session: the keyring lives inside the config dir so that
-    // copying a session carries its trust assumptions with it, and two
-    // sessions can disagree about which signers they accept.
-    pm->invokeRemoteMethod("package_manager", "setKeyringDirectory",
-                           nlohmann::json::array({Config::keyringDir()}));
-
-    // ...and so is the policy applied to what those keys say about a package.
-    // The module defaults to `warn`, so an unset `signature_policy:` is left
-    // alone rather than restated; anything else is the operator asking for a
-    // different answer and has to reach the module, or `require` would be a
-    // setting that reads back correctly and enforces nothing.
-    // The value is allowlisted by the config reader, so by here it is one of
-    // none | warn | require.
-    if (!signaturePolicy.empty()) {
-        pm->invokeRemoteMethod("package_manager", "setSignaturePolicy",
-                               nlohmann::json::array({signaturePolicy}));
-    }
-
-    // A crash mid-dialog in a previous run can leave the module's single
-    // gated-operation slot occupied, which would reject every subsequent
-    // install. Basecamp clears it at startup for the same reason.
-    pm->invokeRemoteMethod("package_manager", "resetPendingAction",
-                           nlohmann::json::array());
-
-    if (verbose)
-        fprintf(stderr,
-                "Configured package_manager: user=%s embedded=%s keyring=%s "
-                "signature_policy=%s\n",
-                Config::modulesDir().c_str(), bundledDir.c_str(),
-                Config::keyringDir().c_str(),
-                signaturePolicy.empty() ? "(module default)"
-                                        : signaturePolicy.c_str());
+    package_bootstrap::run(hooks, dirs, signaturePolicy);
 }
 
 } // namespace

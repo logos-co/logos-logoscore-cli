@@ -5,6 +5,8 @@
 # Each `*.test.yaml` in this directory is a self-contained doc-test:
 #   - logosctl-daemon.test.yaml              — daemon lifecycle (local same-host)
 #   - logosctl-transports.test.yaml          — reaching the daemon over TCP / TCP+TLS
+#   - logosctl-local-install.test.yaml       — installing a .lgx off disk (hermetic,
+#                                               no catalog and no network)
 #   - logosctl-concurrent-blocking.test.yaml — many concurrent clients vs a blocking
 #                                               module method (serialization, no crash)
 #

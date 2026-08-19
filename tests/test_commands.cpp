@@ -1078,3 +1078,141 @@ TEST_F(CommandTest, PackageMutate_SaysSoWhenNoReasonWasReported)
     const std::string msg = parseJson(out)["message"].get<std::string>();
     EXPECT_NE(msg.find("no reason reported"), std::string::npos) << msg;
 }
+
+// ── local .lgx files ────────────────────────────────────────────────────────
+//
+// install/upgrade take a package off disk as readily as out of a catalog. The
+// two resolve by completely different rules, and the daemon plans one way or
+// the other -- so what the client hands over has to be unambiguously one or
+// the other before it leaves here.
+
+// A path is a path. Reading it as a catalog name sent it to the resolver,
+// which came back "no candidate matches './foo.lgx'" -- a package-not-found
+// error for a file that was sitting right there.
+TEST_F(CommandTest, PackageInstall_PositionalLgxPathIsReadAsAFile)
+{
+    const std::string path = testing::TempDir() + "logosctl_pkg_positional.lgx";
+    { std::ofstream f(path); f << "not really an archive"; }
+
+    mockClient.planPackageResult = LogosMap{
+        {"status", "ok"},
+        {"changes", LogosList::array({LogosMap{{"name","m"},{"action","install"}}})},
+        {"affected_loaded", LogosList::array()}};
+    mockClient.applyPackageResult = LogosMap{{"status", "ok"}};
+
+    auto cmd = createCommand("package", mockClient, output);
+    int exitCode = 1;
+    captureOutput([&]() { exitCode = cmd->execute({"install", path, "-y"}); });
+    std::remove(path.c_str());
+
+    EXPECT_EQ(exitCode, 0);
+    // It travels as a local file, not as a name.
+    EXPECT_TRUE(mockClient.lastPackageNames.empty());
+    const auto& files = mockClient.lastPackageOpts["localFiles"];
+    ASSERT_TRUE(files.is_array());
+    ASSERT_EQ(files.size(), 1u);
+    EXPECT_EQ(files[0].get<std::string>(),
+              std::filesystem::absolute(path).string());
+}
+
+TEST_F(CommandTest, PackageInstall_MissingLgxPathIsReportedAsAMissingFile)
+{
+    auto cmd = createCommand("package", mockClient, output);
+    int exitCode = 0;
+    std::string out = captureOutput([&]() {
+        exitCode = cmd->execute({"install", "./no_such_package.lgx", "-y"});
+    });
+
+    EXPECT_EQ(exitCode, 1);
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["code"].get<std::string>(), "INVALID_ARGS");
+    EXPECT_NE(doc["message"].get<std::string>().find("No such .lgx file"),
+              std::string::npos) << doc.dump();
+    // Nothing reached the daemon, so nothing was half-installed.
+    EXPECT_FALSE(mockClient.applyPackageCalled);
+}
+
+// The plan is either/or, so a request carrying both used to install the files
+// and silently drop the names.
+TEST_F(CommandTest, PackageInstall_RefusesToMixCatalogNamesWithLocalFiles)
+{
+    const std::string path = testing::TempDir() + "logosctl_pkg_mixed.lgx";
+    { std::ofstream f(path); }
+
+    auto cmd = createCommand("package", mockClient, output);
+    int exitCode = 0;
+    std::string out = captureOutput([&]() {
+        exitCode = cmd->execute({"install", "storage_module", path, "-y"});
+    });
+    std::remove(path.c_str());
+
+    EXPECT_EQ(exitCode, 1);
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["code"].get<std::string>(), "INVALID_ARGS");
+    EXPECT_NE(doc["message"].get<std::string>().find("Cannot mix"),
+              std::string::npos) << doc.dump();
+    EXPECT_FALSE(mockClient.applyPackageCalled);
+}
+
+// --file plus an empty --dir: the emptiness test used to look at the combined
+// list, so the directory contributing nothing went unreported.
+TEST_F(CommandTest, PackageInstall_EmptyDirIsReportedEvenAlongsideAFile)
+{
+    const std::string dir = testing::TempDir() + "logosctl_pkg_empty_dir";
+    std::filesystem::create_directories(dir);
+    const std::string path = testing::TempDir() + "logosctl_pkg_with_dir.lgx";
+    { std::ofstream f(path); }
+
+    auto cmd = createCommand("package", mockClient, output);
+    int exitCode = 0;
+    std::string out = captureOutput([&]() {
+        exitCode = cmd->execute({"install", "--file", path, "--dir", dir, "-y"});
+    });
+    std::remove(path.c_str());
+    std::filesystem::remove(dir);
+
+    EXPECT_EQ(exitCode, 1);
+    EXPECT_NE(parseJson(out)["message"].get<std::string>().find("No .lgx files found"),
+              std::string::npos) << out;
+    EXPECT_FALSE(mockClient.applyPackageCalled);
+}
+
+// `remove` names an installed package. Both flags were accepted and then
+// ignored by the daemon, so the command reported "already up to date" and
+// removed nothing.
+TEST_F(CommandTest, PackageRemove_RejectsFileAndDirRatherThanIgnoringThem)
+{
+    const std::string path = testing::TempDir() + "logosctl_pkg_remove.lgx";
+    { std::ofstream f(path); }
+
+    auto cmd = createCommand("package", mockClient, output);
+    int exitCode = 0;
+    std::string out = captureOutput([&]() {
+        exitCode = cmd->execute({"remove", "--file", path, "-y"});
+    });
+    std::remove(path.c_str());
+
+    EXPECT_EQ(exitCode, 1);
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["code"].get<std::string>(), "INVALID_ARGS");
+    EXPECT_NE(doc["message"].get<std::string>().find("--file / --dir apply to install"),
+              std::string::npos) << doc.dump();
+    EXPECT_FALSE(mockClient.applyPackageCalled);
+}
+
+// Removal is by name even when the name happens to end in `.lgx`: there is no
+// file to read, so the path stays a name and the daemon reports it as not
+// installed.
+TEST_F(CommandTest, PackageRemove_KeepsAnLgxArgumentAsAName)
+{
+    mockClient.planPackageResult = LogosMap{
+        {"status", "error"}, {"code", "NOT_INSTALLED"},
+        {"message", "Package './thing.lgx' is not installed."}};
+
+    auto cmd = createCommand("package", mockClient, output);
+    captureOutput([&]() { cmd->execute({"remove", "./thing.lgx", "-y"}); });
+
+    ASSERT_EQ(mockClient.lastPackageNames.size(), 1u);
+    EXPECT_EQ(mockClient.lastPackageNames[0].get<std::string>(), "./thing.lgx");
+    EXPECT_TRUE(mockClient.lastPackageOpts["localFiles"].empty());
+}
