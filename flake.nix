@@ -55,16 +55,20 @@
     # nothing. Measured: 4 SIGSEGVs in 2000 client calls with the root pin
     # already on the fixed protocol.
     logos-liblogos.inputs.logos-protocol.follows = "logos-protocol";
-    # Rev-pinned at capability_module's master tip, which is also what
-    # logos-liblogos and logos-standalone-app lock — one capability_module
-    # across the stack. NOT the `interface: "universal"` port (07dba1f): that
-    # one declares metadata.json#host_services and fails closed until a host
-    # calls logos_module_grant_host_services, and nothing in this stack does
-    # yet (grep: neither logos-liblogos nor logos-plugin-qt calls it). Under
-    # that build the daemon's capability gate refuses EVERY requestModule with
-    # "not granted the token_registry host service", so no module can call
-    # another. Bump this once the granting side lands in the host.
-    logos-capability-module.url = "github:logos-co/logos-capability-module/0cb33fb21c689076295ad6a75eaf1188012aa5fe";
+    # Unpinned. This was held at 0cb33fb — the pre-universal Qt module —
+    # because the `interface: "universal"` port declares
+    # metadata.json#host_services and fails closed until a host calls
+    # logos_module_grant_host_services, and nothing in the stack did. Under that
+    # build the capability gate refuses EVERY requestModule with "not granted
+    # the token_registry host service", so no module can call another.
+    #
+    # The granting side has landed, which is the condition this pin named:
+    # logos-module-loader-qt#8 stamps the hostServices property and calls the
+    # grant (module_initializer.cpp), logos-liblogos#178 relocked onto it, and
+    # #94 brought that here — this closure resolves the loader at acd07cf.
+    # capability_module master (c670f7f) is the universal port, #24, whose own
+    # doctests pass against exactly this grant path.
+    logos-capability-module.url = "github:logos-co/logos-capability-module";
     # Bundled alongside capability_module so the CLI can manage packages
     # itself: package_manager installs/uninstalls and owns the dependency
     # graph, package_downloader owns the catalogs and downloads. Same pair

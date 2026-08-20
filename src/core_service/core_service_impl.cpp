@@ -23,14 +23,21 @@ void CoreServiceImpl::onInit(LogosAPI* api)
 
 std::vector<std::string> CoreServiceImpl::getKnownModuleNames()
 {
+    // logos_core_* hands back memory allocated with new[], never malloc:
+    // module_manager.cpp's toNullTerminatedArray does `new char*[]` plus a
+    // `new char[]` per element, and getModulesInfoCStr / ProcessStats::
+    // getModuleStats each `new char[]`. delete[] is therefore the only correct
+    // deallocator for every one of them — free() here was undefined behaviour
+    // that happened not to crash. (logos-basecamp's CoreModuleManager.cpp
+    // carries the same note; the two hosts drain the same C API.)
     std::vector<std::string> result;
     char** modules = logos_core_get_known_modules();
     if (modules) {
         for (int i = 0; modules[i] != nullptr; ++i) {
             result.emplace_back(modules[i]);
-            free(modules[i]);
+            delete[] modules[i];
         }
-        free(modules);
+        delete[] modules;
     }
     return result;
 }
@@ -42,9 +49,9 @@ std::vector<std::string> CoreServiceImpl::getLoadedModuleNames()
     if (modules) {
         for (int i = 0; modules[i] != nullptr; ++i) {
             result.emplace_back(modules[i]);
-            free(modules[i]);
+            delete[] modules[i];
         }
-        free(modules);
+        delete[] modules;
     }
     return result;
 }
@@ -79,7 +86,7 @@ nlohmann::json CoreServiceImpl::getModulesInfo()
         nlohmann::json parsed = nlohmann::json::parse(json, nullptr, /*allow_exceptions=*/false);
         if (parsed.is_array())
             info = std::move(parsed);
-        free(json);
+        delete[] json;
     }
     return info;
 }
@@ -418,7 +425,7 @@ LogosList CoreServiceImpl::getModuleStats()
         try {
             stats = nlohmann::json::parse(json);
         } catch (...) {}
-        free(json);
+        delete[] json;
     }
     return stats;
 }
