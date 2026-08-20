@@ -618,6 +618,10 @@ int Daemon::start(int argc, char* argv[],
     if (autoTokenOutcome.status != TokenStore::IssueStatus::Ok) {
         fprintf(stderr, "Failed to auto-issue local client token (status=%d)\n",
                 static_cast<int>(autoTokenOutcome.status));
+        // logos_core_start() already launched the module subprocesses; leaving
+        // without cleanup strands them. Every other exit from this function
+        // runs logos_core_cleanup() below.
+        logos_core_cleanup();
         return 1;
     }
     const std::string autoTokenRaw = autoTokenOutcome.token;
@@ -672,6 +676,10 @@ int Daemon::start(int argc, char* argv[],
     if (!DaemonRuntimeStateFile::write(state)) {
         fprintf(stderr, "Failed to write daemon state file: %s\n",
                 DaemonRuntimeStateFile::filePath().c_str());
+        // logos_core_start() already launched the module subprocesses; leaving
+        // without cleanup strands them. Every other exit from this function
+        // runs logos_core_cleanup() below.
+        logos_core_cleanup();
         return 1;
     }
 

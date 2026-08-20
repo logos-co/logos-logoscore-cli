@@ -59,9 +59,9 @@ std::vector<std::string> loadedModules()
     if (!mods) return out;
     for (int i = 0; mods[i]; ++i) {
         out.emplace_back(mods[i]);
-        free(mods[i]);
+        delete[] mods[i];
     }
-    free(mods);
+    delete[] mods;
     return out;
 }
 
