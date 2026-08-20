@@ -1067,6 +1067,29 @@ ${pkgs.lib.optionalString withPkgModules ''
             ${testsPkg}/bin/integration_tests_logoscore --gtest_output=xml:$out/integration-test-results.xml
           '';
 
+          # One-runtime symbol gate. Asserts the logos C++ runtime (TokenManager,
+          # StoreRegistry, LogosAPI, LogosAPIClient) is DEFINED exactly once
+          # across the images that share one process -- in liblogos_core, the
+          # single provider. This repo saw the LOUD version of a duplicate on
+          # Windows (the link fails with "multiple definition of
+          # `TokenManager::instance()'") and the QUIET version everywhere else,
+          # where it links fine and surfaces at runtime as refused calls.
+          # Build: nix build .#checks.<sys>.symbol-gate
+          symbol-gate = import ./nix/symbol-gate.nix {
+            inherit pkgs;
+            appPkg = self.packages.${system}.default;
+          };
+
+          # Negative control. Plants a REAL duplicate runtime where an
+          # in-process consumer goes and asserts the gate REJECTS it. Ship both
+          # or neither: an absence assertion that has never been seen to fail is
+          # indistinguishable from a broken one.
+          symbol-gate-negative = import ./nix/symbol-gate.nix {
+            inherit pkgs;
+            appPkg = self.packages.${system}.default;
+            negativeControl = true;
+          };
+
           # Aggregate. `nix build .#checks.<sys>.tests` still works and now
           # covers both tools; nix builds the two dependencies concurrently.
           tests = pkgs.runCommand "logos-logoscore-cli-tests" { } ''
