@@ -47,7 +47,7 @@
     # Rev-pinned at the liblogos that is itself built on logos-qt-host: it and
     # this CLI share one host runtime in one process image, so they cannot be
     # allowed to drift apart.
-    logos-liblogos.url = "github:logos-co/logos-liblogos/f2a15ef3022d8fb71dac3d612c8edec839fc51e7";
+    logos-liblogos.url = "github:logos-co/logos-liblogos";
     # liblogos is linked INTO this CLI, so its logos-protocol is the one the
     # crashing code path actually runs. Without this follows it brought its own,
     # older protocol while cpp-sdk and qt-sdk followed the root pin — three
