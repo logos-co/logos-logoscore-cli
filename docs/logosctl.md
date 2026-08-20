@@ -617,9 +617,11 @@ access_policy: |
 The string is handed to the runtime (via `logos_core_set_access_policy`)
 before any module is loaded.
 
-> **Note:** enforcement is not yet implemented on the runtime side — the
-> policy is currently accepted and validated but **not enforced** (the
-> underlying `logos_core_set_access_policy` is a no-op for now).
+> **Note:** the value must be a full policy document. The `enforce` shorthand
+> is a `logoscore` flag spelling (`--access-policy enforce`); here, write the
+> equivalent document — `{"version":1,"mode":"enforce","restrictions":{}}` —
+> which arms deny-by-default with the allow-lists derived from each module's
+> declared dependencies.
 
 > **Note:** the legacy inline mode (`-c "module.method(args)"` / `--quit-on-finish`,
 > which ran calls in a single short-lived process) has been removed. Use a daemon

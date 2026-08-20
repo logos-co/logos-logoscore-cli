@@ -1,8 +1,9 @@
 # logos-logoscore-cli
 
 The headless CLI runtime for the [Logos](https://github.com/logos-co) modular
-application platform. It loads Logos modules (Qt plugins) and lets you call
-their methods from the command line — no GUI needed.
+application platform. It loads Logos modules — Qt plugins and Qt-free
+`universal` / `cdylib` ones alike — and lets you call their methods from the
+command line, no GUI needed.
 
 This repo is one of two frontends for [logos-liblogos](https://github.com/logos-co/logos-liblogos):
 - **logos-logoscore-cli** (this repo) — headless CLI runtime for scripting, testing, and headless deployments

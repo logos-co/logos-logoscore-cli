@@ -8,12 +8,45 @@
     # public symbols (e.g. logos::transportSetToJsonString) without
     # relying on the symbol surviving liblogos_core's link-time
     # dead-strip. liblogos's own SDK pin still drives transitive deps.
+    # Master-tracking. This was rev-pinned at a04b2788, the b3 codegen tip the
+    # rest of this stack (logos-plugin-qt's qt-host, logos-liblogos) was built
+    # against while the capability split lived only on that branch. It has
+    # merged (logos-cpp-sdk#138, master 95d7b3a): master carries
+    # cpp/logos_host_services.h and the rest of the split, so the pin's whole
+    # rationale is gone. Verified against master's FILES, not by ancestry —
+    # #138 was SQUASH-merged, so `merge-base --is-ancestor a04b2788 master` is
+    # correctly false even though every line of it is in master.
     logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk";
     logos-cpp-sdk.inputs.logos-protocol.follows = "logos-protocol";
+    # Master-tracking. This was rev-pinned at c8bab128, on logos-protocol's
+    # per-client token store branch, because logos-qt-host calls
+    # TokenManager::forIdentity/isolateIdentity and an older or default-branch
+    # logos-protocol failed to COMPILE logos-qt-host. That branch has merged
+    # (logos-protocol#59, master f4407ff): master's cpp/token_manager.h has
+    # forIdentity/isolateIdentity and cpp/logos_protocol.h has
+    # lp_grant_host_services/lp_token_keys, so an unpinned URL can no longer
+    # walk this back off the token-store surface. Checked by reading master's
+    # files — #59 was squash-merged, so ancestry says nothing here.
     logos-protocol.url = "github:logos-co/logos-protocol";
-    logos-qt-sdk.url = "github:logos-co/logos-qt-sdk";
-    logos-qt-sdk.inputs.logos-protocol.follows = "logos-protocol";
-    logos-qt-sdk.inputs.logos-cpp-sdk.follows = "logos-cpp-sdk";
+    # The Qt HOST RUNTIME — LogosAPI, LogosAPIProvider, LogosProviderObject —
+    # which the daemon and its in-process core service are built on. It lives
+    # in logos-plugin-qt as `logos-qt-host`, not in logos-qt-sdk; this repo
+    # needs nothing else out of logos-qt-sdk (it emits no Qt consumer
+    # wrappers and has no UI plugin), so that input is gone entirely.
+    #
+    # The rev pin that used to sit here (cc24fa1c) is retired: the host split
+    # HAS landed on logos-plugin-qt's default branch (logos-plugin-qt#19,
+    # master 9b2c64e). nix/qt-host.nix is on master and flake.nix publishes
+    # `logos-qt-host` through forAllTargets, so `packages.x86_64-windows
+    # .logos-qt-host` — which the Windows leg below names — resolves too.
+    # Confirmed by fetching master's files; #19 was squash-merged, so the
+    # commit is not an ancestor of master and ancestry is the wrong test.
+    logos-plugin-qt.url = "github:logos-co/logos-plugin-qt";
+    logos-plugin-qt.inputs.logos-nix.follows = "logos-nix";
+    logos-plugin-qt.inputs.logos-protocol.follows = "logos-protocol";
+    # Rev-pinned at the liblogos that is itself built on logos-qt-host: it and
+    # this CLI share one host runtime in one process image, so they cannot be
+    # allowed to drift apart.
     logos-liblogos.url = "github:logos-co/logos-liblogos";
     # liblogos is linked INTO this CLI, so its logos-protocol is the one the
     # crashing code path actually runs. Without this follows it brought its own,
@@ -22,7 +55,16 @@
     # nothing. Measured: 4 SIGSEGVs in 2000 client calls with the root pin
     # already on the fixed protocol.
     logos-liblogos.inputs.logos-protocol.follows = "logos-protocol";
-    logos-capability-module.url = "github:logos-co/logos-capability-module";
+    # Rev-pinned at capability_module's master tip, which is also what
+    # logos-liblogos and logos-standalone-app lock — one capability_module
+    # across the stack. NOT the `interface: "universal"` port (07dba1f): that
+    # one declares metadata.json#host_services and fails closed until a host
+    # calls logos_module_grant_host_services, and nothing in this stack does
+    # yet (grep: neither logos-liblogos nor logos-plugin-qt calls it). Under
+    # that build the daemon's capability gate refuses EVERY requestModule with
+    # "not granted the token_registry host service", so no module can call
+    # another. Bump this once the granting side lands in the host.
+    logos-capability-module.url = "github:logos-co/logos-capability-module/0cb33fb21c689076295ad6a75eaf1188012aa5fe";
     # Bundled alongside capability_module so the CLI can manage packages
     # itself: package_manager installs/uninstalls and owns the dependency
     # graph, package_downloader owns the catalogs and downloads. Same pair
@@ -32,13 +74,27 @@
     logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module";
     # Real test-module plugins (test_basic_module) used by the
     # daemon-backed integration tests in tests/test_integration.cpp.
-    logos-test-modules.url = "github:logos-co/logos-test-modules";
+    #
+    # Rev-pinned, and the pin is load-bearing rather than cosmetic. These
+    # plugins are loaded BY the daemon this repo builds, so they and it share
+    # one host runtime in one process image — the same constraint that already
+    # rev-pins logos-liblogos above. a639b934 is the b4 tip that links the test
+    # modules against logos-qt-host (not logos-qt-sdk) and carries the matching
+    # B4 stack pins; master (f8077fab) predates that repoint and would load
+    # plugins built against the other host.
+    #
+    # Why the URL and not the lock: an UNPINNED url resolves to the default
+    # branch, and f8077fab IS master's tip — so `nix flake update
+    # logos-test-modules` here is a silent no-op that leaves the ten b4 commits
+    # behind while reporting success. f8077fab is a strict ancestor of
+    # a639b934 (verified, non-shallow clone), so this is forward-only.
+    logos-test-modules.url = "github:logos-co/logos-test-modules/a639b93475bf135d283288c31b8499b7f4d09f92";
     nix-bundle-logos-module-install.url = "github:logos-co/nix-bundle-logos-module-install";
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-qt-sdk, logos-liblogos, logos-capability-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
+  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-plugin-qt, logos-liblogos, logos-capability-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       # Build info baked into the logosctl binary so `--version` reports the
@@ -59,7 +115,7 @@
           { name = "logos-liblogos"; commit = revOf logos-liblogos; }
           { name = "logos-cpp-sdk"; commit = revOf logos-cpp-sdk; }
           { name = "logos-protocol"; commit = revOf logos-protocol; }
-          { name = "logos-qt-sdk"; commit = revOf logos-qt-sdk; }
+          { name = "logos-plugin-qt"; commit = revOf logos-plugin-qt; }
           { name = "logos-capability-module"; commit = revOf logos-capability-module; }
           { name = "logos-package-manager-module"; commit = revOf logos-package-manager-module; }
           { name = "logos-package-downloader-module"; commit = revOf logos-package-downloader-module; }
@@ -70,7 +126,7 @@
         pkgs = import nixpkgs { inherit system; };
         cppSdk = logos-cpp-sdk.packages.${system}.default;
         protocolPkg = logos-protocol.packages.${system}.default;
-        qtSdk = logos-qt-sdk.packages.${system}.default;
+        qtHost = logos-plugin-qt.packages.${system}.logos-qt-host;
         liblogos = logos-liblogos.packages.${system}.logos-liblogos;
         liblogosLib = logos-liblogos.packages.${system}.logos-liblogos-lib;
         liblogosPortable = logos-liblogos.packages.${system}.portable;
@@ -119,7 +175,7 @@
             else import nixpkgs { inherit system; };
           cppSdk = logos-cpp-sdk.packages.${system}.default;
           protocolPkg = logos-protocol.packages.${system}.default;
-          qtSdk = logos-qt-sdk.packages.${system}.default;
+          qtHost = logos-plugin-qt.packages.${system}.logos-qt-host;
           liblogos = logos-liblogos.packages.${system}.logos-liblogos;
           liblogosLib = logos-liblogos.packages.${system}.logos-liblogos-lib;
           liblogosPortable = logos-liblogos.packages.${system}.portable;
@@ -150,7 +206,7 @@
         });
     in
     {
-      packages = forAllTargets ({ pkgs, system, cppSdk, protocolPkg, qtSdk, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, installDev, installPortable, dirBundler, appBundler }:
+      packages = forAllTargets ({ pkgs, system, cppSdk, protocolPkg, qtHost, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, installDev, installPortable, dirBundler, appBundler }:
         let
           pname = "logos-logoscore-cli";
           # VERSION is only present on release branches; dev branches use a placeholder.
@@ -255,7 +311,7 @@
               pkgs.qt6.qtremoteobjects
               cppSdk
               protocolPkg
-              qtSdk
+              qtHost
               pkgs.stduuid
               pkgs.cli11
               pkgs.fmt
@@ -284,7 +340,7 @@
               # itself reference and would otherwise be dead-stripped).
               "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
               "-DLOGOS_PROTOCOL_ROOT=${protocolPkg}"
-              "-DLOGOS_QT_SDK_ROOT=${qtSdk}"
+              "-DLOGOS_QT_HOST_ROOT=${qtHost}"
             ];
           };
 
@@ -438,7 +494,7 @@
               pkgs.qt6.qtremoteobjects
               cppSdk
               protocolPkg
-              qtSdk
+              qtHost
               liblogosLib
               pkgs.yaml-cpp
               pkgs.spdlog
@@ -601,7 +657,7 @@ ${pkgs.lib.optionalString withPkgModules ''
               # see the `build` derivation above for the rationale.
               cppSdk
               protocolPkg
-              qtSdk
+              qtHost
             ];
 
             cmakeFlags = [
@@ -609,7 +665,7 @@ ${pkgs.lib.optionalString withPkgModules ''
               "-DLOGOS_LIBLOGOS_ROOT=${liblogos}"
               "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
               "-DLOGOS_PROTOCOL_ROOT=${protocolPkg}"
-              "-DLOGOS_QT_SDK_ROOT=${qtSdk}"
+              "-DLOGOS_QT_HOST_ROOT=${qtHost}"
             ];
 
             installPhase = ''
@@ -709,7 +765,7 @@ ${pkgs.lib.optionalString withPkgModules ''
               pkgs.qt6.qtremoteobjects
               cppSdk
               protocolPkg
-              qtSdk
+              qtHost
               pkgs.gtest
               pkgs.stduuid
               pkgs.cli11
@@ -723,7 +779,7 @@ ${pkgs.lib.optionalString withPkgModules ''
               "-DLOGOS_LIBLOGOS_ROOT=${liblogosPortable}"
               "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
               "-DLOGOS_PROTOCOL_ROOT=${protocolPkg}"
-              "-DLOGOS_QT_SDK_ROOT=${qtSdk}"
+              "-DLOGOS_QT_HOST_ROOT=${qtHost}"
             ];
           };
 
@@ -952,6 +1008,12 @@ ${pkgs.lib.optionalString withPkgModules ''
             paths = [
               (installDev capabilityModuleLib)
               logos-test-modules.modules.${system}.test_basic_module.install
+              # The access-policy tests need a declared and an undeclared
+              # (caller, target) pair from real module metadata:
+              #   test_ipc_new_api_module   declares [test_basic_module, test_extlib_module]
+              #   test_basic_module declares []  → basic -> extlib is undeclared
+              logos-test-modules.modules.${system}.test_extlib_module.install
+              logos-test-modules.modules.${system}.test_ipc_new_api_module.install
             ];
           };
         in rec {

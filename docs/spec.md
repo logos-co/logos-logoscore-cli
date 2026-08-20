@@ -837,8 +837,12 @@ verbatim. Each entry carries `name`, `signature`, `returnType`, `isInvokable`,
 The `events` array is the module's `getPluginEvents` introspection. Each entry
 carries `name`, `signature`, `parameters` (each `{name, type}`), and — when the
 event is documented — `description`. There is no `returnType`/`isInvokable`:
-events are void. Modules with no declared events report an empty array (legacy
-`provider` modules always do).
+events are void. Modules with no declared events report an empty array — legacy
+Q_INVOKABLE modules (`interface: "legacy"`) always do, since they have no
+`logos_events:` section for the introspection to read. (This used to say
+"legacy `provider` modules"; `interface: "provider"` is no longer a buildable
+module kind — the module builder refuses it and points at
+`interface: "universal"`.)
 
 **Crashed module (JSON):**
 ```json

@@ -42,6 +42,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -121,6 +123,7 @@ public:
             cfg << "version: 2\n"
                 << "modules_dirs:\n"
                 << "  - \"" << modulesDir.string() << "\"\n";
+            if (!extraConfig.empty()) cfg << extraConfig;
         }
         pid = spawnBg({"daemon", "start"}, daemonLog);
     }
@@ -218,6 +221,12 @@ public:
     // Optional private socket directory ($TMPDIR for the node). Empty ⇒
     // inherit the ambient temp dir, which is what every non-socket test wants.
     fs::path socketDir;
+    // Extra YAML appended to the daemon's config.yaml, verbatim. Set before
+    // start(). logosctl has no daemon flags — the session's config IS the
+    // surface — so this is how a test varies one daemon setting. The
+    // access-policy tests are the reason it exists: the SAME binaries, the
+    // SAME modules, with the policy as the only variable between two runs.
+    std::string extraConfig;
     pid_t    pid = -1;
 };
 
@@ -981,4 +990,184 @@ TEST_F(SocketLifecycleTest, BootReapsStaleSocketsButSparesLiveOnesAndFiles)
     ASSERT_TRUE(fs::exists(plain))
         << "the reaper deleted a regular file sharing the prefix: " << plain;
     EXPECT_EQ(slurp(plain), "not a socket") << "regular file was modified";
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Deny-by-default inter-module access enforcement (`access_policy`)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The end-to-end proof, on a REAL daemon: same binaries, same modules, same
+// call — the only variable between the fixtures below is whether the session's
+// `access_policy` was set to the deny-by-default document. logosctl takes it
+// from the daemon config rather than from a flag (`logoscore` spells the same
+// document `--access-policy enforce`; see test_integration_logoscore.cpp).
+//
+// The probe is capability_module.requestModule(caller, target), which is the
+// gate every inter-module call passes through: no token minted ⇒ the call can
+// never proceed. Driving it directly (rather than through a module that calls
+// out) keeps the assertion on the gate itself, with no module-side retry or
+// timeout policy in the way.
+//
+// The (caller, target) pairs come from logos-test-modules' declared metadata:
+//   test_ipc_new_api_module   declares  [test_basic_module, test_extlib_module]
+//   test_basic_module declares  []            ← so basic -> extlib is UNdeclared
+//
+// Both directions matter, and the DECLARED one carries the weight: an
+// implementation that refused everything would satisfy the "denied" half on
+// its own.
+namespace {
+
+// requestModule is a two-arg call returning the minted token, or "" on refusal.
+// Returns nullopt if the client call itself failed (a broken daemon, not a
+// policy decision) so the tests can tell those apart.
+std::optional<std::string> requestModuleToken(const LogosctlDaemon& d,
+                                              const std::string& caller,
+                                              const std::string& target,
+                                              std::string* raw)
+{
+    std::string out;
+    const std::string cmd =
+        "call capability_module requestModule " + caller + " " + target;
+    const int rc = d.run(cmd, &out, /*timeoutSecs=*/20);
+    if (raw) *raw = out;
+    if (rc != 0) return std::nullopt;
+    nlohmann::json env = lastJsonObject(out);
+    if (env.value("status", std::string{}) != "ok") return std::nullopt;
+    const nlohmann::json result = env.value("result", nlohmann::json{});
+    if (result.is_string()) return result.get<std::string>();
+    if (result.is_null()) return std::string{};
+    return std::nullopt;
+}
+
+// True when the daemon log carries an access-policy refusal naming BOTH
+// modules. Matched structurally (a line that says it denied, mentioning caller
+// and target) rather than by exact text: capability_module has more than one
+// implementation in this tree and they quote the names differently ('x' vs
+// "x"). What must not vary is that both names are on the line.
+bool logDeniesPair(const std::string& log,
+                   const std::string& caller,
+                   const std::string& target)
+{
+    std::istringstream in(log);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.find("denies") == std::string::npos) continue;
+        const auto c = line.find(caller);
+        const auto t = line.find(target);
+        // Ordered caller-then-target: "denies A -> B" and "denies B -> A" are
+        // different claims, and only the first is the one under test.
+        if (c != std::string::npos && t != std::string::npos && c < t) return true;
+    }
+    return false;
+}
+
+// The bare deny-by-default document — the same text `logoscore
+// --access-policy enforce` expands to (src/daemon/access_policy_arg.h). `mode`
+// is the runtime's only switch; with no explicit `restrictions` the runtime
+// derives them from the declared dependency graph.
+constexpr const char* kEnforceDoc =
+    R"({"version":1,"mode":"enforce","restrictions":{}})";
+
+// Bring up a daemon with the three modules loaded. `policyDoc` empty ⇒ no
+// access_policy in the session config at all (today's default).
+class AccessPolicyFixture : public ::testing::Test {
+protected:
+    LogosctlDaemon d;
+
+    void bootWith(const std::string& policyDoc) {
+        std::string why;
+        if (!d.envReady(why)) GTEST_SKIP() << why;
+        if (!policyDoc.empty()) {
+            // A JSON document carried as a YAML string, exactly as
+            // docs/logosctl.md tells operators to write it.
+            d.extraConfig = std::string("access_policy: '") + policyDoc + "'\n";
+        }
+        d.start(::testing::UnitTest::GetInstance()->current_test_info()->name());
+        ASSERT_TRUE(d.waitReady())
+            << "daemon did not become reachable.\n--- daemon log ---\n"
+            << slurp(d.daemonLog);
+
+        // test_ipc_new_api_module declares both others, so one load pulls all three.
+        std::string out;
+        if (d.run("load-module test_ipc_new_api_module", &out, /*timeoutSecs=*/30) != 0)
+            GTEST_SKIP() << "test_ipc_new_api_module not available in this modules dir:\n"
+                         << out;
+        ASSERT_EQ(d.run("list-modules --loaded", &out), 0) << out;
+        for (const char* m : {"test_ipc_new_api_module", "test_basic_module", "test_extlib_module"})
+            ASSERT_NE(out.find(m), std::string::npos)
+                << m << " must be loaded before probing the gate.\n" << out
+                << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+    }
+
+    void TearDown() override { d.shutdown(); }
+};
+
+} // namespace
+
+// ── Policy unset: unchanged behaviour ───────────────────────────────────────
+
+TEST_F(AccessPolicyFixture, NoPolicy_UndeclaredPairStillMintsAToken) {
+    bootWith("");
+    if (::testing::Test::IsSkipped() || ::testing::Test::HasFatalFailure()) return;
+
+    std::string raw;
+    // test_basic_module never declared test_extlib_module. Without a policy
+    // this is unrestricted, and it must STAY unrestricted — several modules in
+    // this tree call targets they never declared.
+    auto token = requestModuleToken(d, "test_basic_module", "test_extlib_module", &raw);
+    ASSERT_TRUE(token.has_value()) << "requestModule call failed outright:\n" << raw;
+    EXPECT_FALSE(token->empty())
+        << "an undeclared pair must still be minted with no access policy — "
+           "this is the pre-existing behaviour the default must preserve.\n"
+        << raw << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+
+    // Nothing was denied, so nothing may be logged as denied either.
+    EXPECT_FALSE(logDeniesPair(slurp(d.daemonLog), "test_basic_module", "test_extlib_module"))
+        << "no policy is installed — nothing should be denied.\n"
+        << slurp(d.daemonLog);
+}
+
+// ── Policy armed: deny-by-default, both directions ──────────────────────────
+
+TEST_F(AccessPolicyFixture, EnforcePolicy_RefusesUndeclaredPairAndLogsBothNames) {
+    bootWith(kEnforceDoc);
+    if (::testing::Test::IsSkipped() || ::testing::Test::HasFatalFailure()) return;
+
+    std::string raw;
+    auto token = requestModuleToken(d, "test_basic_module", "test_extlib_module", &raw);
+    ASSERT_TRUE(token.has_value()) << "requestModule call failed outright:\n" << raw;
+    EXPECT_TRUE(token->empty())
+        << "an undeclared pair must be REFUSED under an enforce policy.\n"
+        << raw << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+
+    // A silent denial is the failure mode this codebase has been debugged for
+    // twice: it presents as a call returning empty. The refusal must name BOTH
+    // modules in the log.
+    const std::string log = slurp(d.daemonLog);
+    EXPECT_TRUE(logDeniesPair(log, "test_basic_module", "test_extlib_module"))
+        << "the refusal must be logged with both module names.\n" << log;
+}
+
+TEST_F(AccessPolicyFixture, EnforcePolicy_StillAllowsADeclaredPair) {
+    bootWith(kEnforceDoc);
+    if (::testing::Test::IsSkipped() || ::testing::Test::HasFatalFailure()) return;
+
+    // The half that matters: enforcement that refused everything would pass
+    // the test above and break every real deployment. test_ipc_new_api_module DECLARED
+    // test_basic_module, so it must still be minted a token.
+    std::string raw;
+    auto token = requestModuleToken(d, "test_ipc_new_api_module", "test_basic_module", &raw);
+    ASSERT_TRUE(token.has_value()) << "requestModule call failed outright:\n" << raw;
+    EXPECT_FALSE(token->empty())
+        << "a DECLARED caller must still be allowed under enforce — otherwise "
+           "the policy just breaks everything.\n"
+        << raw << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+
+    // …and the same daemon still refuses the undeclared pair, so the allow
+    // above is not "enforcement quietly failed to arm".
+    auto denied = requestModuleToken(d, "test_basic_module", "test_extlib_module", &raw);
+    ASSERT_TRUE(denied.has_value()) << raw;
+    EXPECT_TRUE(denied->empty())
+        << "control: the undeclared pair must be refused on this same daemon.\n"
+        << raw << "\n--- daemon log ---\n" << slurp(d.daemonLog);
 }
