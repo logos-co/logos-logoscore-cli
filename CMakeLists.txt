@@ -229,19 +229,25 @@ target_link_libraries(${_tgt} PRIVATE
 # LogosProviderObject.
 target_link_libraries(${_tgt} PRIVATE logos-qt-host::logos_qt_host)
 
+# This binary links liblogos_core, which EXPORTS the shared C++ runtime -- so
+# the static archives behind logos-qt-host::logos_qt_host must stop providing it
+# too. See cmake/LogosSharedFromDll.cmake. The link interface above is
+# deliberately left intact: the imported targets still carry their include dirs
+# and Qt/OpenSSL/nlohmann usage requirements.
+#
+# Runs on EVERY platform. The Windows failure is loud -- every exported symbol
+# defined twice and the link fails -- and that loudness is exactly why the
+# non-Windows case went unnoticed: off Windows the duplicate links fine and the
+# image simply binds its own copy, so the split-brain surfaces at runtime as
+# refused calls instead. Mach-O's two-level namespace gives no interposition.
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/LogosSharedFromDll.cmake")
+logos_use_shared_runtime_from_dll(
+    logos-qt-host::logos_qt_host
+    logos-protocol::logos_protocol)
+
+# __declspec(dllimport); PE-only, a no-op elsewhere.
 if(WIN32)
-    # This binary links liblogos_core.dll, which since the single-provider
-    # change EXPORTS the shared C++ runtime -- so the static archives behind
-    # logos-qt-host::logos_qt_host must stop providing it too, or every exported
-    # symbol is defined twice and the link fails. See
-    # cmake/LogosSharedFromDll.cmake. The link interface above is deliberately
-    # left intact: the imported targets still carry their include dirs and
-    # Qt/OpenSSL/nlohmann usage requirements.
     target_compile_definitions(${_tgt} PRIVATE LOGOS_SHARED_USE_DLL)
-    include("${CMAKE_CURRENT_LIST_DIR}/cmake/LogosSharedFromDll.cmake")
-    logos_use_shared_runtime_from_dll(
-        logos-qt-host::logos_qt_host
-        logos-protocol::logos_protocol)
 endif()
 
 if(WIN32)
