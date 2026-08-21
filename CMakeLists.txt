@@ -102,11 +102,13 @@ find_package(logos-protocol REQUIRED
     PATHS "${LOGOS_PROTOCOL_ROOT}/lib/cmake/logos-protocol" NO_DEFAULT_PATH)
 find_package(logos-qt-host REQUIRED
     PATHS "${LOGOS_QT_HOST_ROOT}/lib/cmake/logos-qt-host" NO_DEFAULT_PATH)
-if(NOT TARGET logos-qt-host::logos_qt_host)
+if(NOT TARGET logos-qt-host::logos_qt_host_shared)
     message(FATAL_ERROR
         "find_package(logos-qt-host) succeeded but did not define "
-        "logos-qt-host::logos_qt_host — refusing to build a logoscore without "
-        "the Qt host runtime.")
+        "logos-qt-host::logos_qt_host_shared — refusing to build a logoscore "
+        "without it. That target arrives with logos-plugin-qt#22; building "
+        "against an older Qt host runtime would silently fall back to the "
+        "static archive and give this image its own TokenManager.")
 endif()
 
 # ── nlohmann_json (header-only) ───────────────────────────────────────────────
@@ -227,28 +229,24 @@ target_link_libraries(${_tgt} PRIVATE
 # bridge helpers and logos::transportSetToJsonString come from. Both
 # front-ends need it: the shared core_service is what derives from
 # LogosProviderObject.
-target_link_libraries(${_tgt} PRIVATE logos-qt-host::logos_qt_host)
+target_link_libraries(${_tgt} PRIVATE logos-qt-host::logos_qt_host_shared)
 
-# This binary links liblogos_core, which EXPORTS the shared C++ runtime -- so
-# the static archives behind logos-qt-host::logos_qt_host must stop providing it
-# too. See cmake/LogosSharedFromDll.cmake. The link interface above is
-# deliberately left intact: the imported targets still carry their include dirs
-# and Qt/OpenSSL/nlohmann usage requirements.
+# The SHARED Qt host runtime, not the static archive.
 #
-# Runs on EVERY platform. The Windows failure is loud -- every exported symbol
-# defined twice and the link fails -- and that loudness is exactly why the
-# non-Windows case went unnoticed: off Windows the duplicate links fine and the
-# image simply binds its own copy, so the split-brain surfaces at runtime as
-# refused calls instead. Mach-O's two-level namespace gives no interposition.
-include("${CMAKE_CURRENT_LIST_DIR}/cmake/LogosSharedFromDll.cmake")
-logos_use_shared_runtime_from_dll(
-    logos-qt-host::logos_qt_host
-    logos-protocol::logos_protocol)
-
-# __declspec(dllimport); PE-only, a no-op elsewhere.
-if(WIN32)
-    target_compile_definitions(${_tgt} PRIVATE LOGOS_SHARED_USE_DLL)
-endif()
+# This binary used to empty the static archives and take the runtime from
+# liblogos_core, which had absorbed both of them (cmake/LogosSharedFromDll.cmake,
+# now deleted). It links the libraries that OWN those types instead:
+# logos_qt_host_shared owns LogosAPI and PUBLIC-links logos_protocol_shared,
+# which owns TokenManager and LogosAPIClient.
+#
+# LOGOS_SHARED_USE_DLL is gone with the shim. It made this image declare the
+# runtime types __declspec(dllimport) so ld would not pull the archive member
+# that redefines them -- necessary while the definitions sat in an archive this
+# image also linked. There is no second static copy left, so the import is what
+# the link naturally produces.
+#
+# The invariant is unchanged and is asserted directly rather than through a
+# compile flag: see nix/symbol-gate.nix.
 
 if(WIN32)
     # PortAllocator's probe socket. Winsock is not in the default link set the
