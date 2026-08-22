@@ -293,9 +293,13 @@ Stop the running daemon.
 logosctl daemon stop
 ```
 
-Sends a shutdown request to the daemon via `core_service`. The daemon performs a clean shutdown: unloads all modules, removes `daemon/state.json`, and exits. The client prints a confirmation message and exits.
+If `daemon/state.json` records this client's daemon instance with a pid that is no longer alive, the session is stale: `stop` reports `NO_DAEMON` and exits 2 without dialing anything.
 
-If the daemon exits before the RPC response arrives (expected behavior), the client treats the connection loss as a successful shutdown.
+Otherwise it sends a shutdown request to the daemon via `core_service`. The daemon performs a clean shutdown: unloads all modules, removes `daemon/state.json`, and exits. The client prints a confirmation message and exits.
+
+If the daemon exits before the RPC response arrives (expected behavior), the client treats the missing reply as a successful shutdown — but only after confirming that the daemon really is gone, by watching the pid recorded in `daemon/state.json` (or, for a remote daemon, by re-probing the endpoint). A daemon that neither answers nor exits is reported as an error, not quietly accepted. When the confirmation path is used, the JSON form carries an extra `"confirmed_by"` field naming the evidence (`process-exit` or `endpoint-unreachable`); when the reply arrives normally it is absent.
+
+`LOGOSCTL_SHUTDOWN_GRACE_MS` (daemon-side, default `200`) sets how long the daemon waits after answering before it leaves its event loop. It is a margin, not a correctness mechanism — the daemon drains the transport before quitting regardless — so `0` is a legal setting, and is what the shutdown regression test uses.
 
 **Human:**
 ```

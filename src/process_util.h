@@ -19,7 +19,9 @@
 //   ESRCH    no such process -- dead
 // so only ESRCH counts as dead.
 
+#include <chrono>
 #include <csignal>
+#include <thread>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -58,6 +60,32 @@ inline bool processAlive(long long pid)
     if (::kill(static_cast<pid_t>(pid), 0) == 0) return true;
     return errno != ESRCH;          // EPERM etc: exists, just not ours
 #endif
+}
+
+
+// Block until `pid` is gone, or until `timeoutMs` has elapsed. Returns true
+// iff the process is no longer running.
+//
+// "Did it actually exit?" is the only honest answer available to a shutdown
+// RPC that produced no reply (see RpcClient::shutdown), and a *positive*
+// answer is what separates "the daemon died before it could finish speaking"
+// -- a success -- from "the daemon is wedged and said nothing" -- a failure.
+//
+// Polling rather than waitpid(): the daemon is not our child. It was detached,
+// or started by an entirely different shell, so kill(pid, 0) is the only
+// liveness question we are allowed to ask about it.
+inline bool waitForProcessExit(long long pid, int timeoutMs, int pollMs = 50)
+{
+    if (pid <= 0) return false;
+    if (pollMs <= 0) pollMs = 1;
+
+    const auto deadline = std::chrono::steady_clock::now()
+                        + std::chrono::milliseconds(timeoutMs);
+    for (;;) {
+        if (!processAlive(pid)) return true;
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(pollMs));
+    }
 }
 
 }  // namespace logosctl
