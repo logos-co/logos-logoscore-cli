@@ -5,13 +5,19 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <string>
+#include <unistd.h>
 #include <vector>
 #include "client/client.h"
+#include "client/client_state.h"
 #include "client/output.h"
 #include "client/commands/command.h"
+#include "config.h"
+#include "daemon/daemon_state.h"
 
 // Mock client for testing commands without a real daemon
 class MockClient : public Client {
@@ -155,8 +161,46 @@ protected:
     MockClient mockClient;
     Output output{true}; // Force JSON mode for testable output
 
+    // Commands consult the session on disk (StopCommand reads
+    // daemon/state.json to tell a live daemon from a stale one), so every
+    // case runs against an empty session of its own. Without this the suite
+    // reads whatever ~/.logosctl the developer happens to have, and a session
+    // left over from last week decides whether `stop` succeeds. Mirrors
+    // DaemonStateTest, which isolates the same three layers.
+    std::string origHome;
+    std::string origConfigDir;
+    bool        origConfigDirSet = false;
+    std::filesystem::path testDir;
+
     void SetUp() override {
         mockClient.shouldConnect = true;
+
+        testDir = std::filesystem::temp_directory_path()
+                / ("logosctl_test_cmd_" + std::to_string(getpid()));
+        std::filesystem::create_directories(testDir);
+
+        const char* home = std::getenv("HOME");
+        origHome = home ? home : "";
+        setenv("HOME", testDir.c_str(), 1);
+
+        const char* cd = std::getenv("LOGOSCTL_CONFIG_DIR");
+        origConfigDirSet = cd != nullptr;
+        origConfigDir = origConfigDirSet ? cd : "";
+        unsetenv("LOGOSCTL_CONFIG_DIR");
+
+        Config::setConfigDir(testDir.string());
+    }
+
+    void TearDown() override {
+        ClientStateFile::setOverride(std::nullopt);
+        Config::setConfigDir("");
+        setenv("HOME", origHome.c_str(), 1);
+        if (origConfigDirSet)
+            setenv("LOGOSCTL_CONFIG_DIR", origConfigDir.c_str(), 1);
+        else
+            unsetenv("LOGOSCTL_CONFIG_DIR");
+        std::error_code ec;
+        std::filesystem::remove_all(testDir, ec);
     }
 
     std::string captureOutput(std::function<void()> fn) {
@@ -1007,6 +1051,111 @@ TEST_F(CommandTest, Stop_NoDaemon)
 
     nlohmann::json doc = parseJson(out);
     EXPECT_EQ(doc["code"].get<std::string>(), "NO_DAEMON");
+}
+
+// ── stop: telling a live daemon from a session someone forgot to clean up ────
+//
+// `stop` reports success when the shutdown RPC produces no reply but the
+// daemon's pid is gone -- which is the normal outcome, since the daemon is
+// being asked to die mid-sentence. That inference is only sound about a pid
+// that was alive when we asked. A session whose daemon died last week has a
+// state.json naming a dead pid and a dial spec beside it that still
+// "connects" (a LocalSocket client never checks that anyone is listening), so
+// without the guard these three become one indistinguishable "ok".
+
+namespace {
+
+// Beyond every platform's pid ceiling (macOS 99998, Linux's default 4194304,
+// and not a multiple of 4, which Windows pids always are), so kill(pid, 0)
+// answers ESRCH rather than "some unrelated process".
+constexpr long long kPidThatCannotExist = 2147483646LL;
+
+// Write a session that says "instance <id> is running as pid <pid>", as a
+// booted daemon would, and a client dial spec pointing at the same instance.
+void seedSession(const std::string& instanceId, long long pid)
+{
+    DaemonRuntimeState rs;
+    rs.instanceId = instanceId;
+    rs.pid        = pid;
+    rs.startedAt  = currentUtcIso8601();
+    ASSERT_TRUE(DaemonRuntimeStateFile::write(rs));
+
+    ClientState cs;
+    cs.fileOk        = true;
+    cs.schemaVersion = kClientStateSchemaVersion;
+    cs.tokenFile     = "auto.json";
+    cs.instanceId    = instanceId;
+    ClientStateFile::setOverride(cs);
+}
+
+} // namespace
+
+TEST_F(CommandTest, Stop_StaleSession_ReportsNoDaemonWithoutCallingShutdown)
+{
+    seedSession("deadbeef1234", kPidThatCannotExist);
+    if (::testing::Test::HasFatalFailure()) return;
+
+    auto cmd = createCommand("stop", mockClient, output);
+    std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 2);
+    });
+
+    EXPECT_FALSE(mockClient.shutdownCalled)
+        << "there is nothing to shut down -- the RPC must not be attempted, or "
+           "its silence becomes evidence that it worked";
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["code"].get<std::string>(), "NO_DAEMON");
+}
+
+TEST_F(CommandTest, Stop_LiveSession_StillStops)
+{
+    // The control. A guard that refuses every session would satisfy the test
+    // above and break the command; this pins the other side of the line.
+    seedSession("deadbeef1234", static_cast<long long>(getpid()));
+    if (::testing::Test::HasFatalFailure()) return;
+
+    mockClient.shutdownResult = LogosMap{
+        {"status", "ok"}, {"message", "Daemon shutting down."}
+    };
+
+    auto cmd = createCommand("stop", mockClient, output);
+    std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 0);
+    });
+
+    EXPECT_TRUE(mockClient.shutdownCalled);
+    EXPECT_EQ(parseJson(out)["status"].get<std::string>(), "ok");
+}
+
+TEST_F(CommandTest, Stop_StaleSessionForAnotherInstance_DoesNotBlockARemoteStop)
+{
+    // A remote client can have a co-resident daemon's leftovers in its own
+    // session directory. Those describe someone else's daemon -- the instance
+    // ids differ -- and must not stop it from stopping the one it dials.
+    DaemonRuntimeState rs;
+    rs.instanceId = "aaaaaaaaaaaa";       // the dead co-resident daemon
+    rs.pid        = kPidThatCannotExist;
+    rs.startedAt  = currentUtcIso8601();
+    ASSERT_TRUE(DaemonRuntimeStateFile::write(rs));
+
+    ClientState cs;                        // ...dialing a different one
+    cs.fileOk        = true;
+    cs.schemaVersion = kClientStateSchemaVersion;
+    cs.tokenFile     = "remote.json";
+    cs.instanceId    = "bbbbbbbbbbbb";
+    ClientStateFile::setOverride(cs);
+
+    mockClient.shutdownResult = LogosMap{
+        {"status", "ok"}, {"message", "Daemon shutting down."}
+    };
+
+    auto cmd = createCommand("stop", mockClient, output);
+    std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 0);
+    });
+
+    EXPECT_TRUE(mockClient.shutdownCalled);
+    EXPECT_EQ(parseJson(out)["status"].get<std::string>(), "ok");
 }
 
 // ---------------------------------------------------------------------------
