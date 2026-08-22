@@ -199,6 +199,7 @@ set(SHARED_SOURCES
 
     # Core service (in-process daemon module)
     src/core_service/core_service_impl.cpp
+    src/core_service/call_envelope.cpp
     src/core_service/core_service_dispatch.cpp
     src/core_service/package_ops.cpp
 )
