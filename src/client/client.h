@@ -95,6 +95,12 @@ public:
                            std::function<void(const LogosMap&)> callback) override;
 
 private:
+    // Answer "is the daemon actually gone?" from evidence, after a shutdown
+    // RPC produced no reply. `how` receives the evidence used. See the long
+    // comment on RpcClient::shutdown for why a missing reply is normal there
+    // and nowhere else.
+    bool confirmDaemonStopped(long long pid, std::string& how);
+
     struct Impl;
     Impl* d;
     bool m_connected = false;

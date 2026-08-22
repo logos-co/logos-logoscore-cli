@@ -8,9 +8,10 @@
 #include <logos_json_convert.h>
 
 #include <QCoreApplication>
+#include <QEventLoop>
+#include <QTimer>
 #include <algorithm>
 #include <chrono>
-#include <thread>
 #include <cstdlib>
 #include <unistd.h>
 #include <unordered_set>
@@ -563,16 +564,70 @@ bool CoreServiceImpl::watchModuleEvents(const std::string& module,
 // Daemon lifecycle
 // ---------------------------------------------------------------------------
 
+// Milliseconds between answering a `shutdown` RPC and leaving the event loop.
+//
+// This is a courtesy margin, not the mechanism that gets the reply out --
+// see the drain in shutdown() below. It exists so that anything the transport
+// wants to do on its own schedule (heartbeats, a second in-flight call) still
+// gets a turn. $LOGOSCTL_SHUTDOWN_GRACE_MS overrides it; the daemon-stop
+// integration test pins it to 0, which is the hostile setting that used to
+// lose the reply outright and must now be survivable.
+static int shutdownGraceMs()
+{
+    static const int ms = []() {
+        constexpr int kDefault = 200;
+        const char* v = std::getenv("LOGOSCTL_SHUTDOWN_GRACE_MS");
+        if (!v || !*v) return kDefault;
+        char* end = nullptr;
+        const long n = std::strtol(v, &end, 10);
+        if (end == v || *end != '\0' || n < 0 || n > 60000) return kDefault;
+        return static_cast<int>(n);
+    }();
+    return ms;
+}
+
+// Upper bound on the drain pass. processEvents() returns as soon as the queue
+// is empty, so this is only reached if something keeps re-arming work; the
+// point is that a busy daemon cannot turn "flush the reply" into "never exit".
+static constexpr int kShutdownDrainMs = 2000;
+
 LogosMap CoreServiceImpl::shutdown()
 {
     LogosMap result;
     result["status"] = "ok";
     result["message"] = "Daemon shutting down.";
 
-    std::thread([]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    // `result` is not on the wire yet. The transport serialises it *after*
+    // this function returns and hands the bytes to the socket, which only
+    // pushes them out when the event loop next services that socket's write
+    // notifier. So whatever ends the event loop must run after that, or the
+    // reply dies buffered inside a process that no longer exists.
+    //
+    // The previous shape -- a detached std::thread that slept 200ms and then
+    // called QCoreApplication::quit() -- could not guarantee that, for two
+    // reasons that compound:
+    //
+    //   * quit() is not a queued event. QCoreApplication::exit() reaches into
+    //     the main thread's QThreadData, flags every event loop as exiting and
+    //     interrupts the dispatcher. The loop then returns WITHOUT another
+    //     pass, so a write notifier that had not fired yet never fires.
+    //   * the sleep is wall clock and the flush is not. If the daemon's main
+    //     thread was descheduled for longer than the grace period -- routine
+    //     on a loaded CI runner -- the timer won.
+    //
+    // The client saw no transport error at all (QtRO reports none: the source
+    // simply stopped talking), sat until its RPC deadline, and reported
+    // RPC_FAILED for a shutdown that had in fact succeeded.
+    //
+    // A main-thread timer cannot fire until the loop is running again, and the
+    // explicit drain below pushes the pending write out before the loop is
+    // torn down. Neither depends on how long the main thread was away, nor on
+    // whether a given platform's dispatcher happens to service socket
+    // notifiers before timers.
+    QTimer::singleShot(shutdownGraceMs(), qApp, []() {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, kShutdownDrainMs);
         QCoreApplication::quit();
-    }).detach();
+    });
 
     return result;
 }

@@ -955,13 +955,15 @@ logosctl daemon stop
 ```
 
 **Behavior:**
-1. Connects to daemon via `Client`
-2. Calls `core_service.shutdown()`
-3. core_service schedules `QCoreApplication::quit()` after 200ms delay
-4. If the RPC response arrives: prints success and exits
-5. If the daemon exits before the response (RPC_FAILED): treats it as success — the daemon is already gone
+1. Refuses up front if `daemon/state.json` names this client's instance and a pid that is no longer alive — a stale session has no daemon to stop, and a LocalSocket client would otherwise "connect" to nothing (`NO_DAEMON`, exit 2; the same guard `daemon status` applies)
+2. Connects to daemon via `Client`
+3. Reads `daemon/state.json` for the daemon's pid **before** issuing the call — a clean shutdown deletes that file, so afterwards it is unreadable
+4. Calls `core_service.shutdown()` (5s deadline; the daemon answers before doing any work, so a slower reply is a lost one)
+5. core_service posts a main-thread timer, `LOGOSCTL_SHUTDOWN_GRACE_MS` (default 200ms) later, that drains the event loop and then calls `QCoreApplication::quit()`
+6. If the RPC response arrives: prints success and exits
+7. If it does not, the client asks whether the daemon actually died, for up to 15s: by watching the pid from step 3, or — for a remote daemon, where there is no local pid — by re-probing `getStatus`. Gone ⇒ success, with `confirmed_by` naming the evidence. Still there ⇒ `RPC_FAILED`
 
-**Exit codes:** 0 on success (including when daemon exits before response), 2 if no daemon.
+**Exit codes:** 0 on success (including when daemon exits before response), 2 if no daemon (or a stale session), 3 if the daemon neither replied nor exited.
 
 ### logosctl info
 

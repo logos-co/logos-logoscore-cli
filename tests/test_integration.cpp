@@ -55,6 +55,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -152,6 +153,11 @@ public:
             setsid();
             setenv("LOGOSCTL_CONFIG_DIR", configDir.c_str(), 1);
             setenv("HOME", homeDir.c_str(), 1);
+            // Daemon-side knobs. Deliberately NOT applied to run() below:
+            // these configure the process under test, not the client that
+            // drives it.
+            for (const auto& kv : extraEnv)
+                setenv(kv.first.c_str(), kv.second.c_str(), 1);
             // QLocalServer resolves a bare server name against QDir::tempPath(),
             // which honours $TMPDIR — so this decides where the node's sockets
             // land. Tests that assert on socket files set it to get a private
@@ -240,6 +246,9 @@ public:
     // access-policy tests are the reason it exists: the SAME binaries, the
     // SAME modules, with the policy as the only variable between two runs.
     std::string extraConfig;
+    // Extra environment for the DAEMON process only (see spawnBg) — the knob
+    // the shutdown test needs, which is not a config-file setting.
+    std::map<std::string, std::string> extraEnv;
     pid_t    pid = -1;
 };
 
@@ -1313,4 +1322,142 @@ TEST_F(AccessPolicyFixture, EnforcePolicy_StillAllowsADeclaredPair) {
     EXPECT_TRUE(denied->empty())
         << "control: the undeclared pair must be refused on this same daemon.\n"
         << raw << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Shutdown reply — the answer has to outlive the daemon that sent it
+//
+// `daemon stop` is the one call whose reply races its own delivery. The
+// daemon answers, then leaves its event loop; the answer only reaches the
+// wire when the loop next services that socket's write notifier. Lose that
+// order and the client sits out its full RPC deadline, sees nothing, and
+// reports RPC_FAILED — exit 3 — for a shutdown that worked perfectly.
+//
+// That is what took down the "Stop the daemon" step of
+// doctests/logosctl-daemon.test.yaml on a loaded macOS runner: one failure in
+// nine otherwise identical shutdowns in the same job.
+//
+// The race is invisible at the shipped grace period — 265 consecutive stops
+// on the released binary never lost a reply, on either side of the PR it was
+// first blamed on, which is why this reached CI in the first place.
+// $LOGOSCTL_SHUTDOWN_GRACE_MS collapses that margin to nothing, which is the
+// same window a stalled main thread opens up, and makes the bug reproducible
+// on demand. Measured through this fixture on an idle macOS box: the pre-fix
+// daemon lost 6 replies in 100 stops, the fixed one none in 120.
+//
+// If the daemon half ever regresses, expect this to fail as `daemon stop`
+// exiting 3 with "the daemon (pid N) is still running 15s later" rather than
+// as a lostReplies count. The daemon here is this process's own child, so it
+// lingers as a zombie until reaped and the client's kill(pid, 0) confirmation
+// sees it as alive — an artifact of the harness, not of the product, where no
+// client is ever the daemon's parent.
+//
+// Not mirrored into test_integration_logoscore.cpp: both front-ends drive the
+// same CoreServiceImpl::shutdown and the same RpcClient::shutdown, so a second
+// copy would retest the same two functions through a tool that is on its way
+// out.
+// ═══════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// How many stop cycles to run. A race can only be guarded statistically, so
+// this number is an explicit purchase: at the 6%-per-cycle loss rate measured
+// through this fixture, 60 cycles catches a regression 97.6% of the time and
+// costs about 30 seconds. Raise it with $LOGOSCTL_STOP_CYCLES when chasing
+// something rarer — 100 cycles buys 99.8% for another 20 seconds.
+int stopCycles()
+{
+    if (const char* v = std::getenv("LOGOSCTL_STOP_CYCLES")) {
+        const int n = std::atoi(v);
+        if (n > 0) return n;
+    }
+    return 60;
+}
+
+// The daemon here is this process's own child, so kill(pid, 0) — what
+// logosctl::processAlive asks, and the right question for a client that is
+// unrelated to the daemon — reports a zombie as alive. Reap it instead.
+bool waitForChildExit(pid_t p, int timeoutMs)
+{
+    if (p <= 0) return true;
+    const auto deadline = std::chrono::steady_clock::now()
+                        + std::chrono::milliseconds(timeoutMs);
+    for (;;) {
+        int st = 0;
+        const pid_t r = ::waitpid(p, &st, WNOHANG);
+        if (r == p) return true;
+        if (r < 0 && errno == ECHILD) return true;
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+}
+
+} // namespace
+
+TEST(ShutdownReplyTest, StopSucceedsWithNoGracePeriod)
+{
+    {
+        LogosctlDaemon probe;
+        std::string why;
+        if (!probe.envReady(why)) GTEST_SKIP() << why;
+    }
+
+    const int cycles = stopCycles();
+    int reportedFailure = 0;
+    int lostReplies     = 0;
+    int survived        = 0;
+
+    for (int i = 0; i < cycles; ++i) {
+        LogosctlDaemon d;
+        std::string why;
+        ASSERT_TRUE(d.envReady(why)) << why;
+        // Zero grace: quit the instant the answer has been handed over. The
+        // daemon must still get it out.
+        d.extraEnv["LOGOSCTL_SHUTDOWN_GRACE_MS"] = "0";
+        d.start("stopreply_" + std::to_string(i));
+        ASSERT_TRUE(d.waitReady())
+            << "cycle " << i << ": daemon never became reachable\n"
+            << slurp(d.daemonLog);
+
+        const pid_t daemonPid = d.pid;
+
+        std::string out;
+        const int rc = d.run("daemon stop", &out, /*timeoutSecs=*/60);
+        const nlohmann::json j = lastJsonObject(out);
+
+        if (rc != 0) ++reportedFailure;
+        EXPECT_EQ(rc, 0)
+            << "cycle " << i << ": `daemon stop` exited " << rc << "\n" << out
+            << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+        EXPECT_EQ(j.value("status", std::string{}), "ok")
+            << "cycle " << i << ": " << out;
+
+        // The other half of the contract, and the reason "treat silence as
+        // success" is not on its own an acceptable fix: a stop that reports
+        // ok must correspond to a daemon that is actually gone.
+        const bool gone = waitForChildExit(daemonPid, 15000);
+        if (!gone) ++survived;
+        EXPECT_TRUE(gone)
+            << "cycle " << i << ": daemon pid " << daemonPid
+            << " still running after a successful-looking stop\n"
+            << slurp(d.daemonLog);
+        if (gone) d.pid = -1;   // reaped above; don't let killGroup wait again
+
+        // `confirmed_by` is stamped only when the client had to fall back to
+        // watching the daemon die because no reply ever arrived. At zero grace
+        // that fallback is the safety net, not the mechanism.
+        if (j.contains("confirmed_by")) ++lostReplies;
+
+        d.shutdown();
+    }
+
+    EXPECT_EQ(reportedFailure, 0)
+        << reportedFailure << "/" << cycles << " stops reported failure";
+    EXPECT_EQ(survived, 0)
+        << survived << "/" << cycles << " daemons outlived their own stop";
+    EXPECT_EQ(lostReplies, 0)
+        << lostReplies << "/" << cycles << " shutdown replies were lost and had to be "
+           "confirmed by watching the process exit. The client covered for it and the "
+           "command still succeeded, but the daemon is leaving its event loop before "
+           "its answer is on the wire.";
 }
