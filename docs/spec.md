@@ -931,7 +931,20 @@ $ logosctl call chat send_message --json
 `METHOD_FAILED` covers every failure the transport itself detected, and `error`
 carries which one, verbatim from the protocol's call-error vocabulary:
 `object_unavailable`, `timeout`, `transport_error`, `call_failed`,
-`unauthorized`, plus `dispatch_failed` for a provider that ran and refused.
+`unauthorized`, plus the codes a provider that RAN and refused answers as its
+result rather than on the error channel: `dispatch_failed` (it refused the
+argument VALUES) and `invalid_args` (wrong argument COUNT). `unknown_method` is
+recognised too, ahead of any provider emitting it.
+
+That in-band set is CLOSED, deliberately. A method may legitimately return a
+`{code, message, origin}` map of its own; matching the shape rather than the
+code would turn its data into an error. Anything outside the set comes back as
+`"result"`.
+
+> **This changed.** `invalid_args` used to be matched by nobody, so
+> `logosctl call test_basic_module isPositive` with the argument missing exited
+> **0** with `status: "ok"` and the refusal object as its `result`. It now exits
+> **4** with `METHOD_FAILED` and `error.code: "invalid_args"`.
 
 A result of `null` is **not** a failure. It is a value — an empty optional, or a
 method that returns nothing in particular — and reports `status: "ok"` with
