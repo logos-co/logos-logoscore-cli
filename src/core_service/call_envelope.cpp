@@ -3,6 +3,23 @@
 #include <algorithm>
 
 namespace core_service {
+namespace {
+
+// The CLOSED SET of provider-refusal codes, in one place so it cannot drift
+// against the rest of the function. See call_envelope.h for why the set is
+// closed and why "unknown_method" is listed before anything emits it.
+const char* const kRejectionCodes[] = {
+    "dispatch_failed", "invalid_args", "unknown_method",
+};
+
+bool isRejectionCode(const std::string& c)
+{
+    for (const char* k : kRejectionCodes)
+        if (c == k) return true;
+    return false;
+}
+
+} // namespace
 
 bool dispatchRejection(const nlohmann::json& v, CallFailure& out)
 {
@@ -10,7 +27,7 @@ bool dispatchRejection(const nlohmann::json& v, CallFailure& out)
     auto code = v.find("code"), message = v.find("message"), origin = v.find("origin");
     if (code == v.end() || message == v.end() || origin == v.end()) return false;
     if (!code->is_string() || !message->is_string() || !origin->is_string()) return false;
-    if (code->get<std::string>() != "dispatch_failed") return false;
+    if (!isRejectionCode(code->get<std::string>())) return false;
     out.code    = code->get<std::string>();
     out.message = message->get<std::string>();
     out.origin  = origin->get<std::string>();
@@ -33,7 +50,7 @@ LogosMap callEnvelope(const std::string& module,
     if (!failure.ok()) {
         // ONE code for every transport-detected failure, exactly as before:
         // object_unavailable / timeout / transport_error / call_failed /
-        // unauthorized, plus the folded dispatch_failed. The specific code
+        // unauthorized, plus the folded provider refusal. The specific code
         // rides in `error` so a JSON consumer can tell them apart without
         // parsing prose, and is appended to the message for a human reader.
         const std::string msg = "Call to " + module + "." + method + " failed ("
