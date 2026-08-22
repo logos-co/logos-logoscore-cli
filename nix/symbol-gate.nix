@@ -11,8 +11,10 @@
 # moves -- and the first time it moved, that check failed while every real
 # assertion still passed. A second
 # definition is a second TokenManager, and the split-brain that follows is
-# invisible to the build. See logos-protocol/cpp/logos_shared_api.h and
-# cmake/LogosSharedFromDll.cmake.
+# invisible to the build. Ownership is declared in
+# logos-protocol/cpp/logos_shared_api.h. (This used to also point at
+# cmake/LogosSharedFromDll.cmake -- the single-provider shim, deleted once the
+# runtime became real shared libraries. There is nothing to follow there.)
 #
 # This repo learned that the loud way and then the quiet way. On Windows a
 # duplicate fails the LINK outright ("multiple definition of
@@ -32,8 +34,7 @@
 #                                      per-process singleton
 #
 # Kept as a sibling of logos-basecamp/nix/symbol-gate.nix rather than shared,
-# for the same reason cmake/LogosSharedFromDll.cmake is duplicated: neither repo
-# depends on the other. The image sets differ (no plugins/ here), so this is not
+# because neither repo depends on the other. The image sets differ (no plugins/ here), so this is not
 # a copy that could simply be included.
 #
 # negativeControl = true runs the identical script against a tree with a REAL
@@ -42,14 +43,28 @@
 { pkgs, appPkg, negativeControl ? false }:
 
 let
-  isDarwin = pkgs.stdenv.isDarwin;
-  definedCmd = if isDarwin then "nm -gU" else "nm -D --defined-only";
-  totalCmd   = if isDarwin then "nm -a" else "nm -D";
+  isDarwin  = pkgs.stdenv.isDarwin;
+  isWindows = pkgs.stdenv.hostPlatform.isWindows;
+  # "" natively, "x86_64-w64-mingw32-" for the Windows cross. The cross bintools
+  # installs ONLY the prefixed names, so a bare `nm` / `c++filt` is not on PATH
+  # in that derivation -- every measurement produced nothing and valid() below
+  # refused to assert over it. Fail-closed, but the gate could never run.
+  tp = pkgs.stdenv.cc.targetPrefix;
+  # Mach-O: -gU is defined externals. ELF: -D --defined-only. A PE has no ELF
+  # dynamic symbol table, so -D reads NOTHING from a .dll -- measured: 0 lines
+  # against a real mingw PE where plain nm reads 687.
+  definedCmd = if isDarwin then "${tp}nm -gU"
+               else if isWindows then "${tp}nm --defined-only"
+               else "${tp}nm -D --defined-only";
+  totalCmd   = if isDarwin then "${tp}nm -a"
+               else if isWindows then "${tp}nm"
+               else "${tp}nm -D";
 in
 pkgs.runCommand "logos-logoscore-cli-symbol-gate${pkgs.lib.optionalString negativeControl "-negative"}" {
   nativeBuildInputs = [ pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.gnused pkgs.stdenv.cc.bintools ];
 } ''
   set -uo pipefail
+  export LC_ALL=C   # comm(1) in names() requires a byte-order sort
 
   # TIER 1 — the split-brain itself. No allowance, ever.
   TIER1_RE='^(TokenManager|StoreRegistry)::|^(vtable|typeinfo|typeinfo name|guard variable) for (TokenManager|StoreRegistry)\b'
@@ -81,7 +96,26 @@ pkgs.runCommand "logos-logoscore-cli-symbol-gate${pkgs.lib.optionalString negati
     fi
     printf '%s\n' "$f"
   }
-  names() { ${definedCmd} "$1" 2>/dev/null | c++filt 2>/dev/null | sed -E 's/^[0-9a-fA-F]+ [A-Za-z] //'; }
+  ${if isWindows then ''
+  # PE reports an import THUNK as a defined text symbol: for every imported
+  # function ld synthesizes a .text stub AND an __imp_<mangled> slot in the
+  # import address table, and `nm --defined-only` shows the stub as `T`. Counting
+  # that alone reports images as DEFINERS of types they merely import. The paired
+  # __imp_ entry is the discriminator, and it is the right one -- a genuine
+  # second copy statically linked in has no __imp_ slot and still counts. (The
+  # PE export table would also hide the phantom, but it hides a real private copy
+  # too, trading a false positive for a false NEGATIVE.)
+  names() {
+    local t; t=$(mktemp -d)
+    ${definedCmd} "$1" 2>/dev/null | awk '{print $3}' | grep -v '^$' | sort -u > "$t/all"
+    grep '^__imp_' "$t/all" | sed 's/^__imp_//' | sort -u > "$t/imp"
+    grep -v '^__imp_' "$t/all" | sort -u > "$t/def"
+    comm -23 "$t/def" "$t/imp" | ${tp}c++filt 2>/dev/null
+    rm -rf "$t"
+  }
+  '' else ''
+  names() { ${definedCmd} "$1" 2>/dev/null | ${tp}c++filt 2>/dev/null | sed -E 's/^[0-9a-fA-F]+ [A-Za-z] //'; }
+  ''}
   valid() {
     local t; t=$(${totalCmd} "$1" 2>/dev/null | wc -l | tr -d ' ')
     [ "''${t:-0}" -gt 0 ] || { bad "$(basename "$1")" "ERROR: nm read 0 symbols — vacuous"; return 1; }
@@ -144,7 +178,13 @@ pkgs.runCommand "logos-logoscore-cli-symbol-gate${pkgs.lib.optionalString negati
       liblogos_protocol.*|liblogos_qt_host.*) OWNERS+=("$p") ;;
       *) CONSUMERS+=("$p") ;;
     esac
-  done < <(find -L "$ROOT/lib" -maxdepth 1 -type f \( -name '*.dylib' -o -name '*.so' \) 2>/dev/null | grep -v 'liblogos_core' || true)
+  # bin/ is searched too, and .dll matched: on Windows every liblogos_* shared
+  # image is staged into bin/, NOT lib/, because the PE loader searches the
+  # executable's directory. Globbing lib/*.{dylib,so} alone found ZERO owners
+  # there, so the exactly-one assertion could not pass on a correct tree.
+  done < <(find -L "$ROOT/lib" "$ROOT/bin" -maxdepth 1 -type f \
+    \( -name '*.dylib' -o -name '*.so' -o -name 'liblogos_*.dll' \) 2>/dev/null \
+    | grep -v 'liblogos_core' || true)
 
   echo "provider  = ''${PROVIDER#$ROOT/}"
   printf 'consumers = '; for c in "''${CONSUMERS[@]}"; do printf '%s ' "''${c#$ROOT/}"; done; echo
