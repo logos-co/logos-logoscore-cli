@@ -12,7 +12,7 @@
 // answers apart at the layer that used to conflate them:
 //
 //   transport reported a failure        -> METHOD_FAILED   (+ error.code)
-//   provider RAN and refused            -> METHOD_FAILED   (dispatch_failed)
+//   provider RAN and refused            -> METHOD_FAILED   (+ its rejection code)
 //   module has no such method           -> METHOD_NOT_FOUND (+ available_methods)
 //   method exists and answered null     -> ok, result null   <- the change
 //
@@ -139,29 +139,116 @@ TEST(CallEnvelope, DispatchRejectionIsMethodFailed)
     EXPECT_EQ(env["error"].value("message", std::string{}), "wrong argument count");
 }
 
-TEST(CallEnvelope, DispatchRejectionMatchIsExact)
+// The LIVE bug this widening fixes. A provider answers an arity error with
+// {"code":"invalid_args", ...} as its RESULT — logos-cpp-sdk's cdylib dispatch
+// and logos-rust-sdk's args::invalid_args both do, and have all along. Before
+// the detector matched a closed SET rather than the single literal
+// "dispatch_failed", this envelope came back status "ok" with the refusal as
+// the value, and `logosctl call` exited 0. Measured, on
+// `logosctl call test_basic_module isPositive` with the argument missing.
+TEST(CallEnvelope, InvalidArgsIsMethodFailed)
+{
+    const nlohmann::json refusal{{"code", "invalid_args"},
+                                 {"message", "expected 1 arguments, got 0"},
+                                 {"origin", "test_basic_module"}};
+
+    const LogosMap env = callEnvelope("test_basic_module", "isPositive", refusal,
+                                      CallFailure{}, kBasicModule.fn());
+
+    EXPECT_EQ(env.value("status", std::string{}), "error");
+    EXPECT_EQ(env.value("code", std::string{}), "METHOD_FAILED");
+    ASSERT_TRUE(env.contains("error"));
+    EXPECT_EQ(env["error"].value("code", std::string{}), "invalid_args");
+    EXPECT_EQ(env["error"].value("message", std::string{}),
+              "expected 1 arguments, got 0");
+    // The refusal must NOT also survive as a value: an envelope carrying both
+    // would let a caller keep reading it as data.
+    EXPECT_FALSE(env.contains("result"));
+}
+
+// Every code in the closed set folds, not just dispatch_failed. "unknown_method"
+// is here before any provider emits it — that readiness is the point of doing
+// the detectors first.
+TEST(CallEnvelope, EveryRejectionCodeIsMethodFailed)
+{
+    for (const char* code : {"dispatch_failed", "invalid_args", "unknown_method"}) {
+        CallFailure out;
+        EXPECT_TRUE(dispatchRejection(nlohmann::json{{"code", code},
+                                                     {"message", "m"},
+                                                     {"origin", "o"}}, out))
+            << code;
+        EXPECT_EQ(out.code, code);
+        EXPECT_EQ(out.message, "m");
+        EXPECT_EQ(out.origin, "o");
+
+        const LogosMap env = callEnvelope("test_basic_module", "isPositive",
+                                          nlohmann::json{{"code", code},
+                                                         {"message", "m"},
+                                                         {"origin", "o"}},
+                                          CallFailure{}, kBasicModule.fn());
+        EXPECT_EQ(env.value("code", std::string{}), "METHOD_FAILED") << code;
+    }
+}
+
+// The NEGATIVES. Widening one literal into a set is one careless edit away from
+// "any object with a code", which would hand every method that legitimately
+// returns a three-string map to the error channel. These are what keep the
+// match closed.
+TEST(CallEnvelope, DispatchRejectionMatchStaysNarrow)
 {
     CallFailure out;
     // Right shape, right code.
     EXPECT_TRUE(dispatchRejection(nlohmann::json{{"code", "dispatch_failed"},
                                                  {"message", "m"},
                                                  {"origin", "o"}}, out));
-    // A user map that merely looks similar must never false-match — the same
-    // exactness the generated detectors use.
-    EXPECT_FALSE(dispatchRejection(nlohmann::json{{"code", "something_else"},
-                                                  {"message", "m"},
-                                                  {"origin", "o"}}, out));
-    EXPECT_FALSE(dispatchRejection(nlohmann::json{{"code", "dispatch_failed"},
-                                                  {"message", "m"}}, out));
-    EXPECT_FALSE(dispatchRejection(nlohmann::json{{"code", "dispatch_failed"},
-                                                  {"message", "m"},
-                                                  {"origin", "o"},
-                                                  {"extra", 1}}, out));
-    EXPECT_FALSE(dispatchRejection(nlohmann::json{{"code", 7},
-                                                  {"message", "m"},
-                                                  {"origin", "o"}}, out));
+
+    // A code OUTSIDE the closed set stays DATA, however plausible. This is the
+    // difference between a closed set and an open shape match.
+    for (const char* code : {"", "ok", "not_found", "user_error",
+                             "DISPATCH_FAILED", "dispatch_failed ",
+                             "invalid_argument", "unknown_methods"}) {
+        EXPECT_FALSE(dispatchRejection(nlohmann::json{{"code", code},
+                                                      {"message", "m"},
+                                                      {"origin", "o"}}, out))
+            << code;
+    }
+
+    // Wrong key COUNT, for every code in the set — 2 keys and 4 keys.
+    for (const char* code : {"dispatch_failed", "invalid_args", "unknown_method"}) {
+        EXPECT_FALSE(dispatchRejection(nlohmann::json{{"code", code},
+                                                      {"message", "m"}}, out))
+            << code;
+        EXPECT_FALSE(dispatchRejection(nlohmann::json{{"code", code},
+                                                      {"message", "m"},
+                                                      {"origin", "o"},
+                                                      {"extra", 1}}, out))
+            << code;
+        // A non-string in any of the three slots.
+        EXPECT_FALSE(dispatchRejection(nlohmann::json{{"code", 7},
+                                                      {"message", "m"},
+                                                      {"origin", "o"}}, out))
+            << code;
+        EXPECT_FALSE(dispatchRejection(nlohmann::json{{"code", code},
+                                                      {"message", 7},
+                                                      {"origin", "o"}}, out))
+            << code;
+        EXPECT_FALSE(dispatchRejection(nlohmann::json{{"code", code},
+                                                      {"message", "m"},
+                                                      {"origin", nullptr}}, out))
+            << code;
+    }
+
     EXPECT_FALSE(dispatchRejection(nlohmann::json::array(), out));
     EXPECT_FALSE(dispatchRejection(nlohmann::json(), out));
+
+    // And end-to-end: an unrecognised three-string map is a RESULT, not an error.
+    const nlohmann::json userMap{{"code", "amber"},
+                                 {"message", "hello"},
+                                 {"origin", "sensor"}};
+    const LogosMap env = callEnvelope("test_basic_module", "describe", userMap,
+                                      CallFailure{}, kBasicModule.fn());
+    EXPECT_EQ(env.value("status", std::string{}), "ok");
+    EXPECT_EQ(env["result"], userMap);
 }
 
 // ── An unknown method: the one case the wire cannot report ──────────────────

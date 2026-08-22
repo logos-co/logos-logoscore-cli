@@ -36,7 +36,7 @@ struct CallFailure {
 // fills `out` with its {code, message, origin} on a match.
 //
 // A provider that RAN and refused the call answers
-// {"code":"dispatch_failed", "message":..., "origin":...} as its RESULT, not
+// {"code":<rejection code>, "message":..., "origin":...} as its RESULT, not
 // through the transport's error channel — logos_protocol.h states that split
 // explicitly. Generated typed consumers fold it into logos::CallError
 // themselves (emitDispatchRejectionDetectorJson in logos-cpp-sdk's
@@ -45,9 +45,32 @@ struct CallFailure {
 // fold it here or a refusal would read as a successful call that returned a
 // three-key map.
 //
-// The match is exact — those three fields, all strings, and that code — for the
-// same reason the generated detector is exact: a map return carrying user data
-// must never false-match.
+// `code` is matched against a CLOSED SET, defined in the .cpp:
+//
+//   "dispatch_failed" — the provider ran and refused the argument VALUES.
+//   "invalid_args"    — wrong argument COUNT. Providers have emitted this all
+//                       along (logos-cpp-sdk's cdylib dispatch, logos-rust-sdk's
+//                       args::invalid_args) and no detector matched it, so
+//                       `logosctl call test_basic_module isPositive` with the
+//                       argument missing exited 0 with status "ok" and the
+//                       refusal object as its result.
+//   "unknown_method"  — NOTHING EMITS THIS YET. Listed now because widening a
+//                       detector is backwards-compatible on its own, whereas a
+//                       new provider code shipped against narrow detectors
+//                       arrives at consumers as data.
+//
+// WHEN A PROVIDER STARTS EMITTING "unknown_method", READ THIS. It will fold to
+// METHOD_FAILED here, not to the METHOD_NOT_FOUND envelope callEnvelope already
+// builds from introspection below — the two paths are independent today and
+// nothing makes them agree. Deliberately left alone: no provider emits the code,
+// so any routing written now would be untested against a real provider, and
+// choosing between the two envelopes is part of the provider-contract change,
+// not of widening a detector.
+//
+// The match is otherwise unchanged and stays NARROW — exactly three fields, all
+// strings — for the same reason the generated detector is: a map return
+// carrying user data must never false-match. An unrecognised code, a 2- or
+// 4-key object, and a non-string value all stay DATA.
 bool dispatchRejection(const nlohmann::json& v, CallFailure& out);
 
 // Supplies the module's exposed method names, or an empty vector when the
