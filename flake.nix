@@ -1069,8 +1069,10 @@ ${pkgs.lib.optionalString withPkgModules ''
 
           # One-runtime symbol gate. Asserts the logos C++ runtime (TokenManager,
           # StoreRegistry, LogosAPI, LogosAPIClient) is DEFINED exactly once
-          # across the images that share one process -- in liblogos_core, the
-          # single provider. This repo saw the LOUD version of a duplicate on
+          # across the images that share one process. The assertion is
+          # exactly-one and deliberately names no owner: liblogos_core stopped
+          # being the provider when the runtime became real shared libraries,
+          # and liblogos_protocol / liblogos_qt_host define these types now. This repo saw the LOUD version of a duplicate on
           # Windows (the link fails with "multiple definition of
           # `TokenManager::instance()'") and the QUIET version everywhere else,
           # where it links fine and surfaces at runtime as refused calls.
