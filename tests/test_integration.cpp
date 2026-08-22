@@ -8,7 +8,11 @@
 // Coverage:
 //   * Error paths (ErrorPathTest): unknown-module load, calling methods on
 //     unknown / unloaded modules, unknown method on a loaded module,
-//     module-info on an unknown module. One fresh daemon per test (the
+//     module-info on an unknown module, and — since core_service started
+//     reading the SDK's error channel instead of inferring failure from a
+//     null result — that a MISSING method, a FAILED call and a provider
+//     REFUSAL each report their own code, the last of which flips a
+//     user-visible exit code from 0 to 4. One fresh daemon per test (the
 //     "module known but not loaded" precondition needs pristine state).
 //   * Full test_basic_module API + concurrency (LoadedModuleTest): every
 //     Q_INVOKABLE return/parameter type (void, bool, int, QString,
@@ -25,6 +29,15 @@
 // timeout (surfacing as RPC_FAILED / non-zero exit, the exact code not
 // stable across revisions). So those are `timeout`-bounded and asserted
 // as "must not succeed" rather than waiting ~100s for an exact code.
+//
+// Three of them ARE pinned to an exact code now, because they no longer depend
+// on a timeout: an unknown method on a LOADED module resolves against the
+// module's own method list (METHOD_NOT_FOUND), a rejected token comes back on
+// the error channel (METHOD_FAILED + error.code "unauthorized"), and a provider
+// that ran and refused comes back through the RESULT and is folded
+// (METHOD_FAILED + error.code "dispatch_failed"). All three answer in well
+// under a second, and the last is pinned to the process EXIT CODE as well,
+// since that is what the change alters for a user.
 //
 // Requires LOGOSCTL_BINARY + LOGOSCTL_TEST_MODULES_DIR (the flake's
 // `tests` check wires both, plus LOGOS_HOST_PATH so modules can load).
@@ -412,10 +425,140 @@ TEST_F(ErrorPathTest, UnknownMethodOnLoadedModule) {
                      &out, kNegativeBudgetSecs), 0)
         << "unknown method on a loaded module should not succeed.\n" << out;
 
+    // …and it says WHY. A provider answers an unknown method with a bare null
+    // and no transport error (logos_protocol.h: "NOT reported, and it is not an
+    // oversight"), so this envelope can only come from core_service asking the
+    // module for its method list — which makes it the end-to-end proof that the
+    // introspection fallback works against a real module over a real transport.
+    // Before the error-channel switch this read METHOD_FAILED / "Call to
+    // test_basic_module.thisMethodDoesNotExist failed." with no list.
+    const nlohmann::json env = lastJsonObject(out);
+    EXPECT_EQ(env.value("code", std::string{}), "METHOD_NOT_FOUND") << out;
+    // .value(), not operator[]: on a const json a missing key is UB, and this
+    // assertion has to survive the envelope NOT carrying the field.
+    const nlohmann::json avail =
+        env.value("available_methods", nlohmann::json());
+    ASSERT_TRUE(avail.is_array()) << out;
+    EXPECT_NE(std::find(avail.begin(), avail.end(), nlohmann::json("returnTrue")),
+              avail.end())
+        << "available_methods must be the module's real list.\n" << out;
+    EXPECT_EQ(std::find(avail.begin(), avail.end(),
+                        nlohmann::json("thisMethodDoesNotExist")),
+              avail.end()) << out;
+
     // A real method still works fast — proves the failure above was
     // method-scoped, not a wedged daemon.
     ASSERT_EQ(d.run("call test_basic_module returnTrue", &out), 0) << out;
     EXPECT_NE(out.find("true"), std::string::npos) << out;
+}
+
+// A call that genuinely FAILED still reports METHOD_FAILED — and now names the
+// transport's own reason, because the reason arrives on an error channel rather
+// than being inferred from the value.
+//
+// The vehicle is a self-call: core_service refuses a token it did not mint, so
+// this is a fast, deterministic "unauthorized" with no waiting on a timeout.
+// The value it comes back with is null — the SAME null a method that returns
+// nothing would produce — so this and a legitimately-null return are exactly
+// the pair that used to be indistinguishable.
+TEST_F(ErrorPathTest, FailedCallReportsTheErrorChannelNotTheValue) {
+    std::string out;
+    ASSERT_NE(d.run("call core_service getModuleStats", &out,
+                    kNegativeBudgetSecs), 0)
+        << "a rejected call must not report success.\n" << out;
+
+    const nlohmann::json env = lastJsonObject(out);
+    EXPECT_EQ(env.value("status", std::string{}), "error") << out;
+    EXPECT_EQ(env.value("code", std::string{}), "METHOD_FAILED") << out;
+    // The diagnosis, machine-readable. Empty before the switch: the old code
+    // had only a null value to look at and nothing to say about it.
+    const nlohmann::json diag = env.value("error", nlohmann::json());
+    ASSERT_TRUE(diag.is_object()) << out;
+    EXPECT_EQ(diag.value("code", std::string{}), "unauthorized") << out;
+    EXPECT_FALSE(diag.value("message", std::string{}).empty()) << out;
+}
+
+// The whole point, on a live transport: two calls that both come back null are
+// now told apart, and by different means — one by the error channel, one by
+// asking the module what it exposes.
+//
+// What is NOT covered here, deliberately and worth knowing: a method that
+// legitimately RETURNS null. No module in the fixture set has one — the
+// qt-generator refuses an optional return outright, and nothing declares
+// `-> any` and answers null. That case is pinned in tests/test_call_envelope.cpp
+// instead, where the decision itself lives.
+TEST_F(ErrorPathTest, MissingMethodAndFailedCallAreDistinguishable) {
+    std::string out;
+    ASSERT_EQ(d.run("load-module test_basic_module", &out), 0) << out;
+
+    ASSERT_NE(d.run("call test_basic_module thisMethodDoesNotExist", &out,
+                    kNegativeBudgetSecs), 0) << out;
+    const std::string missing = lastJsonObject(out).value("code", std::string{});
+
+    ASSERT_NE(d.run("call core_service getModuleStats", &out,
+                    kNegativeBudgetSecs), 0) << out;
+    const std::string failed = lastJsonObject(out).value("code", std::string{});
+
+    EXPECT_EQ(missing, "METHOD_NOT_FOUND");
+    EXPECT_EQ(failed,  "METHOD_FAILED");
+    EXPECT_NE(missing, failed)
+        << "these collapsed into one code before core_service read the error "
+           "channel; keeping them apart is the entire point.";
+}
+
+// THE THIRD KIND OF FAILURE, end to end: a provider that RAN and REFUSED.
+//
+// This one does not travel on the transport's error channel at all. A strict
+// decode failure inside the generated dispatch answers the canonical
+// {"code":"dispatch_failed","message":...,"origin":...} envelope as its RESULT
+// value (logos-protocol cpp/logos_codec.h, "DECODE STRICTNESS"; the reason it is
+// not folded by the transport is stated at cpp/logos_protocol.h, under
+// lp_invoke_async). core_service has to recognise it and fold it into the error
+// channel itself — core_service::callEnvelope, via dispatchRejection
+// (src/core_service/call_envelope.cpp).
+//
+// WHY THIS TEST EXISTS. The fold changes a USER-VISIBLE exit code: a refusal
+// used to be reported as a SUCCESSFUL call whose result happened to be a
+// three-key map, so `logosctl call` exited 0. It now exits 4. That is exactly
+// the kind of change unit tests cannot vouch for on their own — the unit suite
+// (tests/test_call_envelope.cpp, DispatchRejectionIsMethodFailed) hands
+// callEnvelope a hand-written refusal object, which proves the decision but not
+// that any real provider ever produces that shape. `echoInt` with a
+// non-numeric argument does: the CLI's auto-typing sends the bare string
+// "notanumber" and int64_t has no lenient decode.
+TEST_F(ErrorPathTest, ProviderRefusalIsFoldedIntoTheErrorChannel) {
+    std::string out;
+    ASSERT_EQ(d.run("load-module test_basic_module", &out), 0) << out;
+
+    // CONTROL FIRST, so a red assertion below cannot be blamed on the module or
+    // the transport: the same method, a well-formed argument, succeeds.
+    ASSERT_EQ(d.run("call test_basic_module echoInt 42", &out), 0) << out;
+    EXPECT_NE(out.find("42"), std::string::npos) << out;
+
+    // The refusal. Exit 4 (METHOD_FAILED), not 0 — this is the flip.
+    EXPECT_EQ(d.run("call test_basic_module echoInt notanumber", &out,
+                    kNegativeBudgetSecs), 4)
+        << "a provider refusal must be reported as a failed call, not as a "
+           "successful one returning a three-key map.\n" << out;
+
+    const nlohmann::json env = lastJsonObject(out);
+    EXPECT_EQ(env.value("status", std::string{}), "error") << out;
+    EXPECT_EQ(env.value("code", std::string{}), "METHOD_FAILED") << out;
+
+    // The provider's own code survives the fold, which is what distinguishes a
+    // refusal from a transport failure for a JSON consumer. It must NOT have
+    // been flattened into the generic "call_failed".
+    const nlohmann::json diag = env.value("error", nlohmann::json());
+    ASSERT_TRUE(diag.is_object()) << out;
+    EXPECT_EQ(diag.value("code", std::string{}), "dispatch_failed") << out;
+    EXPECT_FALSE(diag.value("message", std::string{}).empty()) << out;
+
+    // And the refusal was argument-scoped: the daemon and the module are still
+    // live afterwards. Before the fold this call was reported as a SUCCESS, so
+    // nothing about the surrounding state was ever in question — now that it is
+    // an error path, it is worth pinning that it is not a wedging one.
+    ASSERT_EQ(d.run("call test_basic_module echoInt 7", &out), 0) << out;
+    EXPECT_NE(out.find("7"), std::string::npos) << out;
 }
 
 // Crash-isolation: modules run in a separate logos_host subprocess

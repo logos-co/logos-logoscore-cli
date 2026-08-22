@@ -520,6 +520,80 @@ TEST_F(CommandTest, Call_MethodNotFound)
     });
 }
 
+// core_service now answers an unknown method with the module's real method list
+// (it asks the module, because no provider distinguishes "no such method" from
+// "returned null" on the wire). Both output modes have to surface it.
+TEST_F(CommandTest, Call_MethodNotFound_JsonCarriesAvailableMethods)
+{
+    mockClient.callMethodResult = LogosMap{
+        {"status", "error"}, {"code", "METHOD_NOT_FOUND"},
+        {"message", "Method 'bad' not found on module 'chat'."},
+        {"available_methods", LogosList::array({"send_message", "get_history"})}
+    };
+
+    auto cmd = createCommand("call", mockClient, output);
+    std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"chat", "bad"}), 4);
+    });
+
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["code"].get<std::string>(), "METHOD_NOT_FOUND");
+    EXPECT_EQ(doc["available_methods"],
+              nlohmann::json::array({"send_message", "get_history"}));
+}
+
+TEST_F(CommandTest, Call_MethodNotFound_HumanListsAvailableMethods)
+{
+    // Human mode prints the message and nothing else, so the list has to be
+    // folded into the message — and it goes to stderr, not stdout.
+    //
+    // setHumanMode(true), not Output{false}: the latter only declines to FORCE
+    // JSON and then auto-detects from the TTY, which makes the test depend on
+    // how the runner's stdout is wired (nix gives builds a pty, a plain pipe
+    // does not) — the sibling OutputTest cases are TTY-dependent for exactly
+    // this reason.
+    Output humanOutput{false};
+    humanOutput.setHumanMode(true);
+    mockClient.callMethodResult = LogosMap{
+        {"status", "error"}, {"code", "METHOD_NOT_FOUND"},
+        {"message", "Method 'bad' not found on module 'chat'."},
+        {"available_methods", LogosList::array({"send_message", "get_history"})}
+    };
+
+    auto cmd = createCommand("call", mockClient, humanOutput);
+    std::stringstream buffer;
+    auto oldBuf = std::cerr.rdbuf(buffer.rdbuf());
+    EXPECT_EQ(cmd->execute({"chat", "bad"}), 4);
+    std::cerr.rdbuf(oldBuf);
+
+    const std::string err = buffer.str();
+    EXPECT_NE(err.find("Method 'bad' not found on module 'chat'."), std::string::npos)
+        << err;
+    EXPECT_NE(err.find("Available methods: send_message, get_history"),
+              std::string::npos) << err;
+}
+
+// The behaviour change, at the CLI layer: a null RESULT is a successful call.
+// It used to be unreachable — core_service turned every null into
+// METHOD_FAILED, because it read the value instead of the error channel.
+TEST_F(CommandTest, Call_NullResultIsSuccess)
+{
+    mockClient.callMethodResult = LogosMap{
+        {"status", "ok"}, {"module", "chat"}, {"method", "maybe_get"},
+        {"result", nullptr}
+    };
+
+    auto cmd = createCommand("call", mockClient, output);
+    std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"chat", "maybe_get"}), 0);
+    });
+
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["status"].get<std::string>(), "ok");
+    ASSERT_TRUE(doc.contains("result"));
+    EXPECT_TRUE(doc["result"].is_null());
+}
+
 TEST_F(CommandTest, Call_ModuleNotLoaded)
 {
     mockClient.callMethodResult = LogosMap{

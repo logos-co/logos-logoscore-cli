@@ -1,8 +1,11 @@
 #include "core_service_impl.h"
 #include "package_ops.h"
+#include "call_envelope.h"
 #include "logos_core.h"
 #include <logos_api.h>
 #include <logos_api_client.h>
+#include <logos_call_error.h>
+#include <logos_json_convert.h>
 
 #include <QCoreApplication>
 #include <algorithm>
@@ -396,7 +399,16 @@ LogosMap CoreServiceImpl::getModuleInfo(const std::string& name)
             info["uptime_seconds"] = uptime;
 
         if (m_api) {
-            // Use the nlohmann::json overload — no QJson types needed here
+            // Use the nlohmann::json overload — no QJson types needed here.
+            //
+            // These two are SHAPE checks, not the failure-from-null inference
+            // that callModuleMethod carried: `methods`/`events` are optional
+            // enrichment, and both a failed introspection and a provider that
+            // answered something other than an array leave the field absent,
+            // which is the same and correct outcome — there is nothing to
+            // report either way. The error channel would let module-info say
+            // WHY it has nothing, but that is a change to this envelope and
+            // deliberately not made here.
             LogosAPIClient* moduleClient = m_api->getClient(QString::fromStdString(name));
             if (moduleClient) {
                 nlohmann::json methods = moduleClient->invokeRemoteMethod(
@@ -431,8 +443,39 @@ LogosList CoreServiceImpl::getModuleStats()
 }
 
 // ---------------------------------------------------------------------------
-// Proxied call — uses the nlohmann::json SDK overload; no QJson needed
+// Proxied call — takes the CallError-carrying SDK overload; no QJson needed
 // ---------------------------------------------------------------------------
+
+namespace {
+
+// The names a module says it exposes, via its own getPluginMethods.
+//
+// Only ever consulted to resolve the ONE ambiguity the wire genuinely cannot
+// (see call_envelope.cpp), so the extra round-trip is paid on a null return and
+// nowhere else. Returns empty when introspection itself failed — the caller
+// must then not claim the method is missing, because it does not know.
+std::vector<std::string> exposedMethodNames(LogosAPIClient* client,
+                                            const std::string& module)
+{
+    std::vector<std::string> names;
+    logos::CallError err;
+    const nlohmann::json methods = logos::qvariantToNlohmann(
+        client->invokeRemoteMethod(QString::fromStdString(module),
+                                   QStringLiteral("getPluginMethods"),
+                                   QVariantList(), Timeout(), &err));
+    if (!err.ok() || !methods.is_array()) return names;
+    for (const auto& m : methods) {
+        if (m.is_object()) {
+            auto n = m.find("name");
+            if (n != m.end() && n->is_string()) names.push_back(n->get<std::string>());
+        } else if (m.is_string()) {
+            names.push_back(m.get<std::string>());
+        }
+    }
+    return names;
+}
+
+} // namespace
 
 StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
                                                  const std::string& method,
@@ -455,21 +498,30 @@ StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
         return {false, result, "Module '" + module + "' is not loaded."};
     }
 
-    // The nlohmann::json overload handles QVariant<->json conversion internally.
-    nlohmann::json ret = moduleClient->invokeRemoteMethod(module, method, args);
+    // Take the overload that carries an error OUT-CHANNEL, and do the
+    // json<->QVariant conversion here.
+    //
+    // The convenient nlohmann::json overload cannot be used: it forwards to this
+    // very call with the logos::CallError* argument simply dropped
+    // (logos_api_client.cpp), leaving its caller nothing but the value. That is
+    // why this function used to read failure out of a null RESULT — and why
+    // that was wrong: lp_invoke branches on callErr.ok() and NEVER on the value,
+    // so a failed call and a method returning null were already distinct
+    // everywhere else on this surface. Only here did they collapse.
+    logos::CallError err;
+    const QVariant qret = moduleClient->invokeRemoteMethod(
+        QString::fromStdString(module), QString::fromStdString(method),
+        logos::nlohmannArgsToQVariantList(args), Timeout(), &err);
+    const nlohmann::json ret = logos::qvariantToNlohmann(qret);
 
-    if (ret.is_null()) {
-        result["status"] = "error";
-        result["code"] = "METHOD_FAILED";
-        result["message"] = "Call to " + module + "." + method + " failed.";
-        return {false, result, "Call to " + module + "." + method + " failed."};
-    }
+    result = core_service::callEnvelope(
+        module, method, ret,
+        core_service::CallFailure{err.code, err.message, err.origin},
+        [&]() { return exposedMethodNames(moduleClient, module); });
 
-    result["status"] = "ok";
-    result["module"] = module;
-    result["method"] = method;
-    result["result"] = ret;
-
+    const bool ok = result.value("status", std::string{}) == "ok";
+    if (!ok)
+        return {false, result, result.value("message", std::string{})};
     return {true, result};
 }
 

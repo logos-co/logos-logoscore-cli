@@ -176,7 +176,28 @@ int CallCommand::execute(const std::vector<std::string>& args)
         int exitCode = 4;
         if (code == "MODULE_NOT_LOADED" || code == "MODULE_NOT_FOUND")
             exitCode = 3;
-        output().printError(code, result.value("message", std::string{}), result);
+        std::string message = result.value("message", std::string{});
+        // METHOD_NOT_FOUND carries the module's real method list. JSON mode gets
+        // it for free — printError merges every extra field into the envelope —
+        // but the human branch prints the message and nothing else, so the list
+        // has to ride along in the message to reach a person. Both forms then
+        // match docs/spec.md's `call` samples.
+        if (!output().isJsonMode()) {
+            // find(), not operator[] — the latter would INSERT a null
+            // "available_methods" into the envelope printError is about to echo.
+            auto avail = result.find("available_methods");
+            if (avail != result.end() && avail->is_array() && !avail->empty()) {
+                std::string joined;
+                for (const auto& m : *avail) {
+                    if (!m.is_string()) continue;
+                    if (!joined.empty()) joined += ", ";
+                    joined += m.get<std::string>();
+                }
+                if (!joined.empty())
+                    message += "\n  Available methods: " + joined;
+            }
+        }
+        output().printError(code, message, result);
         return exitCode;
     }
 

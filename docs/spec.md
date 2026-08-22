@@ -922,11 +922,31 @@ $ logosctl call chat nonexistent_method --json
 {"status":"error","code":"METHOD_NOT_FOUND","message":"Method 'nonexistent_method' not found on module 'chat'.","available_methods":["send_message","get_history","set_nickname","get_status"]}
 ```
 
+**Failed call (JSON):**
+```
+$ logosctl call chat send_message --json
+{"status":"error","code":"METHOD_FAILED","message":"Call to chat.send_message failed (unauthorized: token not recognized).","error":{"code":"unauthorized","message":"token not recognized","origin":"chat"}}
+```
+
+`METHOD_FAILED` covers every failure the transport itself detected, and `error`
+carries which one, verbatim from the protocol's call-error vocabulary:
+`object_unavailable`, `timeout`, `transport_error`, `call_failed`,
+`unauthorized`, plus `dispatch_failed` for a provider that ran and refused.
+
+A result of `null` is **not** a failure. It is a value — an empty optional, or a
+method that returns nothing in particular — and reports `status: "ok"` with
+`"result": null`. The one case `null` cannot express is an unknown method name,
+which no provider distinguishes on the wire; `call` resolves that by asking the
+module for its method list, which is where `METHOD_NOT_FOUND` above comes from.
+
 **Timeout error (JSON):**
 ```
 $ logosctl call chat slow_operation --json
 {"status":"error","code":"TIMEOUT","message":"Call to chat.slow_operation timed out after 30s."}
 ```
+
+> `TIMEOUT` is not yet emitted by `call`: a deadline that elapses arrives as
+> `METHOD_FAILED` with `error.code == "timeout"`.
 
 ### `watch`
 
