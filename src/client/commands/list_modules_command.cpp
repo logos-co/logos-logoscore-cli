@@ -19,7 +19,19 @@ int ListModulesCommand::execute(const std::vector<std::string>& args)
         return err;
 
     std::string filter = loadedOnly ? "loaded" : "all";
-    LogosList modules = client().listModules(filter);
-    output().printModuleList(modules);
+    const std::optional<LogosList> modules = client().listModules(filter);
+
+    // An unanswered RPC is not an empty module list. This printed `[]` and
+    // exited 0 against a daemon that was not running, which is the worst
+    // possible answer: a script cannot tell it apart from a healthy session
+    // with nothing loaded, so "no modules found" silently became a fact.
+    if (!modules) {
+        output().printError("DAEMON_UNREACHABLE",
+                            "The daemon did not answer, so the module list is "
+                            "unknown (this is not an empty list).");
+        return 2;
+    }
+
+    output().printModuleList(*modules);
     return 0;
 }

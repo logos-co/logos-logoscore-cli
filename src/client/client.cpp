@@ -1,6 +1,7 @@
 #include "client.h"
 #include "../config.h"
 #include "../daemon/daemon_state.h"
+#include "../local_endpoint.h"
 #include "../platform_compat.h"
 #include "../process_util.h"
 #include "client_state.h"
@@ -146,6 +147,33 @@ bool RpcClient::connect()
     }
     const LogosTransportConfig coreServiceCfg = toCfg(coreIt->second);
 
+    // A local dial with nothing at the other end fails HERE, rather than
+    // twenty seconds into the first RPC.
+    //
+    // Everything above this line is a parse; none of it can tell whether the
+    // daemon is there, and neither can the LogosAPIClient built below --
+    // getClient() hands back a handle whether or not anyone is listening. So
+    // ask the socket itself: is it missing, or does it refuse us? That catches
+    // the session a daemon left behind when it stopped CLEANLY, which the pid
+    // check in Command::ensureConnected() cannot see -- that path removes
+    // daemon/state.json, so there is no pid left to find dead.
+    //
+    // Only for LocalSocket, and only when the answer is a definite no. A tcp /
+    // tcp_ssl dial has no socket to look at, and localEndpointProvablyAbsent()
+    // fails closed on everything short of proof, so a reachable daemon is
+    // never refused on a guess. See src/local_endpoint.h.
+    if (coreServiceCfg.protocol == LogosProtocol::LocalSocket) {
+        std::string endpoint;
+        if (logosctl::localEndpointProvablyAbsent("core_service", d->instanceId,
+                                                  &endpoint)) {
+            m_lastError = fmt::format(
+                "No daemon running (no local endpoint at {}). A daemon that "
+                "stopped removes it; start one in this session to get it back.",
+                endpoint);
+            return false;
+        }
+    }
+
     d->api = new LogosAPI("cli_client");
 
     // Wire up capability_module's per-module transport.
@@ -258,11 +286,11 @@ LogosMap RpcClient::reloadModule(const std::string& name)
 // Queries — delegate to core_service
 // ---------------------------------------------------------------------------
 
-LogosList RpcClient::listModules(const std::string& filter)
+std::optional<LogosList> RpcClient::listModules(const std::string& filter)
 {
     nlohmann::json ret = d->invoke("listModules", nlohmann::json::array({filter}));
     if (ret.is_array()) return ret;
-    return LogosList::array();
+    return std::nullopt;   // no reply -- NOT an empty module list
 }
 
 LogosMap RpcClient::getStatus()
@@ -287,11 +315,11 @@ LogosMap RpcClient::getModuleInfo(const std::string& name)
                     {"message", fmt::format("getModuleInfo('{}') RPC call failed.", name)}};
 }
 
-LogosList RpcClient::getModuleStats()
+std::optional<LogosList> RpcClient::getModuleStats()
 {
     nlohmann::json ret = d->invoke("getModuleStats");
     if (ret.is_array()) return ret;
-    return LogosList::array();
+    return std::nullopt;   // no reply -- NOT "no modules to report on"
 }
 
 // ---------------------------------------------------------------------------
@@ -330,8 +358,9 @@ LogosMap RpcClient::shutdown()
     //
     // And only if it is alive right now: a pid that was already dead before we
     // said anything proves nothing about what our request did, so it must not
-    // become the evidence that our request worked. (StopCommand refuses such a
-    // session outright; this keeps the reasoning sound for every other caller.)
+    // become the evidence that our request worked. (Command::ensureConnected
+    // refuses such a session outright, so `logosctl stop` never gets here;
+    // this keeps the reasoning sound for every other caller.)
     const DaemonRuntimeState before = DaemonRuntimeStateFile::read();
     const bool watchable = before.fileOk
                         && before.pid > 0

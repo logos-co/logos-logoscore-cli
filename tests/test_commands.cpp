@@ -28,10 +28,13 @@ public:
     LogosMap  loadModuleResult;
     LogosMap  unloadModuleResult;
     LogosMap  reloadModuleResult;
-    LogosList listModulesResult;
+    // Default to a PRESENT, empty list so "the test never set this" keeps
+    // meaning "the daemon answered with nothing". A test that wants a failed
+    // RPC assigns std::nullopt explicitly.
+    std::optional<LogosList> listModulesResult = LogosList::array();
     LogosMap  statusResult;
     LogosMap  moduleInfoResult;
-    LogosList moduleStatsResult;
+    std::optional<LogosList> moduleStatsResult = LogosList::array();
     LogosMap  callMethodResult;
     LogosMap  shutdownResult;
     LogosMap  refreshModulesResult;
@@ -40,6 +43,14 @@ public:
     LogosMap  downloadResult;
 
     // Track calls
+    //
+    // `connectAttempts` / `rpcCalls` are the two the stale-session cases read.
+    // A guard that fires has to be visible as the ABSENCE of contact -- the
+    // whole point is that no byte goes to a socket nobody is listening on --
+    // and per-method breadcrumbs like `lastLoadedModule` cannot express that
+    // for a command whose method takes no distinguishing argument.
+    int  connectAttempts = 0;
+    int  rpcCalls = 0;
     bool shutdownCalled = false;
     bool refreshModulesCalled = false;
     bool applyPackageCalled = false;
@@ -64,6 +75,7 @@ public:
     bool watchShouldSucceed = false;
 
     bool connect() override {
+        ++connectAttempts;
         m_connected = shouldConnect;
         m_lastError = shouldConnect ? "" : connectError;
         return shouldConnect;
@@ -73,23 +85,27 @@ public:
     std::string lastError() const override { return m_lastError; }
 
     LogosMap loadModule(const std::string& name) override {
+        ++rpcCalls;
         lastLoadedModule = name;
         return loadModuleResult;
     }
 
     LogosMap unloadModule(const std::string& name, bool withDependents) override {
+        ++rpcCalls;
         lastUnloadedModule = name;
         lastUnloadWithDependents = withDependents;
         return unloadModuleResult;
     }
 
     LogosMap refreshModules() override {
+        ++rpcCalls;
         refreshModulesCalled = true;
         return refreshModulesResult;
     }
 
     LogosMap planPackageOperation(const std::string& op, const LogosList& names,
                                   const LogosMap& opts) override {
+        ++rpcCalls;
         lastPackageOp = op;
         lastPackageNames = names;
         lastPackageOpts = opts;
@@ -98,6 +114,7 @@ public:
 
     LogosMap applyPackageOperation(const std::string& op, const LogosList& names,
                                    const LogosMap& opts) override {
+        ++rpcCalls;
         lastPackageOp = op;
         lastPackageNames = names;
         lastPackageOpts = opts;
@@ -106,32 +123,37 @@ public:
     }
 
     LogosMap downloadPackage(const std::string& name, const LogosMap& opts) override {
+        ++rpcCalls;
         lastDownloadName = name;
         lastDownloadOpts = opts;
         return downloadResult;
     }
 
     LogosMap reloadModule(const std::string& name) override {
+        ++rpcCalls;
         lastReloadedModule = name;
         return reloadModuleResult;
     }
 
-    LogosList listModules(const std::string& filter) override {
+    std::optional<LogosList> listModules(const std::string& filter) override {
+        ++rpcCalls;
         lastListFilter = filter;
         return listModulesResult;
     }
 
-    LogosMap getStatus() override { return statusResult; }
+    LogosMap getStatus() override { ++rpcCalls; return statusResult; }
 
     LogosMap getModuleInfo(const std::string& name) override {
+        ++rpcCalls;
         lastInfoModule = name;
         return moduleInfoResult;
     }
 
-    LogosList getModuleStats() override { return moduleStatsResult; }
+    std::optional<LogosList> getModuleStats() override { ++rpcCalls; return moduleStatsResult; }
 
     LogosMap callModuleMethod(const std::string& module, const std::string& method,
                                const LogosList& args) override {
+        ++rpcCalls;
         lastCallModule = module;
         lastCallMethod = method;
         lastCallArgs   = args;
@@ -139,12 +161,14 @@ public:
     }
 
     LogosMap shutdown() override {
+        ++rpcCalls;
         shutdownCalled = true;
         return shutdownResult;
     }
 
     bool watchModuleEvents(const std::string& module, const std::string& eventName,
                             std::function<void(const LogosMap&)> callback) override {
+        ++rpcCalls;
         (void)callback;
         lastWatchModule    = module;
         lastWatchEventName = eventName;
@@ -1156,6 +1180,344 @@ TEST_F(CommandTest, Stop_StaleSessionForAnotherInstance_DoesNotBlockARemoteStop)
 
     EXPECT_TRUE(mockClient.shutdownCalled);
     EXPECT_EQ(parseJson(out)["status"].get<std::string>(), "ok");
+}
+
+// ── every command that opens with an RPC refuses a dead session ─────────────
+//
+// The guard above is not a `stop` detail. Any command whose first act is an
+// RPC has the same problem, for the same reason: the LocalSocket "connect"
+// against a session nobody is serving succeeds, the request goes nowhere, and
+// QtRO has nothing to report -- so the command sits until Timeout(20000) in
+// logos-protocol's cpp/logos_mode.h expires, twenty seconds after the session
+// directory on disk could have said "that pid is gone".
+//
+// So the guard lives in Command::ensureConnected(), which is the one door all
+// of them go through, and these sweep both sides of it: nothing is dialled
+// when the session is provably dead, and nothing is refused when it is not.
+
+namespace {
+
+struct RpcCommand {
+    const char*              command;   // createCommand() name
+    std::vector<std::string> args;
+    const char*              typed;     // how a person would type it
+};
+
+// One entry per ensureConnected() call site in src/client/commands, package's
+// six included. A command added there without a line here is a command with
+// no coverage for this, which is how the other thirteen got missed the first
+// time round.
+const std::vector<RpcCommand> kRpcCommands{
+    {"call",          {"chat", "send", "hi"}, "call chat send hi"},
+    {"catalog",       {"ls"},                 "catalog ls"},
+    {"key",           {"ls"},                 "key ls"},
+    {"list-modules",  {},                     "module ls"},
+    {"load-module",   {"chat"},               "module load chat"},
+    {"module-info",   {"chat"},               "module show chat"},
+    {"package",       {"install", "chat"},    "package install chat"},
+    {"package",       {"ls"},                 "package ls"},
+    {"package",       {"show", "chat"},       "package show chat"},
+    {"package",       {"deps", "chat"},       "package deps chat"},
+    {"package",       {"search", "chat"},     "package search chat"},
+    {"package",       {"download", "chat"},   "package download chat"},
+    {"reload-module", {"chat"},               "module reload chat"},
+    {"stats",         {},                     "stats"},
+    {"stop",          {},                     "stop"},
+    {"unload-module", {"chat"},               "module unload chat"},
+    {"watch",         {"chat"},               "watch chat"},
+};
+
+// Well-formed replies for every RPC, so that a command which gets further than
+// it should fails on the assertion below rather than on an exception thrown
+// while reading a default-constructed (null) result. Only the stale-session
+// cases need this -- they are the ones where reaching an RPC is the bug.
+void primeReplies(MockClient& c)
+{
+    c.loadModuleResult   = LogosMap{{"status", "ok"}, {"version", "1.0.0"}};
+    c.unloadModuleResult = LogosMap{{"status", "ok"}};
+    c.reloadModuleResult = LogosMap{{"status", "ok"}};
+    c.moduleInfoResult   = LogosMap{{"status", "ok"}, {"name", "chat"}};
+    c.callMethodResult   = LogosMap{{"status", "ok"}, {"result", nullptr}};
+    c.shutdownResult     = LogosMap{{"status", "ok"}, {"message", "bye"}};
+    c.planPackageResult  = LogosMap{{"status", "ok"}, {"changes", LogosList::array()}};
+    c.applyPackageResult = LogosMap{{"status", "ok"}};
+    c.downloadResult     = LogosMap{{"status", "ok"}, {"result", LogosMap{{"path", "/p.lgx"}}}};
+    c.listModulesResult  = LogosList::array();
+    c.moduleStatsResult  = LogosList::array();
+}
+
+} // namespace
+
+TEST_F(CommandTest, EveryRpcCommand_StaleSession_FailsWithoutDialling)
+{
+    for (const RpcCommand& c : kRpcCommands) {
+        SCOPED_TRACE(c.typed);
+
+        seedSession("deadbeef1234", kPidThatCannotExist);
+        if (::testing::Test::HasFatalFailure()) return;
+
+        MockClient mock;          // fresh counters per command
+        mock.shouldConnect = true;  // connecting is not the thing that saves us
+        primeReplies(mock);
+
+        auto cmd = createCommand(c.command, mock, output);
+        ASSERT_NE(cmd, nullptr);
+
+        const std::string printed = captureOutput([&]() {
+            EXPECT_EQ(cmd->execute(c.args), 2);
+        });
+
+        EXPECT_EQ(mock.connectAttempts, 0)
+            << "dialled a session whose daemon is known to be gone";
+        EXPECT_EQ(mock.rpcCalls, 0)
+            << "sent an RPC into a dead session -- this is the twenty-second "
+               "wait the guard exists to prevent";
+
+        const nlohmann::json doc = parseJson(printed);
+        EXPECT_EQ(doc["code"].get<std::string>(), "NO_DAEMON");
+        EXPECT_NE(doc["message"].get<std::string>().find("stale state file"),
+                  std::string::npos)
+            << "the message has to say WHY, or the operator cannot find the "
+               "session directory to clean up: " << doc["message"];
+    }
+}
+
+// The other side of the line, three ways. A guard that refused everything
+// would pass the sweep above and break the CLI, so each of these seeds a
+// session the guard must stay silent about and checks that the command still
+// gets as far as dialling. `shouldConnect = false` stops it there: what is
+// under test is whether the guard let it try, not what the daemon replies.
+TEST_F(CommandTest, EveryRpcCommand_LiveSession_StillDials)
+{
+    for (const RpcCommand& c : kRpcCommands) {
+        SCOPED_TRACE(c.typed);
+
+        seedSession("deadbeef1234", static_cast<long long>(getpid()));
+        if (::testing::Test::HasFatalFailure()) return;
+
+        MockClient mock;
+        mock.shouldConnect = false;   // stop at the door; the dial is the point
+
+        auto cmd = createCommand(c.command, mock, output);
+        ASSERT_NE(cmd, nullptr);
+        captureOutput([&]() { EXPECT_EQ(cmd->execute(c.args), 2); });
+
+        EXPECT_EQ(mock.connectAttempts, 1)
+            << "refused a session whose daemon is alive";
+    }
+}
+
+TEST_F(CommandTest, EveryRpcCommand_StaleSessionForAnotherInstance_StillDials)
+{
+    // A remote client's session directory can hold a co-resident daemon's
+    // leftovers. They describe someone else's dead daemon; the one at the far
+    // end of its TCP connection is fine, and has no local pid to check.
+    for (const RpcCommand& c : kRpcCommands) {
+        SCOPED_TRACE(c.typed);
+
+        DaemonRuntimeState rs;
+        rs.instanceId = "aaaaaaaaaaaa";           // the dead co-resident daemon
+        rs.pid        = kPidThatCannotExist;
+        rs.startedAt  = currentUtcIso8601();
+        ASSERT_TRUE(DaemonRuntimeStateFile::write(rs));
+
+        ClientState cs;                          // ...dialing a different one
+        cs.fileOk        = true;
+        cs.schemaVersion = kClientStateSchemaVersion;
+        cs.tokenFile     = "remote.json";
+        cs.instanceId    = "bbbbbbbbbbbb";
+        ClientStateFile::setOverride(cs);
+
+        MockClient mock;
+        mock.shouldConnect = false;
+
+        auto cmd = createCommand(c.command, mock, output);
+        ASSERT_NE(cmd, nullptr);
+        captureOutput([&]() { EXPECT_EQ(cmd->execute(c.args), 2); });
+
+        EXPECT_EQ(mock.connectAttempts, 1)
+            << "a co-resident daemon's leftovers blocked a remote client";
+    }
+}
+
+TEST_F(CommandTest, EveryRpcCommand_NoStateFileAtAll_StillDials)
+{
+    // The ordinary remote case: a hand-written dial spec, no daemon/state.json
+    // anywhere, and therefore no local pid to have an opinion about. "No
+    // evidence of a dead daemon" must not be read as "the daemon is dead".
+    for (const RpcCommand& c : kRpcCommands) {
+        SCOPED_TRACE(c.typed);
+
+        ClientState cs;
+        cs.fileOk        = true;
+        cs.schemaVersion = kClientStateSchemaVersion;
+        cs.tokenFile     = "remote.json";
+        ClientStateFile::setOverride(cs);        // no instance_id: a TCP dial
+
+        MockClient mock;
+        mock.shouldConnect = false;
+
+        auto cmd = createCommand(c.command, mock, output);
+        ASSERT_NE(cmd, nullptr);
+        captureOutput([&]() { EXPECT_EQ(cmd->execute(c.args), 2); });
+
+        EXPECT_EQ(mock.connectAttempts, 1)
+            << "refused a client with no local daemon to check";
+    }
+}
+
+// ── an unanswered query is not an empty answer ──────────────────────────────
+//
+// `module ls` and `stats` were the only two commands that reported a failed
+// RPC as data. Both returned LogosList::array() when nothing replied, so
+// against a daemon that was not running they printed `[]` and exited 0 -- the
+// one outcome a script cannot argue with. Everything else in the client
+// returns an error envelope for the same failure.
+
+TEST_F(CommandTest, ListModules_UnansweredRpc_IsNotAnEmptyList)
+{
+    mockClient.listModulesResult = std::nullopt;   // the RPC produced no reply
+
+    auto cmd = createCommand("list-modules", mockClient, output);
+    const std::string printed = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 2)
+            << "exit 0 here means \"the daemon answered, nothing is loaded\"";
+    });
+
+    const nlohmann::json doc = parseJson(printed);
+    EXPECT_EQ(doc["status"].get<std::string>(), "error");
+    EXPECT_EQ(doc["code"].get<std::string>(), "DAEMON_UNREACHABLE");
+}
+
+TEST_F(CommandTest, ListModules_AnsweredWithNothing_IsStillSuccess)
+{
+    // The control: an empty list is a perfectly good answer, and must not be
+    // turned into an error by the check above.
+    mockClient.listModulesResult = LogosList::array();
+
+    auto cmd = createCommand("list-modules", mockClient, output);
+    const std::string printed = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 0);
+    });
+
+    EXPECT_TRUE(parseJson(printed).is_array());
+    EXPECT_TRUE(parseJson(printed).empty());
+}
+
+TEST_F(CommandTest, Stats_UnansweredRpc_IsNotAnEmptyList)
+{
+    mockClient.moduleStatsResult = std::nullopt;
+
+    auto cmd = createCommand("stats", mockClient, output);
+    const std::string printed = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 2);
+    });
+
+    const nlohmann::json doc = parseJson(printed);
+    EXPECT_EQ(doc["status"].get<std::string>(), "error");
+    EXPECT_EQ(doc["code"].get<std::string>(), "DAEMON_UNREACHABLE");
+}
+
+TEST_F(CommandTest, Stats_AnsweredWithNothing_IsStillSuccess)
+{
+    mockClient.moduleStatsResult = LogosList::array();
+
+    auto cmd = createCommand("stats", mockClient, output);
+    const std::string printed = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 0);
+    });
+
+    EXPECT_TRUE(parseJson(printed).is_array());
+}
+
+// `status` had the same shape of bug by a different route: RpcClient::getStatus
+// synthesises a not_running report when nothing replies, and that report has a
+// "daemon" key, so it reached the success branch and exited 0.
+TEST_F(CommandTest, Status_UnansweredRpc_ReportsNotRunningAndExitsNonZero)
+{
+    // A live session, so `status` gets past "not_configured" and past the
+    // stale-session guard and actually reaches the RPC.
+    seedSession("deadbeef1234", static_cast<long long>(getpid()));
+    if (::testing::Test::HasFatalFailure()) return;
+
+    mockClient.statusResult = LogosMap{
+        {"daemon",    LogosMap{{"status", "not_running"}, {"version", "1.0.0"}}},
+        {"modules",   LogosList::array()},
+        {"rpc_error", "core_service not reachable"},
+    };
+
+    auto cmd = createCommand("status", mockClient, output);
+    const std::string printed = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 1)
+            << "exit 0 reads as \"the daemon is fine\" to anything checking the "
+               "code rather than the text";
+    });
+
+    const nlohmann::json doc = parseJson(printed);
+    EXPECT_EQ(doc["daemon"]["status"].get<std::string>(), "not_running");
+}
+
+TEST_F(CommandTest, Status_LiveDaemon_StillExitsZero)
+{
+    seedSession("deadbeef1234", static_cast<long long>(getpid()));
+    if (::testing::Test::HasFatalFailure()) return;
+
+    mockClient.statusResult = LogosMap{
+        {"daemon",  LogosMap{{"status", "running"}, {"pid", 4242}}},
+        {"modules", LogosList::array()},
+    };
+
+    auto cmd = createCommand("status", mockClient, output);
+    const std::string printed = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 0);
+    });
+
+    EXPECT_EQ(parseJson(printed)["daemon"]["status"].get<std::string>(), "running");
+}
+
+// ── status: same evidence, reported as a status rather than an error ────────
+
+TEST_F(CommandTest, Status_StaleSession_ReportsNotRunningWithoutDialling)
+{
+    seedSession("deadbeef1234", kPidThatCannotExist);
+    if (::testing::Test::HasFatalFailure()) return;
+
+    auto cmd = createCommand("status", mockClient, output);
+    const std::string printed = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 1);
+    });
+
+    EXPECT_EQ(mockClient.connectAttempts, 0);
+    EXPECT_EQ(mockClient.rpcCalls, 0);
+
+    const nlohmann::json doc = parseJson(printed);
+    EXPECT_EQ(doc["daemon"]["status"].get<std::string>(), "not_running");
+    EXPECT_EQ(doc["daemon"]["pid"].get<long long>(), kPidThatCannotExist)
+        << "naming the pid is what lets an operator confirm it really is gone";
+}
+
+TEST_F(CommandTest, Status_StaleSessionForAnotherInstance_StillDials)
+{
+    DaemonRuntimeState rs;
+    rs.instanceId = "aaaaaaaaaaaa";
+    rs.pid        = kPidThatCannotExist;
+    rs.startedAt  = currentUtcIso8601();
+    ASSERT_TRUE(DaemonRuntimeStateFile::write(rs));
+
+    ClientState cs;
+    cs.fileOk        = true;
+    cs.schemaVersion = kClientStateSchemaVersion;
+    cs.tokenFile     = "remote.json";
+    cs.instanceId    = "bbbbbbbbbbbb";
+    ClientStateFile::setOverride(cs);
+
+    mockClient.shouldConnect = false;
+
+    auto cmd = createCommand("status", mockClient, output);
+    captureOutput([&]() { EXPECT_EQ(cmd->execute({}), 1); });
+
+    EXPECT_EQ(mockClient.connectAttempts, 1)
+        << "a co-resident daemon's leftovers decided a remote client's status";
 }
 
 // ---------------------------------------------------------------------------

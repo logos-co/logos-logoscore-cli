@@ -293,7 +293,7 @@ Stop the running daemon.
 logosctl daemon stop
 ```
 
-If `daemon/state.json` records this client's daemon instance with a pid that is no longer alive, the session is stale: `stop` reports `NO_DAEMON` and exits 2 without dialing anything.
+If `daemon/state.json` records this client's daemon instance with a pid that is no longer alive, the session is stale: `stop` reports `NO_DAEMON` and exits 2 without dialing anything. This is not specific to `stop` — see [No daemon running](#no-daemon-running) — but it matters most here, because the shutdown path below reads a missing reply as a successful shutdown.
 
 Otherwise it sends a shutdown request to the daemon via `core_service`. The daemon performs a clean shutdown: unloads all modules, removes `daemon/state.json`, and exits. The client prints a confirmation message and exits.
 
@@ -1044,6 +1044,57 @@ $ logosctl module ls --json
 {"status":"error","code":"NO_DAEMON","message":"No running logosctl daemon. Start one with: logosctl daemon start"}
 ```
 
+#### A session whose daemon is gone
+
+A session directory can outlive its daemon, and from the client's side it still
+looks dialable: the dial spec and token are right where they were. Such a
+session is refused **up front**, before anything is dialed. Every command whose
+first act is an RPC applies the check: `call`, `catalog`, `key`, `module ls` /
+`load` / `show` / `reload` / `unload`, `package` (all subcommands), `stats`,
+`stop`, `watch`.
+
+The check exists because connecting proves nothing. A LocalSocket client
+succeeds against a socket path with no listener, and QtRO reports nothing for
+an absent peer, so the request is sent, never answered and never refused — and
+the command waits out the full RPC deadline (20s) before reporting a failure
+the session could have named immediately.
+
+It comes in two shapes, settled by different evidence:
+
+**The daemon crashed.** `daemon/state.json` is still there, naming a pid that
+is no longer alive.
+
+```
+$ logosctl module ls --json
+{"status":"error","code":"NO_DAEMON","message":"No daemon running (stale state file: pid 51203 is gone)."}
+```
+
+**The daemon was stopped.** A clean shutdown *removes* `daemon/state.json`, so
+there is no pid to check. What settles it is the socket the dial resolves to:
+either it is not there (a clean stop unlinks it) or it is there and refuses the
+connection (a hard kill leaves the file behind, and so does a clean stop for
+the moment between its reply and its teardown).
+
+```
+$ logosctl module ls --json
+{"status":"error","code":"NO_DAEMON","message":"No daemon running (no local endpoint at /tmp/logos_core_service_a1b2c3d4e5f6). A daemon that stopped removes it; start one in this session to get it back."}
+```
+
+Both are exit 2, and both are immediate.
+
+Cases that deliberately fall through to a normal dial rather than being
+refused: a `tcp` / `tcp_ssl` dial (no local socket to look for, and no local
+pid either), a dial spec with no `instance_id`, a `daemon/state.json` whose
+`instance_id` does not match the client's, and a socket that accepts the
+connection. The `instance_id` ones are what keep a *remote* client working when
+a co-resident daemon has left its own state file behind — that pid says nothing
+about the daemon at the far end of a TCP connection, and a remote dial spec
+carries no `instance_id`, so it never matches.
+
+`status` asks the same question and answers it as a status report instead of an
+error — `{"daemon":{"status":"not_running","reason":"stale state file: pid
+51203 is gone","pid":51203}}`, exit 1 — as a single JSON document.
+
 ### Output Rules
 
 - Primary output (results, data) goes to stdout.
@@ -1080,6 +1131,12 @@ All errors in JSON mode follow this structure:
 ```
 
 Error codes: `NO_DAEMON`, `DAEMON_UNREACHABLE`, `MODULE_NOT_FOUND`, `MODULE_LOAD_FAILED`, `MODULE_NOT_LOADED`, `METHOD_NOT_FOUND`, `METHOD_FAILED`, `TIMEOUT`, `AUTH_FAILED`, `INVALID_ARGS`.
+
+**An unanswered query is never reported as an empty result.** `module ls` and
+`stats` return `DAEMON_UNREACHABLE` with exit 2 when the RPC produced no reply,
+rather than printing `[]` and exiting 0 — a caller cannot tell that apart from
+a healthy session with nothing loaded. `status` likewise exits 1, not 0, when
+its report is the synthesized "not running" one.
 
 ---
 

@@ -416,6 +416,31 @@ logosctl call blobstore put 'json:@blob.json'   # {"_bytes":"..."} from a file
 | `3` | Module error (not found, load/unload failed) |
 | `4` | Method error (not found, call failed, timeout) |
 
+A session left behind by a daemon that is no longer there is exit 2 as well,
+and is reported immediately rather than after the RPC deadline — whether the
+daemon crashed:
+
+```
+$ logosctl module ls --json
+{"status":"error","code":"NO_DAEMON","message":"No daemon running (stale state file: pid 51203 is gone)."}
+```
+
+or was stopped normally, which leaves no pid to name and is settled by the
+socket instead:
+
+```
+$ logosctl module ls --json
+{"status":"error","code":"NO_DAEMON","message":"No daemon running (no local endpoint at /tmp/logos_core_service_a1b2c3d4e5f6). A daemon that stopped removes it; start one in this session to get it back."}
+```
+
+Start a daemon (`logosctl daemon start`) and both are restored; nothing needs
+cleaning up by hand. A client dialing a *remote* daemon is unaffected by either
+check.
+
+`module ls` and `stats` report an unanswered RPC as `DAEMON_UNREACHABLE`
+(exit 2), never as an empty list — `[]` means the daemon answered and nothing
+matched.
+
 
 #### Packages
 
