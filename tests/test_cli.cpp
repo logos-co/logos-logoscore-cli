@@ -1,10 +1,15 @@
 #include <gtest/gtest.h>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <string>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/wait.h>
+#include <unistd.h>
 #include <vector>
 
 #ifdef __APPLE__
@@ -238,6 +243,290 @@ TEST_F(CLITest, Stop_NoDaemon_ReturnsFast) {
     EXPECT_LE(secs, 5) << "stop should return within 5 seconds (took " << secs << "s).";
     EXPECT_NE(exitCode, 0);
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// A session whose daemon is gone
+//
+// The cases above run against a machine with no session at all, where the
+// client gives up before it dials and any command looks fast. The slow case is
+// the one an operator actually hits: a session directory left behind by a
+// daemon that is no longer there. The dial spec is still present and still
+// "works" -- a LocalSocket client connects to a path with no listener without
+// complaint -- so the request goes out, nothing answers, QtRO reports nothing,
+// and the command waits out Timeout(20000) (logos-protocol, cpp/logos_mode.h).
+//
+// It comes in two shapes, and they need different evidence:
+//
+//   Crashed        daemon/state.json is still there, naming a dead pid.
+//                  Caught by detectStaleSession() in Command::ensureConnected.
+//
+//   CleanlyStopped daemon/state.json was REMOVED and the socket unlinked, but
+//                  client/config.yaml and the token remain. There is no pid to
+//                  check, so the pid guard has nothing to say; what settles it
+//                  is that the socket the dial resolves to is not there.
+//
+//   SocketLeftOver the socket file is still on disk with nobody behind it. A
+//                  hard-killed daemon leaves this, and so does a clean stop
+//                  for the window between its shutdown reply and QLocalServer's
+//                  destructor -- which is exactly when the next command gets
+//                  typed. Presence of the file settles nothing; being REFUSED
+//                  by it does.
+//
+// Both must fail at once. These are end-to-end on purpose: the unit tests pin
+// the logic against mocks, but only a real binary against a real session
+// directory can show that the twenty seconds are actually gone.
+// ═════════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// Beyond every platform's pid ceiling (macOS 99998, Linux's default 4194304),
+// so it cannot collide with some unrelated process that happens to be running.
+constexpr const char* kGonePid = "2147483646";
+
+// An instance id no live daemon on this machine can be using, which is what
+// makes the socket check meaningful without having to control $TMPDIR: the
+// endpoint `logos_core_service_<this>` cannot exist.
+constexpr const char* kDeadInstance = "deadbeef1234";
+
+// Everything a client needs in order to try, and nothing at the other end.
+struct DeadSessionFixture {
+    enum Shape { Crashed, CleanlyStopped, SocketLeftOver };
+
+    fs::path dir;
+    // Non-empty only for SocketLeftOver: a private, SHORT $TMPDIR to hold the
+    // dead socket. Short because sockaddr_un::sun_path is 104 bytes on macOS
+    // and the platform temp dir alone eats half of that. Both the daemon and
+    // the client resolve a bare socket name against $TMPDIR, so handing the
+    // command this one is what puts the file where its dial will look.
+    fs::path socketDir;
+    bool     socketStaged = false;
+
+    DeadSessionFixture(const std::string& name, Shape shape)
+    {
+        dir = fs::temp_directory_path() /
+              ("logosctl_cli_" + name + "_" + std::to_string(::getpid()));
+        fs::remove_all(dir);
+        fs::create_directories(dir / "client");
+        fs::create_directories(dir / "daemon");
+
+        // JSON, which is valid YAML, so the same text serves both readers.
+        put(dir / "client" / "config.yaml",
+            std::string(R"({"version":2,"token_file":"auto.json","instance_id":")")
+                + kDeadInstance
+                + R"(","daemon":{"core_service":{"transport":"local"}}})");
+        put(dir / "client" / "auto.json", R"({"token":"0123456789abcdef"})");
+
+        // A clean shutdown removes this file. A crash leaves it behind.
+        if (shape == Crashed)
+            put(dir / "daemon" / "state.json",
+                std::string(R"({"version":2,"instance_id":")") + kDeadInstance
+                    + R"(","pid":)" + kGonePid
+                    + R"(,"started_at":"2026-01-01T00:00:00Z"})");
+
+        if (shape == SocketLeftOver) {
+            socketDir = fs::path("/tmp") / ("lgx" + std::to_string(::getpid()));
+            fs::remove_all(socketDir);
+            fs::create_directories(socketDir);
+            socketStaged = bindThenAbandon(
+                socketDir / (std::string("logos_core_service_") + kDeadInstance));
+        }
+    }
+    ~DeadSessionFixture()
+    {
+        fs::remove_all(dir);
+        if (!socketDir.empty()) fs::remove_all(socketDir);
+    }
+
+    // What the command line needs in front of it to make this session's socket
+    // the one the dial resolves to. Empty for the shapes that do not stage one.
+    std::string env() const
+    {
+        return socketDir.empty() ? std::string{}
+                                 : "TMPDIR='" + socketDir.string() + "' ";
+    }
+
+    // Bind and listen, then close the listener WITHOUT unlinking -- leaving an
+    // inode that exists and refuses. False if the path would not fit in
+    // sun_path, which the caller reports as a skip rather than a failure.
+    static bool bindThenAbandon(const fs::path& path)
+    {
+        const std::string p = path.string();
+        sockaddr_un addr{};
+        if (p.size() >= sizeof(addr.sun_path)) return false;
+        addr.sun_family = AF_UNIX;
+        std::memcpy(addr.sun_path, p.c_str(), p.size());
+
+        const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0) return false;
+        ::unlink(p.c_str());
+        if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0
+            || ::listen(fd, 4) != 0) {
+            ::close(fd);
+            return false;
+        }
+        ::close(fd);          // listener gone; the inode stays
+        return true;
+    }
+
+    static void put(const fs::path& path, const std::string& body)
+    {
+        std::ofstream ofs(path, std::ios::trunc);
+        ofs << body << "\n";
+    }
+};
+
+// Every command whose first act is an RPC, in the spelling a person types.
+const std::vector<std::string>& rpcCommands()
+{
+    static const std::vector<std::string> kCommands{
+        "module ls",
+        "module load chat",
+        "module show chat",
+        "module reload chat",
+        "module unload chat",
+        "call chat send hi",
+        "stats",
+        "stop",
+        "watch chat",
+        "package ls",
+        "package show chat",
+        "package deps chat",
+        "package search chat",
+        "package download chat",
+        "package install chat",
+        "catalog ls",
+        "key ls",
+    };
+    return kCommands;
+}
+
+} // namespace
+
+// The shared body. `run` is bound by the test to the fixture's own helper
+// (which is protected, so a free function cannot reach it). `expectPid` is
+// false for the cleanly-stopped shape, where there is no pid on disk to name
+// -- the message points at the missing socket instead.
+using LogosctlRunner = std::function<int(const std::string&, std::string*)>;
+static void expectEveryRpcCommandFailsAtOnce(const LogosctlRunner& run,
+                                             const DeadSessionFixture& fx,
+                                             bool expectPid);
+
+TEST_F(CLITest, CrashedSession_EveryRpcCommandFailsAtOnce) {
+    DeadSessionFixture fx("crashedsession", DeadSessionFixture::Crashed);
+    expectEveryRpcCommandFailsAtOnce(
+        [this](const std::string& a, std::string* o) {
+            return runLogosctlWithTimeout(a, o, 5);
+        },
+        fx, /*expectPid=*/true);
+}
+
+// The tidier way to end up here, and the one the pid guard cannot see: a
+// normal `daemon stop` takes daemon/state.json and the socket with it and
+// leaves the dial spec behind.
+TEST_F(CLITest, CleanlyStoppedSession_EveryRpcCommandFailsAtOnce) {
+    DeadSessionFixture fx("cleanstop", DeadSessionFixture::CleanlyStopped);
+    expectEveryRpcCommandFailsAtOnce(
+        [this](const std::string& a, std::string* o) {
+            return runLogosctlWithTimeout(a, o, 5);
+        },
+        fx, /*expectPid=*/false);
+}
+
+// The window a stat cannot see through: the socket file is still on disk, so
+// "is it there?" says yes, and only being REFUSED by it settles the question.
+TEST_F(CLITest, SocketLeftOverWithNoListener_EveryRpcCommandFailsAtOnce) {
+    DeadSessionFixture fx("socketleft", DeadSessionFixture::SocketLeftOver);
+    if (!fx.socketStaged)
+        GTEST_SKIP() << "could not bind a short-enough socket path under "
+                     << fx.socketDir;
+
+    // $TMPDIR is how the staged socket becomes the one the dial resolves to;
+    // the fixture's env() carries it, so this runner cannot go through
+    // runLogosctlWithTimeout (which has nowhere to put it).
+    const fs::path bin = logosctlBinary;
+    const std::string env = fx.env();
+    expectEveryRpcCommandFailsAtOnce(
+        [&bin, &env](const std::string& a, std::string* o) -> int {
+            const std::string cmd = env + "timeout 5 " + bin.string() + " " + a + " 2>&1";
+            FILE* pipe = popen(cmd.c_str(), "r");
+            if (!pipe) return -1;
+            char buf[256];
+            while (fgets(buf, sizeof(buf), pipe)) *o += buf;
+            // An lvalue: WEXITSTATUS takes the address of its argument.
+            int status = pclose(pipe);
+            return WEXITSTATUS(status);
+        },
+        fx, /*expectPid=*/false);
+}
+
+// `status` asks the same question and answers it as a status report rather
+// than an error, so it exits 1 and describes the session instead.
+TEST_F(CLITest, CrashedSession_StatusReportsNotRunningAtOnce) {
+    DeadSessionFixture fx("crashedstatus", DeadSessionFixture::Crashed);
+
+    std::string output;
+    int exitCode = runLogosctlWithTimeout(
+        "--config-dir " + fx.dir.string() + " status --json", &output, 5);
+
+    EXPECT_EQ(exitCode, 1) << "Output:\n" << output;
+    EXPECT_NE(output.find("not_running"), std::string::npos) << "Output:\n" << output;
+    EXPECT_NE(output.find(kGonePid), std::string::npos)
+        << "the report must name the pid that is gone. Output:\n" << output;
+}
+
+TEST_F(CLITest, CleanlyStoppedSession_StatusReportsNotRunningAtOnce) {
+    DeadSessionFixture fx("cleanstopstatus", DeadSessionFixture::CleanlyStopped);
+
+    std::string output;
+    int exitCode = runLogosctlWithTimeout(
+        "--config-dir " + fx.dir.string() + " status --json", &output, 5);
+
+    // Exit 1, not 0. This reported "not_running" and exited 0 -- the text was
+    // right and the exit code said the daemon was fine.
+    EXPECT_EQ(exitCode, 1)
+        << (exitCode == 124 ? "still running after 5s. " : "")
+        << "Output:\n" << output;
+    EXPECT_NE(output.find("not_running"), std::string::npos) << "Output:\n" << output;
+
+    // ONE document. `status` formats its own "not running" report, so it must
+    // not also let the connect helper print an error envelope -- two JSON
+    // objects on stdout is not something a caller can parse.
+    int lines = 0;
+    for (std::size_t i = 0, n = 0; (n = output.find('\n', i)) != std::string::npos; i = n + 1)
+        if (n > i) ++lines;
+    EXPECT_EQ(lines, 1) << "expected a single JSON document. Output:\n" << output;
+}
+
+static void expectEveryRpcCommandFailsAtOnce(const LogosctlRunner& run,
+                                             const DeadSessionFixture& fx,
+                                             bool expectPid)
+{
+    for (const std::string& c : rpcCommands()) {
+        SCOPED_TRACE(c);
+        std::string output;
+        // The 5s kill is the assertion's teeth: exit 124 means the command was
+        // still waiting for a reply that is never coming.
+        int exitCode = run("--config-dir " + fx.dir.string() + " " + c + " --json",
+                           &output);
+
+        EXPECT_EQ(exitCode, 2)
+            << (exitCode == 124
+                    ? "still running after 5s -- it is sitting out the RPC "
+                      "deadline against a daemon that is already gone. "
+                    : exitCode == 0
+                    ? "exited 0 -- it reported a failed RPC as data. "
+                    : "")
+            << "Output:\n" << output;
+        EXPECT_NE(output.find("NO_DAEMON"), std::string::npos)
+            << "Output:\n" << output;
+        if (expectPid) {
+            EXPECT_NE(output.find(kGonePid), std::string::npos)
+                << "the error must name the pid, or there is nothing to act "
+                   "on. Output:\n" << output;
+        }
+    }
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Configuration moved from flags to the session's YAML documents.
 //

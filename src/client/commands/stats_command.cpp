@@ -16,7 +16,17 @@ int StatsCommand::execute(const std::vector<std::string>& args)
     if (err != 0)
         return err;
 
-    LogosList stats = client().getModuleStats();
-    output().printStats(stats);
+    const std::optional<LogosList> stats = client().getModuleStats();
+
+    // Same reasoning as `module ls`: no reply is not "no modules to report
+    // on". See Client::getModuleStats.
+    if (!stats) {
+        output().printError("DAEMON_UNREACHABLE",
+                            "The daemon did not answer, so module stats are "
+                            "unknown (this is not an empty list).");
+        return 2;
+    }
+
+    output().printStats(*stats);
     return 0;
 }

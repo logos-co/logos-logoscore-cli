@@ -259,21 +259,60 @@ main.cpp
     3. Print to stdout, exit
 ```
 
-Client commands **never** call liblogos C API functions, and they never read
-`daemon/state.json`. They talk exclusively to the daemon's `core_service`
-module via the SDK's RPC mechanism, using whatever dial spec
-`client/config.json` provides. This means the client path depends only on
-`logos-cpp-sdk`, not on `liblogos`.
+Client commands **never** call liblogos C API functions. They talk exclusively
+to the daemon's `core_service` module via the SDK's RPC mechanism, using
+whatever dial spec `client/config.json` provides. This means the client path
+depends only on `logos-cpp-sdk`, not on `liblogos`.
 
-**Liveness** is no longer a separate pre-check. The previous PID-alive probe
-only worked for local daemons — it's meaningless for a daemon in a container
-or across NAT. The first RPC (commonly `status`) surfaces connect failures
-through the same timeout/error path as any other method, so there's one error
-story. `DaemonRuntimeStateFile::read().fileOk` now just reflects "file exists
-and parses" — the on-disk precondition, not liveness. The `status` command
-*does* opportunistically `kill(pid, 0)` against `state.json`'s pid for fast
-same-host stale-state detection, but that's a short-circuit before falling
-through to the same RPC path.
+**Liveness** is not a general pre-check — a PID probe is meaningless for a
+daemon in a container or across NAT, so the first RPC is what surfaces a
+connect failure, through the same timeout/error path as any other method.
+
+The one exception is the case where that story breaks down: a session
+directory whose own daemon is gone. `Command::ensureConnected()` calls
+`detectStaleSession()` first, and refuses (`NO_DAEMON`, exit 2) when
+`daemon/state.json` names **this client's** `instance_id` and a pid that
+`kill(pid, 0)` says is gone. Every RPC-opening command inherits it, because
+they all reach the wire through `ensureConnected()`.
+
+That is worth a disk read because connecting proves nothing: a LocalSocket
+client succeeds against a socket path with no listener, QtRO reports nothing
+for an absent peer, and the request is therefore neither answered nor refused
+— the command waits out `Timeout(20000)` (logos-protocol, `cpp/logos_mode.h`)
+and only then reports a failure `state.json` could have named at once.
+
+The `instance_id` gate is what keeps this local-only check safe for remote
+clients: a co-resident daemon's leftover `state.json` describes someone else's
+process, and a remote dial spec carries no `instance_id` at all, so the guard
+stays silent and the command dials normally. Same for a session with no
+`state.json`. `DaemonRuntimeStateFile::read().fileOk` still means only "file
+exists and parses" — the guard pairs it with the pid probe and the id match.
+
+**The tidier way to end up with no daemon** is a clean `daemon stop`, and the
+pid guard cannot see it: that path *removes* `daemon/state.json`, leaving
+`client/config.yaml` and the token behind with no pid to check. So
+`RpcClient::connect()` asks the socket instead, via
+`logosctl::localEndpointProvablyAbsent` (`src/local_endpoint.h`), before it
+builds a `LogosAPIClient`:
+
+1. The dial resolves to `QDir::tempPath()/logos_core_service_<instance_id>` —
+   the SDK asks for the bare name (`LogosInstance::id`) and Qt resolves a bare
+   `QLocalSocket`/`QLocalServer` name against the temp dir. Deriving it the
+   same way is what makes the answer sound rather than a guess.
+2. No file there ⇒ nobody home. A clean shutdown unlinks it.
+3. File there but `connect()` is **refused** ⇒ nobody home. The file outlives
+   the daemon: a hard kill leaves it, and a clean stop leaves a window between
+   the shutdown reply and `QLocalServer`'s destructor — which is exactly when
+   the next command gets typed. Presence alone settles nothing, which is why a
+   stat is not enough. `ECONNREFUSED` is the same signal
+   `logos::isSocketDead` uses to decide a socket is safe for the daemon's boot
+   reaper to unlink.
+
+Everything else — a socket that accepts us, any other `connect()` error, a
+path too long for `sun_path`, a non-socket inode, Windows (named pipes), a
+`tcp`/`tcp_ssl` dial, an empty `instance_id` — fails closed and dials
+normally. Refusing a reachable daemon would be far worse than the wait this
+removes.
 
 ### Inline Path (removed)
 
@@ -772,6 +811,14 @@ Parallel daemons run side-by-side when invoked with distinct `--config-dir` valu
 | `Command::execute(args) -> int` | Run the command, return exit code |
 | `Command::client() -> Client&` | Access the core_service client |
 | `Command::output() -> Output&` | Access the output formatter |
+| `Command::ensureConnected() -> int` | Refuse a stale session, else connect. 0 on success; prints `NO_DAEMON` and returns 2 otherwise. The single door every RPC-opening command goes through |
+| `detectStaleSession() -> optional<StaleSession>` | Free function. "This session's daemon is provably gone", from `daemon/state.json`'s pid and `instance_id`. `nullopt` for a live daemon, a foreign instance, or no state file — see [Client Path](#client-path-logosctl-subcommand) |
+
+The companion check lives one layer down, in `RpcClient::connect()`:
+
+| Function | Description |
+|----------|-------------|
+| `logosctl::localEndpointProvablyAbsent(module, instanceId, pathOut)` | `src/local_endpoint.h`, header-only. "A local dial cannot reach anyone": the socket file is missing, or it is there and refuses. Fails closed on everything else. Covers the cleanly-stopped session the pid guard cannot see |
 
 ---
 
@@ -841,7 +888,15 @@ logosctl module ls [--loaded]
 4. Formats and prints result with NAME, VERSION, STATUS, UPTIME columns
 5. Crash metadata (`exit_code`, `crashed_at`, `crash_reason`) is included in JSON for crashed modules
 
-**Exit codes:** 0 on success, 2 if no daemon.
+An **unanswered** RPC is reported as `DAEMON_UNREACHABLE`, not as an empty
+list. `Client::listModules` returns `optional<LogosList>` for exactly this
+reason: it used to answer a failed call with `LogosList::array()`, so against
+a daemon that was not running this printed `[]` and exited 0 — the one outcome
+a script cannot argue with, since a healthy session with nothing loaded says
+the same thing. `stats` had the identical bug and the identical fix.
+
+**Exit codes:** 0 on success (including an empty list), 2 if no daemon or the
+daemon did not answer.
 
 ### logosctl daemon status
 
@@ -853,11 +908,17 @@ logosctl daemon status
 
 **Behavior:**
 1. Reads `<configDir>/client/config.json` to learn how to dial. If missing or unparseable, prints "not running" and exits with code 1 (no point trying to connect).
-2. Otherwise tries to connect and call `core_service.getStatus()`. The RPC call IS the liveness check — there's no separate cheap probe, because no cheap probe is correct across every transport (local Unix socket vs remote TCP across NAT is a meaningless question for PID-based liveness).
-3. On RPC timeout / connect refused: reports "not running" with the error reason, exits with code 1.
-4. On success: displays daemon info (PID, uptime, version, instance ID) and all module statuses with summary counts.
+2. Runs the same `detectStaleSession()` guard `ensureConnected()` does, one step earlier: a session whose own daemon's pid is gone reports `not_running` with the pid and the reason, exit 1. Earlier and separately because "no daemon" is an *answer* to `status`, not an error — the shared guard's `NO_DAEMON` / exit 2 would be the wrong shape.
+3. Otherwise tries to connect and call `core_service.getStatus()`. The RPC call IS the liveness check — there's no separate cheap probe, because no cheap probe is correct across every transport (local Unix socket vs remote TCP across NAT is a meaningless question for PID-based liveness).
+4. On RPC timeout / connect refused: reports "not running" with the error reason, exits with code 1.
+5. On success: displays daemon info (PID, uptime, version, instance ID) and all module statuses with summary counts.
 
-**Exit codes:** 0 on success, 1 if daemon not running (uses 1 not 2 because the status command itself succeeded — it's reporting the state, not failing to connect).
+`status` connects directly rather than through `ensureConnected()`, because
+that helper *prints* a `NO_DAEMON` error envelope on failure and this command's
+answer to "no daemon" is a status report — going through it would put two JSON
+documents on stdout for one command.
+
+**Exit codes:** 0 on success, 1 if daemon not running (uses 1 not 2 because the status command itself succeeded — it's reporting the state, not failing to connect). A synthesized "not running" report — the one `RpcClient::getStatus` returns when the RPC produced no reply, marked with `rpc_error` — counts as not running and exits 1; it used to reach the success branch and exit 0, so the text said one thing and the exit code said another.
 
 ### logosctl module reload
 
@@ -944,7 +1005,11 @@ logosctl stats
 2. Calls `core_service.getModuleStats()`
 3. Formats as table (human) or JSON array
 
-**Exit codes:** 0 on success, 2 if no daemon.
+As with `module ls`, an unanswered RPC is `DAEMON_UNREACHABLE` rather than an
+empty stats list.
+
+**Exit codes:** 0 on success (including an empty list), 2 if no daemon or the
+daemon did not answer.
 
 ### logosctl daemon stop
 
@@ -955,7 +1020,7 @@ logosctl daemon stop
 ```
 
 **Behavior:**
-1. Refuses up front if `daemon/state.json` names this client's instance and a pid that is no longer alive — a stale session has no daemon to stop, and a LocalSocket client would otherwise "connect" to nothing (`NO_DAEMON`, exit 2; the same guard `daemon status` applies)
+1. Refuses up front if `daemon/state.json` names this client's instance and a pid that is no longer alive (`NO_DAEMON`, exit 2). This is `ensureConnected()`'s guard, shared by every RPC-opening command, but `stop` is the one that would otherwise turn the silence into a *success*: steps 6-7 below read a missing reply plus a dead pid as a clean shutdown, and against a session that was already stale both are true before the command says anything
 2. Connects to daemon via `Client`
 3. Reads `daemon/state.json` for the daemon's pid **before** issuing the call — a clean shutdown deletes that file, so afterwards it is unreadable
 4. Calls `core_service.shutdown()` (5s deadline; the daemon answers before doing any work, so a slower reply is a lost one)

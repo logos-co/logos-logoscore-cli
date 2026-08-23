@@ -65,6 +65,7 @@ add_executable(unit_tests
     test_token_store.cpp
     test_port_allocator.cpp
     test_process_util.cpp
+    test_local_endpoint.cpp
     test_package_bootstrap.cpp
     test_call_envelope.cpp
 )
