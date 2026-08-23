@@ -626,7 +626,12 @@ int Daemon::start(int argc, char* argv[],
     }
     const std::string autoTokenRaw = autoTokenOutcome.token;
 
-    TokenManager::instance().saveToken("cli_client", autoTokenRaw);
+    // saveINBOUND, not saveToken: "cli_client" is a CALLER of this daemon and
+    // autoTokenRaw is the token it will PRESENT to us — not a credential we
+    // present to it. The store is direction-split, so the outbound `saveToken`
+    // files this under "when the daemon calls cli_client, send autoTokenRaw",
+    // and the inbound check that authenticates the client's RPCs finds nothing.
+    TokenManager::instance().saveInboundToken("cli_client", autoTokenRaw);
 
     // 8b. Bring up the bundled package modules and point them at this
     //     session's directories.
