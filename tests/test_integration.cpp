@@ -57,7 +57,6 @@
 #include <fstream>
 #include <map>
 #include <optional>
-#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1148,30 +1147,22 @@ TEST_F(SocketLifecycleTest, BootReapsStaleSocketsButSparesLiveOnesAndFiles)
 // Deny-by-default inter-module access enforcement (`access_policy`)
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// The end-to-end proof, on a REAL daemon: same binaries, same modules, same
-// call — the only variable between the fixtures below is whether the session's
-// `access_policy` was set to the deny-by-default document. logosctl takes it
-// from the daemon config rather than from a flag (`logoscore` spells the same
-// document `--access-policy enforce`; see test_integration_logoscore.cpp).
+// The end-to-end proof, on a REAL daemon: the session's `access_policy` is set
+// to the deny-by-default document before modules load. logosctl takes it from
+// daemon config; logoscore spells the same document `--access-policy enforce`
+// (see test_integration_logoscore.cpp).
 //
-// The probe is capability_module.requestModule(caller, target), which is the
-// gate every inter-module call passes through: no token minted ⇒ the call can
-// never proceed. Driving it directly (rather than through a module that calls
-// out) keeps the assertion on the gate itself, with no module-side retry or
-// timeout policy in the way.
-//
-// The (caller, target) pairs come from logos-test-modules' declared metadata:
-//   test_ipc_new_api_module   declares  [test_basic_module, test_extlib_module]
-//   test_basic_module declares  []            ← so basic -> extlib is UNdeclared
-//
-// Both directions matter, and the DECLARED one carries the weight: an
-// implementation that refused everything would satisfy the "denied" half on
-// its own.
+// The direct CLI probe below is deliberately a HOST call, not a synthetic
+// module call. `fromModuleName` is legacy, untrusted input; capability_module
+// must derive the caller from the token and therefore see this as `core`.
+// The declared module-to-module half is driven through test_ipc_new_api_module
+// below, where the call genuinely originates in that module's process.
 namespace {
 
-// requestModule is a two-arg call returning the minted token, or "" on refusal.
-// Returns nullopt if the client call itself failed (a broken daemon, not a
-// policy decision) so the tests can tell those apart.
+// requestModule is the legacy two-argument surface. The first argument is
+// intentionally supplied here to prove it CANNOT forge the caller identity;
+// the dispatch token is authoritative. Returns nullopt only when the client
+// call itself failed (as distinct from an empty refusal result).
 std::optional<std::string> requestModuleToken(const LogosctlDaemon& d,
                                               const std::string& caller,
                                               const std::string& target,
@@ -1189,28 +1180,6 @@ std::optional<std::string> requestModuleToken(const LogosctlDaemon& d,
     if (result.is_string()) return result.get<std::string>();
     if (result.is_null()) return std::string{};
     return std::nullopt;
-}
-
-// True when the daemon log carries an access-policy refusal naming BOTH
-// modules. Matched structurally (a line that says it denied, mentioning caller
-// and target) rather than by exact text: capability_module has more than one
-// implementation in this tree and they quote the names differently ('x' vs
-// "x"). What must not vary is that both names are on the line.
-bool logDeniesPair(const std::string& log,
-                   const std::string& caller,
-                   const std::string& target)
-{
-    std::istringstream in(log);
-    std::string line;
-    while (std::getline(in, line)) {
-        if (line.find("denies") == std::string::npos) continue;
-        const auto c = line.find(caller);
-        const auto t = line.find(target);
-        // Ordered caller-then-target: "denies A -> B" and "denies B -> A" are
-        // different claims, and only the first is the one under test.
-        if (c != std::string::npos && t != std::string::npos && c < t) return true;
-    }
-    return false;
 }
 
 // The bare deny-by-default document — the same text `logoscore
@@ -1256,72 +1225,44 @@ protected:
 
 } // namespace
 
-// ── Policy unset: unchanged behaviour ───────────────────────────────────────
-
-TEST_F(AccessPolicyFixture, NoPolicy_UndeclaredPairStillMintsAToken) {
-    bootWith("");
-    if (::testing::Test::IsSkipped() || ::testing::Test::HasFatalFailure()) return;
-
-    std::string raw;
-    // test_basic_module never declared test_extlib_module. Without a policy
-    // this is unrestricted, and it must STAY unrestricted — several modules in
-    // this tree call targets they never declared.
-    auto token = requestModuleToken(d, "test_basic_module", "test_extlib_module", &raw);
-    ASSERT_TRUE(token.has_value()) << "requestModule call failed outright:\n" << raw;
-    EXPECT_FALSE(token->empty())
-        << "an undeclared pair must still be minted with no access policy — "
-           "this is the pre-existing behaviour the default must preserve.\n"
-        << raw << "\n--- daemon log ---\n" << slurp(d.daemonLog);
-
-    // Nothing was denied, so nothing may be logged as denied either.
-    EXPECT_FALSE(logDeniesPair(slurp(d.daemonLog), "test_basic_module", "test_extlib_module"))
-        << "no policy is installed — nothing should be denied.\n"
-        << slurp(d.daemonLog);
-}
-
-// ── Policy armed: deny-by-default, both directions ──────────────────────────
-
-TEST_F(AccessPolicyFixture, EnforcePolicy_RefusesUndeclaredPairAndLogsBothNames) {
+TEST_F(AccessPolicyFixture, EnforcePolicy_IgnoresTheForgedLegacyCallerName) {
     bootWith(kEnforceDoc);
     if (::testing::Test::IsSkipped() || ::testing::Test::HasFatalFailure()) return;
 
     std::string raw;
+    // This RPC originates in logosctl's core_service. Passing
+    // test_basic_module here used to make the test *pretend* that module had
+    // called; the caller-identity hardening deliberately rejects that premise.
+    // `core` is an allowed control-plane caller, so the token is minted, while
+    // the daemon log proves the legacy string was ignored rather than trusted.
     auto token = requestModuleToken(d, "test_basic_module", "test_extlib_module", &raw);
     ASSERT_TRUE(token.has_value()) << "requestModule call failed outright:\n" << raw;
-    EXPECT_TRUE(token->empty())
-        << "an undeclared pair must be REFUSED under an enforce policy.\n"
+    EXPECT_FALSE(token->empty())
+        << "the host control plane must retain its allowed request path under "
+           "enforcement.\n"
         << raw << "\n--- daemon log ---\n" << slurp(d.daemonLog);
-
-    // A silent denial is the failure mode this codebase has been debugged for
-    // twice: it presents as a call returning empty. The refusal must name BOTH
-    // modules in the log.
     const std::string log = slurp(d.daemonLog);
-    EXPECT_TRUE(logDeniesPair(log, "test_basic_module", "test_extlib_module"))
-        << "the refusal must be logged with both module names.\n" << log;
+    EXPECT_NE(log.find("ignoring leftover fromModuleName='test_basic_module' "
+                       "(token-bound caller is 'core')"), std::string::npos)
+        << "capability_module trusted the caller-supplied legacy name instead "
+           "of the token-bound host identity.\n" << log;
 }
 
 TEST_F(AccessPolicyFixture, EnforcePolicy_StillAllowsADeclaredPair) {
     bootWith(kEnforceDoc);
     if (::testing::Test::IsSkipped() || ::testing::Test::HasFatalFailure()) return;
 
-    // The half that matters: enforcement that refused everything would pass
-    // the test above and break every real deployment. test_ipc_new_api_module DECLARED
-    // test_basic_module, so it must still be minted a token.
-    std::string raw;
-    auto token = requestModuleToken(d, "test_ipc_new_api_module", "test_basic_module", &raw);
-    ASSERT_TRUE(token.has_value()) << "requestModule call failed outright:\n" << raw;
-    EXPECT_FALSE(token->empty())
-        << "a DECLARED caller must still be allowed under enforce — otherwise "
-           "the policy just breaks everything.\n"
-        << raw << "\n--- daemon log ---\n" << slurp(d.daemonLog);
-
-    // …and the same daemon still refuses the undeclared pair, so the allow
-    // above is not "enforcement quietly failed to arm".
-    auto denied = requestModuleToken(d, "test_basic_module", "test_extlib_module", &raw);
-    ASSERT_TRUE(denied.has_value()) << raw;
-    EXPECT_TRUE(denied->empty())
-        << "control: the undeclared pair must be refused on this same daemon.\n"
-        << raw << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+    // A real module-originated call: test_ipc_new_api_module declares
+    // test_basic_module, so its typed wrapper asks capability_module for a
+    // token from inside the module process. This is the integration oracle for
+    // the allow path; the denied-pair oracle belongs in capability_module's
+    // own tests, where it can establish a real caller scope without forging
+    // this legacy RPC argument from the host.
+    std::string out;
+    ASSERT_EQ(d.run("call test_ipc_new_api_module callBasicEcho policy_ok", &out, 20), 0)
+        << "a declared module-to-module call must remain allowed under enforce.\n"
+        << out << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+    EXPECT_NE(out.find("policy_ok"), std::string::npos) << out;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
