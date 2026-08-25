@@ -4,95 +4,14 @@
   inputs = {
     logos-nix.url = "github:logos-co/logos-nix";
     nixpkgs.follows = "logos-nix/nixpkgs";
-    # Direct SDK input so the CLI binary can link logos_sdk and use its
-    # public symbols (e.g. logos::transportSetToJsonString) without
-    # relying on the symbol surviving liblogos_core's link-time
-    # dead-strip. liblogos's own SDK pin still drives transitive deps.
-    # Master-tracking. This was rev-pinned at a04b2788, the b3 codegen tip the
-    # rest of this stack (logos-plugin-qt's qt-host, logos-liblogos) was built
-    # against while the capability split lived only on that branch. It has
-    # merged (logos-cpp-sdk#138, master 95d7b3a): master carries
-    # cpp/logos_host_services.h and the rest of the split, so the pin's whole
-    # rationale is gone. Verified against master's FILES, not by ancestry —
-    # #138 was SQUASH-merged, so `merge-base --is-ancestor a04b2788 master` is
-    # correctly false even though every line of it is in master.
     logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk";
-    logos-cpp-sdk.inputs.logos-protocol.follows = "logos-protocol";
-    # Master-tracking. This was rev-pinned at c8bab128, on logos-protocol's
-    # per-client token store branch, because logos-qt-host calls
-    # TokenManager::forIdentity/isolateIdentity and an older or default-branch
-    # logos-protocol failed to COMPILE logos-qt-host. That branch has merged
-    # (logos-protocol#59, master f4407ff): master's cpp/token_manager.h has
-    # forIdentity/isolateIdentity and cpp/logos_protocol.h has
-    # lp_grant_host_services/lp_token_keys, so an unpinned URL can no longer
-    # walk this back off the token-store surface. Checked by reading master's
-    # files — #59 was squash-merged, so ancestry says nothing here.
     logos-protocol.url = "github:logos-co/logos-protocol";
-    # The Qt HOST RUNTIME — LogosAPI, LogosAPIProvider, LogosProviderObject —
-    # which the daemon and its in-process core service are built on. It lives
-    # in logos-plugin-qt as `logos-qt-host`, not in logos-qt-sdk; this repo
-    # needs nothing else out of logos-qt-sdk (it emits no Qt consumer
-    # wrappers and has no UI plugin), so that input is gone entirely.
-    #
-    # The rev pin that used to sit here (cc24fa1c) is retired: the host split
-    # HAS landed on logos-plugin-qt's default branch (logos-plugin-qt#19,
-    # master 9b2c64e). nix/qt-host.nix is on master and flake.nix publishes
-    # `logos-qt-host` through forAllTargets, so `packages.x86_64-windows
-    # .logos-qt-host` — which the Windows leg below names — resolves too.
-    # Confirmed by fetching master's files; #19 was squash-merged, so the
-    # commit is not an ancestor of master and ancestry is the wrong test.
     logos-plugin-qt.url = "github:logos-co/logos-plugin-qt";
-    logos-plugin-qt.inputs.logos-nix.follows = "logos-nix";
-    logos-plugin-qt.inputs.logos-protocol.follows = "logos-protocol";
-    # Rev-pinned at the liblogos that is itself built on logos-qt-host: it and
-    # this CLI share one host runtime in one process image, so they cannot be
-    # allowed to drift apart.
     logos-liblogos.url = "github:logos-co/logos-liblogos";
-    # liblogos is linked INTO this CLI, so its logos-protocol is the one the
-    # crashing code path actually runs. Without this follows it brought its own,
-    # older protocol while cpp-sdk and qt-sdk followed the root pin — three
-    # protocols in one process image, and bumping the root pin alone fixed
-    # nothing. Measured: 4 SIGSEGVs in 2000 client calls with the root pin
-    # already on the fixed protocol.
-    logos-liblogos.inputs.logos-protocol.follows = "logos-protocol";
-    # Unpinned. This was held at 0cb33fb — the pre-universal Qt module —
-    # because the `interface: "universal"` port declares
-    # metadata.json#host_services and fails closed until a host calls
-    # logos_module_grant_host_services, and nothing in the stack did. Under that
-    # build the capability gate refuses EVERY requestModule with "not granted
-    # the token_registry host service", so no module can call another.
-    #
-    # The granting side has landed, which is the condition this pin named:
-    # logos-module-loader-qt#8 stamps the hostServices property and calls the
-    # grant (module_initializer.cpp), logos-liblogos#178 relocked onto it, and
-    # #94 brought that here — this closure resolves the loader at acd07cf.
-    # capability_module master (c670f7f) is the universal port, #24, whose own
-    # doctests pass against exactly this grant path.
     logos-capability-module.url = "github:logos-co/logos-capability-module";
-    # Bundled alongside capability_module so the CLI can manage packages
-    # itself: package_manager installs/uninstalls and owns the dependency
-    # graph, package_downloader owns the catalogs and downloads. Same pair
-    # Basecamp bundles (see logos-basecamp/flake.nix), so both frontends
-    # drive the identical module API.
     logos-package-manager-module.url = "github:logos-co/logos-package-manager-module";
     logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module";
-    # Real test-module plugins (test_basic_module) used by the
-    # daemon-backed integration tests in tests/test_integration.cpp.
-    #
-    # Rev-pinned, and the pin is load-bearing rather than cosmetic. These
-    # plugins are loaded BY the daemon this repo builds, so they and it share
-    # one host runtime in one process image — the same constraint that already
-    # rev-pins logos-liblogos above. a639b934 is the b4 tip that links the test
-    # modules against logos-qt-host (not logos-qt-sdk) and carries the matching
-    # B4 stack pins; master (f8077fab) predates that repoint and would load
-    # plugins built against the other host.
-    #
-    # Why the URL and not the lock: an UNPINNED url resolves to the default
-    # branch, and f8077fab IS master's tip — so `nix flake update
-    # logos-test-modules` here is a silent no-op that leaves the ten b4 commits
-    # behind while reporting success. f8077fab is a strict ancestor of
-    # a639b934 (verified, non-shallow clone), so this is forward-only.
-    logos-test-modules.url = "github:logos-co/logos-test-modules/a639b93475bf135d283288c31b8499b7f4d09f92";
+    logos-test-modules.url = "github:logos-co/logos-test-modules";
     nix-bundle-logos-module-install.url = "github:logos-co/nix-bundle-logos-module-install";
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
