@@ -56,7 +56,6 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
-#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1205,15 +1204,15 @@ TEST_F(PersistencePathTest, TildeFlagExpandsAgainstHome) {
 // SPELLING: the literal `enforce` expanding to the deny-by-default document
 // (src/daemon/access_policy_arg.h) and reaching the runtime from a flag.
 //
-// One daemon, both directions, because a shorthand that resolved to "refuse
-// everything" would satisfy the denial on its own:
-//   test_ipc_new_api_module   declares [test_basic_module, test_extlib_module]
-//   test_basic_module declares []   ← so basic -> extlib is UNdeclared
+// The direct CLI probe below is a HOST call. `fromModuleName` is legacy,
+// untrusted input, while the dispatch token identifies the caller as `core`.
+// The declared path is driven through test_ipc_new_api_module so it really
+// originates in a module process.
 namespace {
 
-// requestModule is the two-arg gate every inter-module call passes through:
-// it returns the minted token, or "" when the policy refuses. nullopt means
-// the client call itself failed (a broken daemon, not a policy decision).
+// requestModule's first argument is intentionally supplied to prove it cannot
+// forge the caller identity. The token-bound dispatch caller is authoritative.
+// nullopt means the client call itself failed (rather than a policy response).
 std::optional<std::string> requestModuleToken(const LogoscoreDaemon& d,
                                               const std::string& caller,
                                               const std::string& target,
@@ -1233,28 +1232,9 @@ std::optional<std::string> requestModuleToken(const LogoscoreDaemon& d,
     return std::nullopt;
 }
 
-// True when the daemon log carries a refusal naming BOTH modules, caller
-// first. Matched structurally rather than by exact text: capability_module has
-// more than one implementation in this tree and they quote the names
-// differently ('x' vs "x"). What must not vary is that both names are there.
-bool logDeniesPair(const std::string& log,
-                   const std::string& caller,
-                   const std::string& target)
-{
-    std::istringstream in(log);
-    std::string line;
-    while (std::getline(in, line)) {
-        if (line.find("denies") == std::string::npos) continue;
-        const auto c = line.find(caller);
-        const auto t = line.find(target);
-        if (c != std::string::npos && t != std::string::npos && c < t) return true;
-    }
-    return false;
-}
-
 } // namespace
 
-TEST(AccessPolicyFlagTest, EnforceShorthandDeniesUndeclaredAndKeepsDeclared) {
+TEST(AccessPolicyFlagTest, EnforceShorthandUsesTokenBoundIdentityAndKeepsDeclared) {
     LogoscoreDaemon d;
     std::string why;
     if (!d.envReady(why)) GTEST_SKIP() << why;
@@ -1277,27 +1257,27 @@ TEST(AccessPolicyFlagTest, EnforceShorthandDeniesUndeclaredAndKeepsDeclared) {
             << m << " must be loaded before probing the gate.\n" << out
             << "\n--- daemon log ---\n" << slurp(d.daemonLog);
 
-    // Undeclared: refused, and the refusal names both modules. A silent denial
-    // presents as a call returning empty, which is the failure mode this
-    // codebase has been debugged for twice.
+    // This call originates at core_service; the legacy first argument must not
+    // let it impersonate test_basic_module. Core is allowed as control plane,
+    // and the warning pins the identity decision at the runtime boundary.
     std::string raw;
-    auto denied = requestModuleToken(d, "test_basic_module", "test_extlib_module", &raw);
-    ASSERT_TRUE(denied.has_value()) << "requestModule call failed outright:\n" << raw;
-    EXPECT_TRUE(denied->empty())
-        << "an undeclared pair must be REFUSED under --access-policy enforce — "
-           "the shorthand did not arm the policy.\n"
+    auto hostToken = requestModuleToken(d, "test_basic_module", "test_extlib_module", &raw);
+    ASSERT_TRUE(hostToken.has_value()) << "requestModule call failed outright:\n" << raw;
+    EXPECT_FALSE(hostToken->empty())
+        << "the host control plane must retain its allowed request path under "
+           "enforcement.\n"
         << raw << "\n--- daemon log ---\n" << slurp(d.daemonLog);
-    EXPECT_TRUE(logDeniesPair(slurp(d.daemonLog), "test_basic_module", "test_extlib_module"))
-        << "the refusal must be logged with both module names.\n"
-        << slurp(d.daemonLog);
+    const std::string hostLog = slurp(d.daemonLog);
+    EXPECT_NE(hostLog.find("ignoring leftover fromModuleName='test_basic_module' "
+                           "(token-bound caller is 'core')"), std::string::npos)
+        << "capability_module trusted the caller-supplied legacy name instead "
+           "of the token-bound host identity.\n" << hostLog;
 
-    // Declared: still minted. This is the half that matters — a shorthand that
-    // refused everything would pass the assertion above and break every real
-    // deployment.
-    auto allowed = requestModuleToken(d, "test_ipc_new_api_module", "test_basic_module", &raw);
-    ASSERT_TRUE(allowed.has_value()) << "requestModule call failed outright:\n" << raw;
-    EXPECT_FALSE(allowed->empty())
-        << "a DECLARED caller must still be allowed under enforce — otherwise "
-           "the shorthand just breaks everything.\n"
-        << raw << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+    // This call begins inside test_ipc_new_api_module, which declares
+    // test_basic_module. Its wrapper therefore proves the real allow path;
+    // capability_module's own caller-scope tests cover a real denied pair.
+    ASSERT_EQ(d.run("call test_ipc_new_api_module callBasicEcho policy_ok", &out, 20), 0)
+        << "a declared module-to-module call must remain allowed under enforce.\n"
+        << out << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+    EXPECT_NE(out.find("policy_ok"), std::string::npos) << out;
 }
