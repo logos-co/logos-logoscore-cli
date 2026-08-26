@@ -24,11 +24,10 @@
 //     Mirrors logos-logoscore-py/tests/integration/test_basic_module_methods.py
 //     and logos-test-modules/test-basic-module — keep them in sync.
 //
-// Negative `call`/`module-info` cases: this CLI/SDK revision has no fast
-// "not loaded / not found" guard — the request rides the SDK's ~100s RPC
-// timeout (surfacing as RPC_FAILED / non-zero exit, the exact code not
-// stable across revisions). So those are `timeout`-bounded and asserted
-// as "must not succeed" rather than waiting ~100s for an exact code.
+// Negative `call` cases: core_service gates on the loaded set before acquiring,
+// so the answer is MODULE_NOT_LOADED, immediate, and identical every run. They
+// pin the code and exclude exit 124 — `timeout` also exits non-zero, so the old
+// "must not succeed" assertions passed BY hanging.
 //
 // Three of them ARE pinned to an exact code now, because they no longer depend
 // on a timeout: an unknown method on a LOADED module resolves against the
@@ -363,15 +362,17 @@ TEST_F(ErrorPathTest, NoLoadNegativePaths) {
                      &out, kNegativeBudgetSecs), 0)
         << "load-module unknown should not succeed.\n" << out;
 
-    // Calling a method on an unknown module must fail.
-    EXPECT_NE(d.run("call definitely_not_a_real_module_xyz whatever",
-                     &out, kNegativeBudgetSecs), 0)
-        << "call on unknown module should not succeed.\n" << out;
+    // Must fail by ANSWERING. These two used to pass on `timeout`'s 124 alone.
+    const int unknownCall = d.run("call definitely_not_a_real_module_xyz whatever",
+                                  &out, kNegativeBudgetSecs);
+    EXPECT_NE(unknownCall, 0) << "call on unknown module should not succeed.\n" << out;
+    EXPECT_NE(unknownCall, 124) << "call on unknown module must fail fast.\n" << out;
 
     // Calling a method on a known-but-unloaded module must fail.
-    EXPECT_NE(d.run("call test_basic_module returnTrue",
-                     &out, kNegativeBudgetSecs), 0)
-        << "call on unloaded module should not succeed.\n" << out;
+    const int unloadedCall = d.run("call test_basic_module returnTrue",
+                                   &out, kNegativeBudgetSecs);
+    EXPECT_NE(unloadedCall, 0) << "call on unloaded module should not succeed.\n" << out;
+    EXPECT_NE(unloadedCall, 124) << "call on unloaded module must fail fast.\n" << out;
 
     // module-info on an unknown module must fail.
     EXPECT_NE(d.run("module-info definitely_not_a_real_module_xyz",
@@ -433,6 +434,65 @@ TEST_F(ErrorPathTest, WatchOnAModuleThatIsNotLoadedFailsFast) {
     EXPECT_NE(unknown, 0) << "watch on an unknown module must not succeed.\n" << out;
     EXPECT_NE(unknown, 124) << "watch on an unknown module must fail fast.\n" << out;
     EXPECT_NE(out.find("WATCH_FAILED"), std::string::npos) << out;
+}
+
+// `call` on an unloaded module must be ANSWERED, not awaited. Before the gate
+// it cost a 20s acquire racing the client's 20s deadline, so the code was a coin
+// flip (measured 5 object_unavailable / 12 RPC_FAILED over 17 calls).
+//
+// Asserts the property, not a tally — the old behaviour was bimodal per RUN, so
+// sampling can pass unfixed. 5s budget, not kNegativeBudgetSecs, so a
+// regression to the acquire deadline fails here.
+TEST_F(ErrorPathTest, CallOnAModuleThatIsNotLoadedIsRefusedNotAwaited) {
+    std::string out;
+
+    const auto t0 = std::chrono::steady_clock::now();
+    const int rc = d.run("call test_basic_module returnTrue", &out, 5);
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t0).count();
+
+    // 124 is `timeout` firing — checked separately because hanging is the
+    // specific regression, and "failed" would not distinguish it.
+    EXPECT_NE(rc, 124) << "call on an unloaded module must be ANSWERED, not "
+                          "awaited.\n" << out;
+    EXPECT_EQ(rc, 3) << "MODULE_NOT_LOADED is exit 3 (call_command.cpp, and "
+                        "docs/spec.md's `call` samples).\n" << out;
+    EXPECT_LT(ms, 2000) << "the gate is an in-process registry lookup; anything "
+                           "near the 20s acquire means it was skipped.\n" << out;
+    EXPECT_EQ(lastJsonObject(out).value("code", std::string{}), "MODULE_NOT_LOADED")
+        << out;
+
+    // An unknown name gets the same answer, and no slower.
+    const auto u0 = std::chrono::steady_clock::now();
+    const int unknown = d.run("call definitely_not_a_real_module_xyz whatever", &out, 5);
+    const auto ums = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - u0).count();
+
+    EXPECT_NE(unknown, 124) << "call on an unknown module must be answered.\n" << out;
+    EXPECT_EQ(unknown, 3) << out;
+    EXPECT_LT(ums, 2000) << out;
+    EXPECT_EQ(lastJsonObject(out).value("code", std::string{}), "MODULE_NOT_LOADED")
+        << out;
+
+    // core_service is not in the loaded set, so the gate must exempt it.
+    // Non-zero is fine here (no token); MODULE_NOT_LOADED is not.
+    d.run("call core_service getModuleStats", &out, kNegativeBudgetSecs);
+    EXPECT_NE(lastJsonObject(out).value("code", std::string{}), "MODULE_NOT_LOADED")
+        << "the gate must exempt core_service.\n" << out;
+}
+
+// Positive control: a module in the load->publish window must still be reached.
+// Shortening the acquire deadline would pass the test above and fail this one.
+// No sleep between load and call — that would be the workaround this forbids.
+TEST_F(ErrorPathTest, CallImmediatelyAfterLoadStillReachesTheModule) {
+    std::string out;
+
+    ASSERT_EQ(d.run("load-module test_basic_module", &out, kNegativeBudgetSecs), 0)
+        << out;
+    EXPECT_EQ(d.run("call test_basic_module returnTrue", &out, kNegativeBudgetSecs), 0)
+        << "a module inside the load->publish window must keep its full acquire "
+           "budget, not be refused by the loaded-set gate and not be cut short "
+           "by a shortened deadline.\n" << out;
 }
 
 // The loaded half: subscribing the INSTANT `load-module` returns must work.

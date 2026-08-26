@@ -492,12 +492,28 @@ StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
         return {false, result, "core_service not initialized."};
     }
 
-    LogosAPIClient* moduleClient = m_api->getClient(QString::fromStdString(module));
-    if (!moduleClient) {
-        result["status"] = "error";
-        result["code"] = "MODULE_NOT_LOADED";
+    // LOADED, not merely known -- the same line watchModuleEvents draws below.
+    // Without it an absent module cost a 20s acquire that raced the CLI client's
+    // own 20s deadline, so the error code was a coin flip.
+    //
+    // core_service is exempt (the daemon publishes it itself, so it is never in
+    // the loaded set). A module still warming up IS in the set -- liblogos marks
+    // loaded before publish -- so it keeps its full acquire budget.
+    if (module != name() && !containsName(getLoadedModuleNames(), module)) {
+        result["status"]  = "error";
+        result["code"]    = "MODULE_NOT_LOADED";
         result["message"] = "Module '" + module + "' is not loaded. Load it with: logosctl module load " + module;
         return {false, result, "Module '" + module + "' is not loaded."};
+    }
+
+    LogosAPIClient* moduleClient = m_api->getClient(QString::fromStdString(module));
+    if (!moduleClient) {
+        // Unreachable (getClient never returns null) but we deref it below.
+        // INTERNAL_ERROR, not MODULE_NOT_LOADED: the gate above said it IS loaded.
+        result["status"]  = "error";
+        result["code"]    = "INTERNAL_ERROR";
+        result["message"] = "Could not obtain a client for loaded module '" + module + "'.";
+        return {false, result, "Could not obtain a client for loaded module '" + module + "'."};
     }
 
     // Take the overload that carries an error OUT-CHANNEL, and do the
