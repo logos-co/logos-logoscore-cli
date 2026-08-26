@@ -9,7 +9,6 @@
 
 #include <QCoreApplication>
 #include <QEventLoop>
-#include <QPointer>
 #include <QTimer>
 #include <algorithm>
 #include <chrono>
@@ -597,27 +596,17 @@ bool CoreServiceImpl::watchModuleEvents(const std::string& module,
     // onEventWhenAvailable holds the subscription instead, arms it the moment
     // the object appears, and re-arms it across a reconnect -- so the gap is
     // covered without this call ever blocking or failing.
-    if (!eventName.empty()) {
-        return moduleClient->onEventWhenAvailable(QString::fromStdString(module),
-                                                  QString::fromStdString(eventName),
-                                                  forward) != 0;
-    }
-
-    // The wildcard form (`watch <module>` with no --event) subscribes with an
-    // EMPTY event name, which LogosObject reads as "every event" but
-    // onEventWhenAvailable refuses. Wait for the object instead, then attach
-    // the wildcard subscription to it.
-    QPointer<LogosAPIClient> guard(moduleClient);
-    const QString qmodule = QString::fromStdString(module);
-    return moduleClient->whenObjectAvailable(qmodule,
-        [guard, qmodule, forward](bool ready) {
-            if (!ready || !guard)
-                return;
-            LogosObject* obj = guard->requestObject(qmodule);
-            if (!obj)
-                return;
-            guard->onEvent(obj, QString(), forward);
-        }) != 0;
+    //
+    // The wildcard form (`watch <module>` with no --event) goes through the
+    // SAME call: an empty eventName means "every event on this object", which
+    // is what LogosObject::onEvent has always understood it to mean. It used to
+    // need a detour through whenObjectAvailable() + requestObject() + onEvent()
+    // because onEventWhenAvailable refused an empty name -- one guard rejecting
+    // three unrelated arguments at once. logos-protocol#74 removed that, so
+    // both forms are one line and neither can be silently the odd one out.
+    return moduleClient->onEventWhenAvailable(QString::fromStdString(module),
+                                              QString::fromStdString(eventName),
+                                              forward) != 0;
 }
 
 // ---------------------------------------------------------------------------
