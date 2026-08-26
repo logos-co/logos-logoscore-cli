@@ -541,11 +541,20 @@ bool CoreServiceImpl::watchModuleEvents(const std::string& module,
     if (!moduleClient)
         return false;
 
-    // A name the host has never heard of is a typo, not a module that is still
-    // coming up, and deferring it would strand `watch` on a subscription that
-    // can never arm. Keep that one loud -- same shape as loadModule's answer.
-    const auto known = getKnownModuleNames();
-    if (std::find(known.begin(), known.end(), module) == known.end())
+    // The line the contract is drawn on: LOADED, not merely known.
+    //
+    // A module that is not loaded may never be, so refusing is the useful
+    // answer -- deferring would park `watch` on a subscription with no future
+    // and report success for it. A typo lands here too, and gets the same
+    // answer rather than a worse one.
+    //
+    // Past this point the subscription MUST succeed, and it does by
+    // construction: nothing below can fail for a module that is loaded.
+    // onEventWhenAvailable / whenObjectAvailable answer 0 only for arguments
+    // they refuse (an empty name, a null callback), none of which are
+    // reachable here, and neither one touches the transport on this thread.
+    const auto loaded = getLoadedModuleNames();
+    if (std::find(loaded.begin(), loaded.end(), module) == loaded.end())
         return false;
 
     auto forward = [this, module](const QString& event, const QVariantList& data) {
@@ -558,16 +567,20 @@ bool CoreServiceImpl::watchModuleEvents(const std::string& module,
             emitEvent("module_event", forwardData.dump());
     };
 
-    // Deferred on purpose. requestObject() + onEvent() is ONE-SHOT, and
-    // LogosAPIConsumer::requestObject refuses outright while the module's
-    // registry socket has no listener yet -- which is exactly the state a
-    // module is in for the first stretch after `load-module` RETURNS (the host
-    // reports "loaded" once the plugin is in; the module publishes its object
-    // afterwards). Because nothing retried, `watch` issued right after
-    // `load-module` answered WATCH_FAILED, and the rest of the script then ran
-    // green while observing nothing. onEventWhenAvailable holds the
-    // subscription, arms it when the module appears -- including one loaded
-    // later in the session -- and re-arms it across a reconnect.
+    // Deferred on purpose, and this is what makes "loaded => succeeds" true.
+    //
+    // requestObject() + onEvent() is ONE-SHOT, and LogosAPIConsumer::
+    // requestObject refuses outright while the module's registry socket has no
+    // listener yet -- which is exactly the state a LOADED module is in for the
+    // stretch after `load-module` RETURNS: the host reports it loaded once the
+    // plugin is in, and the module publishes its object afterwards. Cold, that
+    // gap is seconds. Because nothing retried, `watch` refused a module the
+    // host had just called loaded, and since the failure went unchecked the
+    // rest of the script ran green while observing nothing.
+    //
+    // onEventWhenAvailable holds the subscription instead, arms it the moment
+    // the object appears, and re-arms it across a reconnect -- so the gap is
+    // covered without this call ever blocking or failing.
     if (!eventName.empty()) {
         return moduleClient->onEventWhenAvailable(QString::fromStdString(module),
                                                   QString::fromStdString(eventName),

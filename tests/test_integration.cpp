@@ -379,44 +379,78 @@ TEST_F(ErrorPathTest, NoLoadNegativePaths) {
         << "module-info on unknown module should not succeed.\n" << out;
 }
 
-// ── `watch` must not refuse a module that is merely not up YET ───────────────
+// ── `watch`: fail fast when unloaded, never fail when loaded ─────────────────
 //
-// The daemon used to answer watchModuleEvents with requestObject() + onEvent(),
-// which is ONE-SHOT: LogosAPIConsumer::requestObject refuses outright while the
-// target's registry socket has no listener, and nothing retried. Two states hit
-// that, and both are ordinary:
+// The contract has two halves and they are pinned separately below.
 //
-//   * subscribing before the module is loaded at all;
-//   * subscribing in the window after `load-module` RETURNS but before the
-//     module publishes its object. `load-module` answers once the plugin is in;
-//     publishing happens afterwards, and on a cold start that gap is long
-//     enough to lose the race by seconds.
+// UNLOADED -> fail fast. A module that is not loaded may never be, so an
+// answer beats parking `watch` on a subscription with no future. This half was
+// already true and these assertions keep it that way.
 //
-// The failure was the dangerous kind: `watch` answered WATCH_FAILED and exited,
-// and because nothing checked it, whole scripts then ran green while observing
-// nothing.
+// LOADED -> always succeed. This half was NOT true. The daemon answered
+// watchModuleEvents with requestObject() + onEvent(), which is ONE-SHOT:
+// LogosAPIConsumer::requestObject refuses while the target's registry socket
+// has no listener, and nothing retried. `load-module` returns once the plugin
+// is in, but the module publishes its object AFTERWARDS — so there is a window
+// in which the host reports a module loaded and `watch` refused it. Cold, that
+// window is seconds. The failure was the dangerous kind: `watch` answered
+// WATCH_FAILED and exited, and because nothing checked it, whole scripts ran
+// green while observing nothing.
 //
-// This fixture's daemon starts with the module discoverable but NOT loaded, so
-// the first state is not a timing bet — the window stays open until the test
-// closes it. That makes this deterministic where a post-load-module subscribe
-// would only reproduce on a cold machine.
-TEST_F(ErrorPathTest, WatchArmsWhenTheModuleLoadsLater) {
-    const fs::path log = d.base / "watch_before_load.log";
-    pid_t w = d.spawnBg({"watch", "test_basic_module", "--event", "testEvent"}, log);
-    ASSERT_GT(w, 0);
-    ProcGuard guard{&d, w};
+// Coverage honesty: the unloaded half is deterministic — this fixture's daemon
+// starts with the module discoverable but not loaded, so the state holds still.
+// The loaded half is not, and cannot be made so from the CLI: nothing can hold
+// a module in "loaded but not yet published", so on a warm machine the test
+// below may find the window already shut and pass without exercising it. It is
+// still the requirement worth stating, it is the case that fails on a cold CI
+// worker, and the daemon-side guarantee does not rest on it — past the loaded
+// check nothing on the success path can fail, by construction.
+TEST_F(ErrorPathTest, WatchOnAModuleThatIsNotLoadedFailsFast) {
+    std::string out;
 
-    // Let the subscribe reach the daemon while the module is still unloaded.
-    // That state IS the test, so this sleep is not a race being papered over.
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    // `timeout` reports 124. It is checked separately from a plain non-zero
+    // exit because hanging is the specific regression a deferred subscription
+    // would introduce here, and "failed" would not distinguish it.
+    const int named = d.run("watch test_basic_module --event testEvent",
+                            &out, kNegativeBudgetSecs);
+    EXPECT_NE(named, 0) << "watch on an unloaded module must not succeed.\n" << out;
+    EXPECT_NE(named, 124) << "watch on an unloaded module must fail fast, not "
+                             "hang waiting for a load that may never come.\n" << out;
+    EXPECT_NE(out.find("WATCH_FAILED"), std::string::npos) << out;
 
+    // The wildcard form (no --event) reaches the daemon by a different path and
+    // has to answer the same way.
+    const int wildcard = d.run("watch test_basic_module", &out, kNegativeBudgetSecs);
+    EXPECT_NE(wildcard, 0) << "wildcard watch on an unloaded module must not "
+                              "succeed.\n" << out;
+    EXPECT_NE(wildcard, 124) << "wildcard watch on an unloaded module must fail "
+                                "fast.\n" << out;
+    EXPECT_NE(out.find("WATCH_FAILED"), std::string::npos) << out;
+
+    // A name the host has never heard of is the same answer, not a worse one.
+    const int unknown = d.run("watch definitely_not_a_real_module_xyz --event whatever",
+                              &out, kNegativeBudgetSecs);
+    EXPECT_NE(unknown, 0) << "watch on an unknown module must not succeed.\n" << out;
+    EXPECT_NE(unknown, 124) << "watch on an unknown module must fail fast.\n" << out;
+    EXPECT_NE(out.find("WATCH_FAILED"), std::string::npos) << out;
+}
+
+// The loaded half: subscribing the INSTANT `load-module` returns must work.
+// No sleep between the two on purpose — a sleep here would be the bug's
+// workaround smuggled into its own regression test.
+TEST_F(ErrorPathTest, WatchSucceedsTheInstantLoadModuleReturns) {
     std::string out;
     ASSERT_EQ(d.run("load-module test_basic_module", &out, kNegativeBudgetSecs), 0)
         << out;
 
-    // Emitting is idempotent, so re-emit on a cadence instead of sleeping a
-    // fixed time and firing once: whenever the deferred subscription arms, a
-    // subsequent emit lands. Same shape as EmitTestEventRoundTrip.
+    const fs::path log = d.base / "watch_after_load.log";
+    pid_t w = d.spawnBg({"watch", "test_basic_module", "--event", "testEvent"}, log);
+    ASSERT_GT(w, 0);
+    ProcGuard guard{&d, w};
+
+    // Emitting is idempotent, so re-emit on a cadence rather than sleeping a
+    // fixed time and firing once: whenever the subscription arms, a subsequent
+    // emit lands. Same shape as EmitTestEventRoundTrip.
     bool got = false;
     for (int i = 0; i < 300 && !got; ++i) {
         d.run("call test_basic_module emitTestEvent armed_after_load", &out);
@@ -425,35 +459,31 @@ TEST_F(ErrorPathTest, WatchArmsWhenTheModuleLoadsLater) {
     }
 
     const std::string watchLog = slurp(log);
-    // Checked separately from `got` on purpose: an outright refusal and a
-    // subscription that armed but never delivered are different defects, and
-    // one assertion covering both would not say which happened.
+    // Checked separately from `got`: an outright refusal and a subscription
+    // that armed but never delivered are different defects, and one assertion
+    // covering both would not say which happened.
     EXPECT_EQ(watchLog.find("Failed to watch events"), std::string::npos)
-        << "watch refused a module that was merely not loaded yet.\n"
+        << "watch refused a module the host reports as loaded.\n"
         << "--- watch log ---\n" << watchLog;
     EXPECT_TRUE(got)
-        << "no event reached a subscription taken before the load.\n"
+        << "no event reached a subscription taken right after the load.\n"
         << "--- watch log ---\n" << watchLog;
 }
 
-// The same regression for the wildcard form (`watch <module>`, no --event).
-//
-// It subscribes with an EMPTY event name, which LogosObject reads as "every
-// event" but LogosAPIConsumer::onEventWhenAvailable refuses outright. So the
-// deferred path cannot serve this form the way it serves a named event, and a
-// fix that only covered the named one would leave the CLI's DEFAULT invocation
-// silently dead — which is exactly the failure being regressed here.
-TEST_F(ErrorPathTest, WildcardWatchArmsWhenTheModuleLoadsLater) {
-    const fs::path log = d.base / "wildcard_watch_before_load.log";
-    pid_t w = d.spawnBg({"watch", "test_basic_module"}, log);
-    ASSERT_GT(w, 0);
-    ProcGuard guard{&d, w};
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
+// Same, for the wildcard form. It subscribes with an EMPTY event name, which
+// LogosObject reads as "every event" but LogosAPIConsumer::onEventWhenAvailable
+// refuses outright — so the daemon cannot serve it the way it serves a named
+// event, and a fix covering only the named form would leave the CLI's DEFAULT
+// invocation silently dead.
+TEST_F(ErrorPathTest, WildcardWatchSucceedsTheInstantLoadModuleReturns) {
     std::string out;
     ASSERT_EQ(d.run("load-module test_basic_module", &out, kNegativeBudgetSecs), 0)
         << out;
+
+    const fs::path log = d.base / "wildcard_watch_after_load.log";
+    pid_t w = d.spawnBg({"watch", "test_basic_module"}, log);
+    ASSERT_GT(w, 0);
+    ProcGuard guard{&d, w};
 
     bool got = false;
     for (int i = 0; i < 300 && !got; ++i) {
@@ -464,39 +494,13 @@ TEST_F(ErrorPathTest, WildcardWatchArmsWhenTheModuleLoadsLater) {
 
     const std::string watchLog = slurp(log);
     EXPECT_EQ(watchLog.find("Failed to watch events"), std::string::npos)
-        << "wildcard watch refused a module that was merely not loaded yet.\n"
+        << "wildcard watch refused a module the host reports as loaded.\n"
         << "--- watch log ---\n" << watchLog;
     EXPECT_TRUE(got)
-        << "no event reached a wildcard subscription taken before the load.\n"
-        << "--- watch log ---\n" << watchLog;
+        << "no event reached a wildcard subscription taken right after the "
+           "load.\n--- watch log ---\n" << watchLog;
 }
 
-// The other half of the contract: deferring must not swallow a typo.
-//
-// A name the host has never heard of can never arm, so it has to keep failing
-// fast rather than parking `watch` on a subscription with no future. Before the
-// deferred path existed both cases failed identically and this was free; now it
-// is a property worth pinning, because the obvious implementation loses it.
-TEST_F(ErrorPathTest, WatchUnknownModuleStillFailsFast) {
-    std::string out;
-    const int rc = d.run("watch definitely_not_a_real_module_xyz --event whatever",
-                         &out, kNegativeBudgetSecs);
-    EXPECT_NE(rc, 0)
-        << "watch on an unknown module must not succeed.\n" << out;
-    // `timeout` reports 124. Distinguished from a plain failure because a hang
-    // is the specific regression deferring would introduce.
-    EXPECT_NE(rc, 124)
-        << "watch on an unknown module must fail fast, not hang on a "
-           "subscription that can never arm.\n" << out;
-    EXPECT_NE(out.find("WATCH_FAILED"), std::string::npos)
-        << "expected a WATCH_FAILED envelope.\n" << out;
-}
-
-// Regression for #59: the version, sourced from each module's embedded
-// metadata, must appear in list-modules / module-info / load-module — and,
-// critically, for modules that are merely KNOWN (not yet loaded), since that
-// reads from on-disk metadata rather than a running plugin. test_basic_module
-// declares version 1.0.0 in its metadata.json.
 TEST_F(ErrorPathTest, ReportsModuleVersion) {
     std::string out;
     const std::string kVersion = "\"version\":\"1.0.0\"";
