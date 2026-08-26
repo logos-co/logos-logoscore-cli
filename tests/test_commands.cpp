@@ -1520,6 +1520,41 @@ TEST_F(CommandTest, Status_StaleSessionForAnotherInstance_StillDials)
         << "a co-resident daemon's leftovers decided a remote client's status";
 }
 
+// ── package search ──────────────────────────────────────────────────────────
+
+TEST_F(CommandTest, PackageSearch_ShowsEveryAvailableVersion)
+{
+    mockClient.callMethodResult = LogosMap{
+        {"status", "ok"},
+        {"result", LogosList::array({
+            LogosMap{
+                {"name", "storage_module"},
+                {"category", "storage"},
+                {"description", "Persistent storage"},
+                {"versions", LogosList::array({
+                    LogosMap{{"manifest", LogosMap{{"version", "2.0.0"}}}},
+                    LogosMap{{"manifest", LogosMap{{"version", "1.5.0"}}}},
+                    // Different artifacts for the same release must not make
+                    // the user-facing version list misleadingly repetitive.
+                    LogosMap{{"manifest", LogosMap{{"version", "2.0.0"}}}},
+                })},
+            },
+        })},
+    };
+    Output humanOutput;
+    humanOutput.setHumanMode(true);
+
+    auto cmd = createCommand("package", mockClient, humanOutput);
+    const std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"search", "storage"}), 0);
+    });
+
+    EXPECT_EQ(mockClient.lastCallModule, "package_downloader");
+    EXPECT_EQ(mockClient.lastCallMethod, "getCatalog");
+    EXPECT_NE(out.find("AVAILABLE VERSIONS"), std::string::npos);
+    EXPECT_NE(out.find("2.0.0, 1.5.0"), std::string::npos);
+}
+
 // ---------------------------------------------------------------------------
 // package download
 //

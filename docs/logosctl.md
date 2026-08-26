@@ -351,6 +351,11 @@ accepted wherever `ls` is, `info` wherever `show` is, and `uninstall` for
 because they are the only ones with no runtime-module meaning — `ls`, `show`
 and `remove` would each be ambiguous between a package and a loaded module.
 
+`package search` shows every available version for each matching package, newest
+first. Pass one of those values to `package install` or `package download` with
+`--version` to select that exact release; without it, the newest version is
+used.
+
 Two defaults are worth stating plainly, because they are the opposite of what
 some tools do:
 
