@@ -16,9 +16,9 @@ name: Build & Release
 # Version stamping: `--version` is baked at build time from a VERSION
 # file at the repo root (read by flake.nix). VERSION exists only on release/**
 # branches — add it (e.g. `echo 0.2.0 > VERSION`) on the release branch and this
-# job bakes that version in. master builds fall back to `pre-release-<sha7>`,
-# dirty local builds to `dev`; the commit hash (with a `-dirty` marker) is
-# always reported.
+# job bakes that version in and uses it as the release tag. master builds fall
+# back to `pre-release-<sha7>`, dirty local builds to `dev`; the commit hash
+# (with a `-dirty` marker) is always reported.
 #
 #   Linux (x86_64 + aarch64): build the AppImage, chmod +x, wrap in a tar.gz.
 #   macOS (aarch64):          build the portable bundle dir (bin/ + lib/),
@@ -226,6 +226,10 @@ jobs:
       contents: write
 
     steps:
+      # The artifacts contain only the bundles; check out the release branch
+      # as well so the GitHub release tag matches the version baked into them.
+      - uses: actions/checkout@v4
+
       # Collect every matrix artifact rather than naming each one, so adding
       # or removing a tool does not mean editing a list here.
       - uses: actions/download-artifact@v4
@@ -235,7 +239,10 @@ jobs:
 
       - name: Generate tag
         id: tag
-        run: echo "tag=pre-release-${GITHUB_SHA::7}-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+        run: |
+          version="$(tr -d '\r\n' < VERSION)"
+          [ -n "$version" ] || { echo "::error::VERSION must not be empty"; exit 1; }
+          echo "tag=$version" >> "$GITHUB_OUTPUT"
 
       - uses: softprops/action-gh-release@v2
         with:
