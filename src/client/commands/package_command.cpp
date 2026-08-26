@@ -535,7 +535,8 @@ int PackageCommand::search(const std::vector<std::string>& args)
                                   "NAME", "AVAILABLE VERSIONS", "CATEGORY", "DESCRIPTION"));
     for (const auto& p : hits) {
         const auto versions = availableVersions(p.value("versions", LogosList::array()));
-        const std::string versionsText = versions.empty() ? "-" : fmt::join(versions, ", ");
+        std::string versionsText = "-";
+        if (!versions.empty()) versionsText = fmt::format("{}", fmt::join(versions, ", "));
         std::string desc = p.value("description", std::string{});
         if (desc.size() > 48) desc = desc.substr(0, 45) + "...";
         output().printRaw(fmt::format("{:<24} {:<28} {:<14} {}",
