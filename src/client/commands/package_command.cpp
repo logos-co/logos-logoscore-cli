@@ -45,6 +45,26 @@ const char* actionVerb(const std::string& action)
     return "keep";
 }
 
+// `versions` arrives newest-first from the catalog.  A catalog can contain
+// more than one artifact for the same release, though, so show each version
+// once rather than making the user guess whether repeated text is meaningful.
+std::vector<std::string> availableVersions(const nlohmann::json& versions)
+{
+    std::vector<std::string> result;
+    if (!versions.is_array()) return result;
+
+    for (const auto& release : versions) {
+        if (!release.is_object()) continue;
+        const auto manifest = release.value("manifest", nlohmann::json::object());
+        if (!manifest.is_object()) continue;
+        const std::string version = manifest.value("version", std::string{});
+        if (!version.empty()
+            && std::find(result.begin(), result.end(), version) == result.end())
+            result.push_back(version);
+    }
+    return result;
+}
+
 } // namespace
 
 int PackageCommand::execute(const std::vector<std::string>& args)
@@ -511,19 +531,16 @@ int PackageCommand::search(const std::vector<std::string>& args)
     if (output().isJsonMode()) { output().printRaw(hits.dump()); return 0; }
     if (hits.empty()) { output().printRaw("No packages found."); return 0; }
 
-    output().printRaw(fmt::format("{:<24} {:<10} {:<14} {}",
-                                  "NAME", "VERSION", "CATEGORY", "DESCRIPTION"));
+    output().printRaw(fmt::format("{:<24} {:<28} {:<14} {}",
+                                  "NAME", "AVAILABLE VERSIONS", "CATEGORY", "DESCRIPTION"));
     for (const auto& p : hits) {
-        std::string version = "-";
-        const auto& versions = p["versions"];
-        if (versions.is_array() && !versions.empty()) {
-            const auto& m = versions[0]["manifest"];
-            if (m.is_object()) version = m.value("version", std::string("-"));
-        }
+        const auto versions = availableVersions(p.value("versions", LogosList::array()));
+        std::string versionsText = "-";
+        if (!versions.empty()) versionsText = fmt::format("{}", fmt::join(versions, ", "));
         std::string desc = p.value("description", std::string{});
         if (desc.size() > 48) desc = desc.substr(0, 45) + "...";
-        output().printRaw(fmt::format("{:<24} {:<10} {:<14} {}",
-            p.value("name", std::string{}), version,
+        output().printRaw(fmt::format("{:<24} {:<28} {:<14} {}",
+            p.value("name", std::string{}), versionsText,
             p.value("category", std::string("-")), desc));
     }
     return 0;
