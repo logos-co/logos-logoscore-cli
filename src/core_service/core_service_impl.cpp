@@ -9,6 +9,7 @@
 
 #include <QCoreApplication>
 #include <QEventLoop>
+#include <QPointer>
 #include <QTimer>
 #include <algorithm>
 #include <chrono>
@@ -540,24 +541,54 @@ bool CoreServiceImpl::watchModuleEvents(const std::string& module,
     if (!moduleClient)
         return false;
 
-    LogosObject* obj = moduleClient->requestObject(QString::fromStdString(module));
-    if (!obj)
+    // A name the host has never heard of is a typo, not a module that is still
+    // coming up, and deferring it would strand `watch` on a subscription that
+    // can never arm. Keep that one loud -- same shape as loadModule's answer.
+    const auto known = getKnownModuleNames();
+    if (std::find(known.begin(), known.end(), module) == known.end())
         return false;
 
-    moduleClient->onEvent(obj, eventName,
-        [this, module](const std::string& event, const nlohmann::json& data) {
-            nlohmann::json forwardData = nlohmann::json::array();
-            forwardData.push_back(module);
-            forwardData.push_back(event);
-            if (data.is_array()) {
-                for (const auto& item : data)
-                    forwardData.push_back(item);
-            }
-            if (emitEvent)
-                emitEvent("module_event", forwardData.dump());
-        });
+    auto forward = [this, module](const QString& event, const QVariantList& data) {
+        nlohmann::json forwardData = nlohmann::json::array();
+        forwardData.push_back(module);
+        forwardData.push_back(event.toStdString());
+        for (const QVariant& v : data)
+            forwardData.push_back(logos::qvariantToNlohmann(v));
+        if (emitEvent)
+            emitEvent("module_event", forwardData.dump());
+    };
 
-    return true;
+    // Deferred on purpose. requestObject() + onEvent() is ONE-SHOT, and
+    // LogosAPIConsumer::requestObject refuses outright while the module's
+    // registry socket has no listener yet -- which is exactly the state a
+    // module is in for the first stretch after `load-module` RETURNS (the host
+    // reports "loaded" once the plugin is in; the module publishes its object
+    // afterwards). Because nothing retried, `watch` issued right after
+    // `load-module` answered WATCH_FAILED, and the rest of the script then ran
+    // green while observing nothing. onEventWhenAvailable holds the
+    // subscription, arms it when the module appears -- including one loaded
+    // later in the session -- and re-arms it across a reconnect.
+    if (!eventName.empty()) {
+        return moduleClient->onEventWhenAvailable(QString::fromStdString(module),
+                                                  QString::fromStdString(eventName),
+                                                  forward) != 0;
+    }
+
+    // The wildcard form (`watch <module>` with no --event) subscribes with an
+    // EMPTY event name, which LogosObject reads as "every event" but
+    // onEventWhenAvailable refuses. Wait for the object instead, then attach
+    // the wildcard subscription to it.
+    QPointer<LogosAPIClient> guard(moduleClient);
+    const QString qmodule = QString::fromStdString(module);
+    return moduleClient->whenObjectAvailable(qmodule,
+        [guard, qmodule, forward](bool ready) {
+            if (!ready || !guard)
+                return;
+            LogosObject* obj = guard->requestObject(qmodule);
+            if (!obj)
+                return;
+            guard->onEvent(obj, QString(), forward);
+        }) != 0;
 }
 
 // ---------------------------------------------------------------------------
