@@ -321,7 +321,7 @@ logosctl package install --dir D             # every .lgx in a directory
 logosctl package upgrade NAME|FILE.lgx
 logosctl package remove NAME         # + dependents by default
 logosctl package ls [--type core|ui]
-logosctl package show NAME|FILE.lgx  # installed detail, or inspect an .lgx
+logosctl package show NAME|FILE.lgx  # detail + every version, or inspect an .lgx
 logosctl package deps NAME [-r|--recursive] [--reverse]
 logosctl package search [QUERY] [--category C] [--catalog C]
 logosctl package download NAME [--version V] [--root-hash H] [--catalog C] [-o|--output DIR]
@@ -351,10 +351,12 @@ accepted wherever `ls` is, `info` wherever `show` is, and `uninstall` for
 because they are the only ones with no runtime-module meaning — `ls`, `show`
 and `remove` would each be ambiguous between a package and a loaded module.
 
-`package search` shows every available version for each matching package, newest
-first. Pass one of those values to `package install` or `package download` with
-`--version` to select that exact release; without it, the newest version is
-used.
+`package search` shows one row per package: the newest version, and `(+N)` when
+older releases exist. `package show NAME` names every one of them on an
+`available:` line, and answers for a package that is only in a catalog as well
+as one that is installed. Pass any of those values to `package install` or
+`package download` with `--version` to select that exact release; without it,
+the newest version is used.
 
 Two defaults are worth stating plainly, because they are the opposite of what
 some tools do:
