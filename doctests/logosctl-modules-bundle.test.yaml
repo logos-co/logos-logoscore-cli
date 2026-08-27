@@ -13,27 +13,31 @@ intro: |
 
   | Directory | Contents |
   |---|---|
-  | `<bin>/../modules` | `capability_module` — bundled by **both** binaries this repo ships |
+  | `<bin>/../modules` | `capability_module`, `modules_state` — bundled by **both** binaries this repo ships |
   | `<bin>/../modules-pkg` | `package_manager`, `package_downloader` — `logosctl` only |
 
-  `logoscore` scans `modules/` and its doc-tests assert exactly what is in
-  there, so the package modules go in a directory of their own rather than
-  changing what `logoscore` sees. The daemon adds both paths, so the split is
-  invisible in use — `module ls` shows all three.
+  `logoscore` scans `modules/`, so the package modules go in a directory of
+  their own rather than widening what `logoscore` sees by default. The daemon
+  adds both paths, so the split is invisible in use — `module ls` shows them all.
 
-  Three modules are bundled:
+  These assertions check that the modules that matter are PRESENT, not that the
+  set is exactly this. Pinning an exact list would break this file for every
+  future bundled module, for no reason.
+
+  Four modules are bundled:
 
   | Module | Why it ships |
   |---|---|
   | `capability_module` | The auth handshake every client performs before its first RPC. Without it, nothing connects. |
+  | `modules_state` | The module lifecycle registry. liblogos feeds it load/unload/crash as sequenced facts, so consumers stop polling. Optional: absent, the feed never arms. |
   | `package_manager` | Installs and uninstalls packages, and owns the dependency graph. |
   | `package_downloader` | Owns the catalogs: search, dependency resolution, downloads. |
 
-  This is the same trio [`logos-basecamp`](https://github.com/logos-co/logos-basecamp)
+  This is the same set [`logos-basecamp`](https://github.com/logos-co/logos-basecamp)
   bundles, so the CLI and the desktop app drive an identical module surface — the
   CLI is not a reduced-capability sibling.
 
-  This doc-test builds **this** commit and asserts all three are present.
+  This doc-test builds **this** commit and asserts each of them is present.
 
 what_you_learn:
   - Which modules ship inside the logosctl binary, and why each one is there
@@ -71,7 +75,7 @@ sections:
   - title: "Confirm the bundled modules"
     step: true
     text: |
-      All three modules must be present. `capability_module` is load-bearing for
+      Each must be present. `capability_module` is load-bearing for
       *any* client command; the two package modules are what let `logosctl`
       install and manage packages on its own rather than shelling out to
       separate tools.
@@ -79,8 +83,11 @@ sections:
       - title: "List the bundled modules"
         run: "ls ctl/modules ctl/modules-pkg"
         code_block: "ls ctl/modules ctl/modules-pkg"
+        # CONTAINMENT, deliberately. Adding a bundled module must not break
+        # this file; only a MISSING one should.
         expect_contains:
           - "capability_module"
+          - "modules_state"
           - "package_manager"
           - "package_downloader"
 
@@ -119,8 +126,11 @@ sections:
       - title: "The bundled modules are discoverable"
         run: "./ctl/bin/logosctl{exe} --config-dir ./session module ls"
         code_block: "logosctl module ls"
+        # CONTAINMENT, deliberately. Adding a bundled module must not break
+        # this file; only a MISSING one should.
         expect_contains:
           - "capability_module"
+          - "modules_state"
           - "package_manager"
           - "package_downloader"
 

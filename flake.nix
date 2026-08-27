@@ -9,6 +9,7 @@
     logos-plugin-qt.url = "github:logos-co/logos-plugin-qt";
     logos-liblogos.url = "github:logos-co/logos-liblogos";
     logos-capability-module.url = "github:logos-co/logos-capability-module";
+    logos-modules-state-module.url = "github:logos-co/logos-modules-state-module";
     logos-package-manager-module.url = "github:logos-co/logos-package-manager-module";
     logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module";
     logos-test-modules.url = "github:logos-co/logos-test-modules";
@@ -17,7 +18,7 @@
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-plugin-qt, logos-liblogos, logos-capability-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
+  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-plugin-qt, logos-liblogos, logos-capability-module, logos-modules-state-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       # Build info baked into the logosctl binary so `--version` reports the
@@ -40,6 +41,7 @@
           { name = "logos-protocol"; commit = revOf logos-protocol; }
           { name = "logos-plugin-qt"; commit = revOf logos-plugin-qt; }
           { name = "logos-capability-module"; commit = revOf logos-capability-module; }
+          { name = "logos-modules-state-module"; commit = revOf logos-modules-state-module; }
           { name = "logos-package-manager-module"; commit = revOf logos-package-manager-module; }
           { name = "logos-package-downloader-module"; commit = revOf logos-package-downloader-module; }
         ];
@@ -54,6 +56,7 @@
         liblogosLib = logos-liblogos.packages.${system}.logos-liblogos-lib;
         liblogosPortable = logos-liblogos.packages.${system}.portable;
         capabilityModuleLib = logos-capability-module.packages.${system}.lib;
+        modulesStateModuleLib = logos-modules-state-module.packages.${system}.lib;
         packageManagerModuleLib = logos-package-manager-module.packages.${system}.lib;
         packageManagerModuleLibPortable = logos-package-manager-module.packages.${system}.lib-portable;
         packageDownloaderModuleLib = logos-package-downloader-module.packages.${system}.lib;
@@ -103,6 +106,7 @@
           liblogosLib = logos-liblogos.packages.${system}.logos-liblogos-lib;
           liblogosPortable = logos-liblogos.packages.${system}.portable;
           capabilityModuleLib = logos-capability-module.packages.${system}.lib;
+          modulesStateModuleLib = logos-modules-state-module.packages.${system}.lib;
           packageManagerModuleLib = logos-package-manager-module.packages.${system}.lib;
           packageManagerModuleLibPortable = logos-package-manager-module.packages.${system}.lib-portable;
           packageDownloaderModuleLib = logos-package-downloader-module.packages.${system}.lib;
@@ -129,7 +133,7 @@
         });
     in
     {
-      packages = forAllTargets ({ pkgs, system, cppSdk, protocolPkg, qtHost, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, installDev, installPortable, dirBundler, appBundler }:
+      packages = forAllTargets ({ pkgs, system, cppSdk, protocolPkg, qtHost, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, modulesStateModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, installDev, installPortable, dirBundler, appBundler }:
         let
           pname = "logos-logoscore-cli";
           # VERSION is only present on release branches; dev branches use a placeholder.
@@ -156,6 +160,7 @@
           # Bundled modules (bundle + lgpm install in one step each).
           #
           # capability_module    — the auth handshake every client needs.
+          # modules_state        — the module lifecycle registry liblogos feeds.
           # package_manager      — install/uninstall + the dependency graph.
           # package_downloader   — catalogs, resolution, downloads.
           #
@@ -163,10 +168,12 @@
           # read-only "embedded" directory (paths::bundledModulesDir(),
           # <bin>/../modules). Mirrors logos-basecamp/flake.nix so the CLI
           # and the GUI drive the same module surface.
-          bundledInstallsDev = map installDev [ capabilityModuleLib ];
-          # Kept out of modules/ deliberately: logoscore scans that directory
-          # and its doc-tests assert the exact module list, so anything extra
-          # there would change what it reports.
+          bundledInstallsDev = map installDev [ capabilityModuleLib modulesStateModuleLib ];
+          # Kept out of modules/ deliberately: logoscore scans that directory, so
+          # anything extra there changes what it reports by default. (The doc-tests
+          # assert CONTAINMENT -- expect_contains, never an exact list -- so adding a
+          # module here does not break them. This split is about keeping logoscore's
+          # surface deliberate, not about the assertions.)
           pkgInstallsDev = map installDev [
             packageManagerModuleLib
             packageDownloaderModuleLib
@@ -628,7 +635,7 @@ ${pkgs.lib.optionalString withPkgModules ''
           # manager ships a distinct `lib-portable`; the other two are
           # variant-agnostic and rely on installPortable to make the bundle
           # self-contained (same split logos-basecamp uses).
-          bundledInstallsPortable = map installPortable [ capabilityModuleLib ];
+          bundledInstallsPortable = map installPortable [ capabilityModuleLib modulesStateModuleLib ];
           pkgInstallsPortable = map installPortable [
             packageManagerModuleLibPortable
             packageDownloaderModuleLib
