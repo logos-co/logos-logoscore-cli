@@ -491,12 +491,28 @@ StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
         return {false, result, "core_service not initialized."};
     }
 
-    LogosAPIClient* moduleClient = m_api->getClient(QString::fromStdString(module));
-    if (!moduleClient) {
-        result["status"] = "error";
-        result["code"] = "MODULE_NOT_LOADED";
+    // LOADED, not merely known -- the same line watchModuleEvents draws below.
+    // Without it an absent module cost a 20s acquire that raced the CLI client's
+    // own 20s deadline, so the error code was a coin flip.
+    //
+    // core_service is exempt (the daemon publishes it itself, so it is never in
+    // the loaded set). A module still warming up IS in the set -- liblogos marks
+    // loaded before publish -- so it keeps its full acquire budget.
+    if (module != name() && !containsName(getLoadedModuleNames(), module)) {
+        result["status"]  = "error";
+        result["code"]    = "MODULE_NOT_LOADED";
         result["message"] = "Module '" + module + "' is not loaded. Load it with: logosctl module load " + module;
         return {false, result, "Module '" + module + "' is not loaded."};
+    }
+
+    LogosAPIClient* moduleClient = m_api->getClient(QString::fromStdString(module));
+    if (!moduleClient) {
+        // Unreachable (getClient never returns null) but we deref it below.
+        // INTERNAL_ERROR, not MODULE_NOT_LOADED: the gate above said it IS loaded.
+        result["status"]  = "error";
+        result["code"]    = "INTERNAL_ERROR";
+        result["message"] = "Could not obtain a client for loaded module '" + module + "'.";
+        return {false, result, "Could not obtain a client for loaded module '" + module + "'."};
     }
 
     // Take the overload that carries an error OUT-CHANNEL, and do the
@@ -540,24 +556,57 @@ bool CoreServiceImpl::watchModuleEvents(const std::string& module,
     if (!moduleClient)
         return false;
 
-    LogosObject* obj = moduleClient->requestObject(QString::fromStdString(module));
-    if (!obj)
+    // The line the contract is drawn on: LOADED, not merely known.
+    //
+    // A module that is not loaded may never be, so refusing is the useful
+    // answer -- deferring would park `watch` on a subscription with no future
+    // and report success for it. A typo lands here too, and gets the same
+    // answer rather than a worse one.
+    //
+    // Past this point the subscription MUST succeed, and it does by
+    // construction: nothing below can fail for a module that is loaded.
+    // onEventWhenAvailable / whenObjectAvailable answer 0 only for arguments
+    // they refuse (an empty name, a null callback), none of which are
+    // reachable here, and neither one touches the transport on this thread.
+    const auto loaded = getLoadedModuleNames();
+    if (std::find(loaded.begin(), loaded.end(), module) == loaded.end())
         return false;
 
-    moduleClient->onEvent(obj, eventName,
-        [this, module](const std::string& event, const nlohmann::json& data) {
-            nlohmann::json forwardData = nlohmann::json::array();
-            forwardData.push_back(module);
-            forwardData.push_back(event);
-            if (data.is_array()) {
-                for (const auto& item : data)
-                    forwardData.push_back(item);
-            }
-            if (emitEvent)
-                emitEvent("module_event", forwardData.dump());
-        });
+    auto forward = [this, module](const QString& event, const QVariantList& data) {
+        nlohmann::json forwardData = nlohmann::json::array();
+        forwardData.push_back(module);
+        forwardData.push_back(event.toStdString());
+        for (const QVariant& v : data)
+            forwardData.push_back(logos::qvariantToNlohmann(v));
+        if (emitEvent)
+            emitEvent("module_event", forwardData.dump());
+    };
 
-    return true;
+    // Deferred on purpose, and this is what makes "loaded => succeeds" true.
+    //
+    // requestObject() + onEvent() is ONE-SHOT, and LogosAPIConsumer::
+    // requestObject refuses outright while the module's registry socket has no
+    // listener yet -- which is exactly the state a LOADED module is in for the
+    // stretch after `load-module` RETURNS: the host reports it loaded once the
+    // plugin is in, and the module publishes its object afterwards. Cold, that
+    // gap is seconds. Because nothing retried, `watch` refused a module the
+    // host had just called loaded, and since the failure went unchecked the
+    // rest of the script ran green while observing nothing.
+    //
+    // onEventWhenAvailable holds the subscription instead, arms it the moment
+    // the object appears, and re-arms it across a reconnect -- so the gap is
+    // covered without this call ever blocking or failing.
+    //
+    // The wildcard form (`watch <module>` with no --event) goes through the
+    // SAME call: an empty eventName means "every event on this object", which
+    // is what LogosObject::onEvent has always understood it to mean. It used to
+    // need a detour through whenObjectAvailable() + requestObject() + onEvent()
+    // because onEventWhenAvailable refused an empty name -- one guard rejecting
+    // three unrelated arguments at once. logos-protocol#74 removed that, so
+    // both forms are one line and neither can be silently the odd one out.
+    return moduleClient->onEventWhenAvailable(QString::fromStdString(module),
+                                              QString::fromStdString(eventName),
+                                              forward) != 0;
 }
 
 // ---------------------------------------------------------------------------
