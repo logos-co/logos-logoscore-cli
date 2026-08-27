@@ -415,25 +415,57 @@ int PackageCommand::show(const std::vector<std::string>& args)
                             r.value("message", std::string{}), r);
         return 1;
     }
+    LogosMap installed = LogosMap::object();
     for (const auto& p : r["result"]) {
-        if (p.value("name", std::string{}) != target) continue;
-        if (output().isJsonMode()) { output().printRaw(p.dump()); return 0; }
-        for (const char* k : {"name", "version", "type", "category", "author",
-                              "license", "description", "installType", "installDir"}) {
-            if (p.contains(k) && p[k].is_string() && !p[k].get<std::string>().empty())
-                output().printRaw(fmt::format("{:<14} {}", std::string(k) + ":",
-                                              p[k].get<std::string>()));
-        }
-        const auto& deps = p["dependencies"];
-        if (deps.is_array() && !deps.empty()) {
-            std::vector<std::string> d;
-            for (const auto& e : deps) d.push_back(e.get<std::string>());
-            output().printRaw(fmt::format("{:<14} {}", "dependencies:", fmt::join(d, ", ")));
-        }
+        if (p.value("name", std::string{}) == target) { installed = p; break; }
+    }
+    // A JSON caller asking about an installed package gets the installed
+    // record it always got, without paying for the catalog round-trip.
+    if (output().isJsonMode() && !installed.empty()) {
+        output().printRaw(installed.dump());
         return 0;
     }
-    output().printError("PACKAGE_NOT_INSTALLED", "Package '" + target + "' is not installed.");
-    return 1;
+
+    // Which versions exist is a catalog fact, not an on-disk one, so it takes
+    // a second lookup -- and the same lookup is what lets `show` answer for a
+    // package that is not installed yet.
+    LogosMap catalogEntry = LogosMap::object();
+    LogosMap c = client().callModuleMethod(kPd, "getCatalog", LogosList::array());
+    if (c.value("status", std::string{}) != "error" && c["result"].is_array()) {
+        for (const auto& p : c["result"]) {
+            if (p.value("name", std::string{}) == target) { catalogEntry = p; break; }
+        }
+    }
+
+    if (installed.empty() && catalogEntry.empty()) {
+        output().printError("PACKAGE_NOT_FOUND",
+            "No package named '" + target + "' is installed or in any catalog.");
+        return 1;
+    }
+    if (output().isJsonMode()) { output().printRaw(catalogEntry.dump()); return 0; }
+
+    const LogosMap& info = installed.empty() ? catalogEntry : installed;
+    for (const char* k : {"name", "version", "type", "category", "author",
+                          "license", "description", "installType", "installDir"}) {
+        if (info.contains(k) && info[k].is_string() && !info[k].get<std::string>().empty())
+            output().printRaw(fmt::format("{:<14} {}", std::string(k) + ":",
+                                          info[k].get<std::string>()));
+    }
+    const auto deps = info.value("dependencies", LogosList::array());
+    if (deps.is_array() && !deps.empty()) {
+        std::vector<std::string> d;
+        for (const auto& e : deps) if (e.is_string()) d.push_back(e.get<std::string>());
+        if (!d.empty())
+            output().printRaw(fmt::format("{:<14} {}", "dependencies:", fmt::join(d, ", ")));
+    }
+    // The whole list belongs here rather than in `search`: one package, one
+    // line per fact, and room to name every release.
+    const auto versions = availableVersions(catalogEntry.value("versions", LogosList::array()));
+    if (!versions.empty())
+        output().printRaw(fmt::format("{:<14} {}", "available:", fmt::join(versions, ", ")));
+    if (installed.empty())
+        output().printRaw(fmt::format("{:<14} {}", "installed:", "no"));
+    return 0;
 }
 
 // ── deps ─────────────────────────────────────────────────────────────────────
@@ -531,16 +563,23 @@ int PackageCommand::search(const std::vector<std::string>& args)
     if (output().isJsonMode()) { output().printRaw(hits.dump()); return 0; }
     if (hits.empty()) { output().printRaw("No packages found."); return 0; }
 
-    output().printRaw(fmt::format("{:<24} {:<28} {:<14} {}",
-                                  "NAME", "AVAILABLE VERSIONS", "CATEGORY", "DESCRIPTION"));
+    // One row per package, latest version only: the full list is wide enough to
+    // wrap every row and cost more than it tells you. `(+N)` says older
+    // releases exist; `package show` lists them.
+    output().printRaw(fmt::format("{:<24} {:<16} {:<12} {}",
+                                  "NAME", "VERSION", "CATEGORY", "DESCRIPTION"));
     for (const auto& p : hits) {
         const auto versions = availableVersions(p.value("versions", LogosList::array()));
-        std::string versionsText = "-";
-        if (!versions.empty()) versionsText = fmt::format("{}", fmt::join(versions, ", "));
+        std::string versionText = "-";
+        if (!versions.empty()) {
+            versionText = versions.front();
+            if (versions.size() > 1)
+                versionText += fmt::format(" (+{})", versions.size() - 1);
+        }
         std::string desc = p.value("description", std::string{});
-        if (desc.size() > 48) desc = desc.substr(0, 45) + "...";
-        output().printRaw(fmt::format("{:<24} {:<28} {:<14} {}",
-            p.value("name", std::string{}), versionsText,
+        if (desc.size() > 44) desc = desc.substr(0, 41) + "...";
+        output().printRaw(fmt::format("{:<24} {:<16} {:<12} {}",
+            p.value("name", std::string{}), versionText,
             p.value("category", std::string("-")), desc));
     }
     return 0;

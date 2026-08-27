@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -36,6 +37,10 @@ public:
     LogosMap  moduleInfoResult;
     std::optional<LogosList> moduleStatsResult = LogosList::array();
     LogosMap  callMethodResult;
+    // `package show` makes two different calls -- installed list, then
+    // catalog -- so one canned reply cannot express both. Keyed entries win
+    // over `callMethodResult`.
+    std::map<std::string, LogosMap> callMethodResultByMethod;
     LogosMap  shutdownResult;
     LogosMap  refreshModulesResult;
     LogosMap  planPackageResult;
@@ -157,6 +162,8 @@ public:
         lastCallModule = module;
         lastCallMethod = method;
         lastCallArgs   = args;
+        auto it = callMethodResultByMethod.find(method);
+        if (it != callMethodResultByMethod.end()) return it->second;
         return callMethodResult;
     }
 
@@ -1522,7 +1529,9 @@ TEST_F(CommandTest, Status_StaleSessionForAnotherInstance_StillDials)
 
 // ── package search ──────────────────────────────────────────────────────────
 
-TEST_F(CommandTest, PackageSearch_ShowsEveryAvailableVersion)
+// Search shows the latest version and a count of the rest: the full list made
+// every row wrap, which is what the column was supposed to prevent.
+TEST_F(CommandTest, PackageSearch_ShowsLatestVersionAndCountsTheRest)
 {
     mockClient.callMethodResult = LogosMap{
         {"status", "ok"},
@@ -1551,8 +1560,59 @@ TEST_F(CommandTest, PackageSearch_ShowsEveryAvailableVersion)
 
     EXPECT_EQ(mockClient.lastCallModule, "package_downloader");
     EXPECT_EQ(mockClient.lastCallMethod, "getCatalog");
-    EXPECT_NE(out.find("AVAILABLE VERSIONS"), std::string::npos);
+    EXPECT_NE(out.find("VERSION"), std::string::npos);
+    // Two distinct releases from three catalog artifacts -> "+1", not "+2".
+    EXPECT_NE(out.find("2.0.0 (+1)"), std::string::npos);
+    EXPECT_EQ(out.find("1.5.0"), std::string::npos);
+}
+
+// The other half of the split: `show` is where every version is named, and it
+// answers for catalog-only packages rather than refusing them as uninstalled.
+TEST_F(CommandTest, PackageShow_ListsEveryVersionForACatalogOnlyPackage)
+{
+    mockClient.callMethodResultByMethod["getInstalledPackages"] =
+        LogosMap{{"status", "ok"}, {"result", LogosList::array()}};
+    mockClient.callMethodResultByMethod["getCatalog"] = LogosMap{
+        {"status", "ok"},
+        {"result", LogosList::array({
+            LogosMap{
+                {"name", "storage_module"},
+                {"category", "storage"},
+                {"description", "Persistent storage"},
+                {"versions", LogosList::array({
+                    LogosMap{{"manifest", LogosMap{{"version", "2.0.0"}}}},
+                    LogosMap{{"manifest", LogosMap{{"version", "1.5.0"}}}},
+                    LogosMap{{"manifest", LogosMap{{"version", "2.0.0"}}}},
+                })},
+            },
+        })},
+    };
+    Output humanOutput;
+    humanOutput.setHumanMode(true);
+
+    auto cmd = createCommand("package", mockClient, humanOutput);
+    const std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"show", "storage_module"}), 0);
+    });
+
+    EXPECT_NE(out.find("available:"), std::string::npos);
     EXPECT_NE(out.find("2.0.0, 1.5.0"), std::string::npos);
+    EXPECT_NE(out.find("installed:"), std::string::npos);
+}
+
+TEST_F(CommandTest, PackageShow_FailsWhenNeitherInstalledNorInAnyCatalog)
+{
+    mockClient.callMethodResultByMethod["getInstalledPackages"] =
+        LogosMap{{"status", "ok"}, {"result", LogosList::array()}};
+    mockClient.callMethodResultByMethod["getCatalog"] =
+        LogosMap{{"status", "ok"}, {"result", LogosList::array()}};
+
+    auto cmd = createCommand("package", mockClient, output);
+    const std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"show", "nope_module"}), 1);
+    });
+
+    EXPECT_NE(out.find("PACKAGE_NOT_FOUND"), std::string::npos);
 }
 
 // ---------------------------------------------------------------------------
