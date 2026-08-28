@@ -8,6 +8,29 @@
     logos-protocol.url = "github:logos-co/logos-protocol";
     logos-plugin-qt.url = "github:logos-co/logos-plugin-qt";
     logos-liblogos.url = "github:logos-co/logos-liblogos";
+
+    # ONE logos-package-manager for the whole tree. This repo stages
+    # ${liblogosPortable}/lib/*.dll into ctl/bin/, which includes
+    # libpackage_manager_lib, while the package_manager module ships its own
+    # copy in ctl/modules-pkg/package_manager/. PE import tables carry DLL BASE
+    # NAMES and the format has no rpath, so Windows resolves a plugin's
+    # dependency from the EXECUTABLE'S directory: liblogos's copy wins, whatever
+    # the module was built against.
+    #
+    # Left unpinned, the two drift and the loser is decided at dlopen on one
+    # platform only. That is not hypothetical -- the module started calling
+    # nodeResolvedToAnInstalledPackage(DependencyStatus) while liblogos still
+    # pinned an lgpm two commits before it existed, and package_manager stopped
+    # loading with "undefined symbol". A follows makes a future skew an
+    # EVALUATION-time disagreement instead.
+    #
+    # nix-bundle-logos-module-install follows too: it RUNS lgpm at build time to
+    # produce the installed tree, so its pin decides which installer builds the
+    # bundle, and it was the most stale of the three.
+    logos-package-manager.url = "github:logos-co/logos-package-manager";
+    logos-liblogos.inputs.logos-package-manager.follows = "logos-package-manager";
+    logos-package-manager-module.inputs.logos-package-manager.follows = "logos-package-manager";
+    nix-bundle-logos-module-install.inputs.logos-package-manager.follows = "logos-package-manager";
     logos-capability-module.url = "github:logos-co/logos-capability-module";
     logos-modules-state-module.url = "github:logos-co/logos-modules-state-module";
     logos-package-manager-module.url = "github:logos-co/logos-package-manager-module";
@@ -18,7 +41,7 @@
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-plugin-qt, logos-liblogos, logos-capability-module, logos-modules-state-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
+  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-plugin-qt, logos-liblogos, logos-package-manager, logos-capability-module, logos-modules-state-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       # Build info baked into the logosctl binary so `--version` reports the
