@@ -622,19 +622,58 @@ Daemon startup options:
   -m, --modules-dir <path>       Directory to scan for modules (repeatable)
       --persistence-path <path>  Base directory for module instance persistence
                                  (default: ~/.logoscore/data)
-      --access-policy <arg>      Inter-module access policy: a path to a JSON
+      --access-policy <arg>      Inter-module access policy. `enforce` turns on
+                                 deny-by-default; also accepts a path to a JSON
                                  file, or inline JSON (mode + per-target caller
-                                 allowlists). See "Access policy" below.
+                                 allowlists). Default: none (no enforcement).
+                                 See "Access policy" below.
 ```
 
 #### Access policy
 
-`--access-policy` installs an inter-module access policy that declares,
-per target module, which caller modules are allowed to invoke it. The
-argument is resolved as **a path to a JSON file** when it doesn't begin
-with `{`, or as **inline JSON** when it does. The resolved document is
-validated as parseable JSON before the daemon boots; a bad path or
-malformed JSON aborts startup.
+**Default: off.** Without `--access-policy`, any loaded module may call any
+other — unchanged from every earlier release.
+
+##### Turning deny-by-default on
+
+```bash
+logoscore -D -m ./modules --access-policy enforce
+```
+
+That arms **deny-by-default**: a module may only call the modules it declared
+as dependencies in its `metadata.json`. The runtime derives each target's
+allowed callers from the live dependency graph (its loaded dependents, plus the
+trusted `core` / `core_service`) and registers them with `capability_module`,
+which then refuses to mint a token for anyone else — so a call from an
+undeclared caller can never proceed.
+
+A refusal is logged by `capability_module` with **both** module names, so a
+denial never presents as a mysteriously empty result:
+
+```
+[capability_module] access policy denies 'test_basic_module' -> 'test_extlib_module'
+```
+
+The daemon also states which side it landed on at startup, so a policy that
+failed to arm is visible rather than silently permissive:
+
+```
+Inter-module access enforcement is ON (mode=enforce): deny-by-default — ...
+Inter-module access enforcement is OFF (no access policy set): ...
+```
+
+> **Before you flip it on:** modules that call targets they never declared will
+> start being refused. Out-of-process `ui_qml` plugins are the known case — they
+> are not tracked as dependents in the core registry, so they need an explicit
+> `restrictions` entry (below). Check a deployment against the log first.
+
+##### Full policy documents
+
+`--access-policy` also accepts a policy document, which declares per target
+module which caller modules may invoke it. The argument is resolved as the
+literal **`enforce`**, else **a path to a JSON file** when it doesn't begin with
+`{`, else **inline JSON**. The resolved document is validated as parseable JSON
+before the daemon boots; a bad path or malformed JSON aborts startup.
 
 ```json
 {
@@ -646,6 +685,13 @@ malformed JSON aborts startup.
   }
 }
 ```
+
+`mode` is the switch: only `"enforce"` activates gating, and `--access-policy
+enforce` is shorthand for exactly `{"version":1,"mode":"enforce","restrictions":{}}`.
+An entry in `restrictions` **replaces** the derived allow-list for that target
+verbatim — that is the escape hatch for a caller that legitimately cannot
+declare its target. `capability_module`, `core` and `core_service` are never
+restricted as targets.
 
 ```bash
 # From a file
@@ -659,10 +705,6 @@ logoscore -D -m ./modules \
 The policy is handed to the runtime (via `logos_core_set_access_policy`)
 before any module is loaded, and is persisted with `--persist-config`
 like the other daemon flags.
-
-> **Note:** enforcement is not yet implemented on the runtime side — the
-> policy is currently accepted and validated but **not enforced** (the
-> underlying `logos_core_set_access_policy` is a no-op for now).
 
 > **Note:** the legacy inline mode (`-c "module.method(args)"` / `--quit-on-finish`,
 > which ran calls in a single short-lived process) has been removed. Use a daemon

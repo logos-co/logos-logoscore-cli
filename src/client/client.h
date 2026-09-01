@@ -3,6 +3,7 @@
 
 #include <logos_json.h>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -43,10 +44,18 @@ public:
                                      const LogosMap& opts) = 0;
 
     // Queries
-    virtual LogosList listModules(const std::string& filter) = 0;
+    //
+    // The two list queries return nullopt when the RPC produced no reply, and
+    // an (possibly empty) array when it did. The distinction is the whole
+    // point of the optional: both of these used to answer a failed call with
+    // `LogosList::array()`, so `module ls` and `stats` printed `[]` and exited
+    // 0 against a daemon that was not there at all. "Nothing is loaded" and
+    // "nobody answered" are not the same fact, and a script cannot recover the
+    // difference from an empty list.
+    virtual std::optional<LogosList> listModules(const std::string& filter) = 0;
     virtual LogosMap getStatus() = 0;
     virtual LogosMap getModuleInfo(const std::string& name) = 0;
-    virtual LogosList getModuleStats() = 0;
+    virtual std::optional<LogosList> getModuleStats() = 0;
 
     // Proxied call — args is a json array of scalar/object arguments
     virtual LogosMap callModuleMethod(const std::string& module,
@@ -82,10 +91,10 @@ public:
     LogosMap applyPackageOperation(const std::string& op, const LogosList& names,
                                    const LogosMap& opts) override;
     LogosMap downloadPackage(const std::string& name, const LogosMap& opts) override;
-    LogosList listModules(const std::string& filter) override;
+    std::optional<LogosList> listModules(const std::string& filter) override;
     LogosMap getStatus() override;
     LogosMap getModuleInfo(const std::string& name) override;
-    LogosList getModuleStats() override;
+    std::optional<LogosList> getModuleStats() override;
     LogosMap callModuleMethod(const std::string& module,
                               const std::string& method,
                               const LogosList& args) override;
@@ -95,6 +104,12 @@ public:
                            std::function<void(const LogosMap&)> callback) override;
 
 private:
+    // Answer "is the daemon actually gone?" from evidence, after a shutdown
+    // RPC produced no reply. `how` receives the evidence used. See the long
+    // comment on RpcClient::shutdown for why a missing reply is normal there
+    // and nowhere else.
+    bool confirmDaemonStopped(long long pid, std::string& how);
+
     struct Impl;
     Impl* d;
     bool m_connected = false;

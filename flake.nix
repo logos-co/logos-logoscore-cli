@@ -4,30 +4,35 @@
   inputs = {
     logos-nix.url = "github:logos-co/logos-nix";
     nixpkgs.follows = "logos-nix/nixpkgs";
-    # Direct SDK input so the CLI binary can link logos_sdk and use its
-    # public symbols (e.g. logos::transportSetToJsonString) without
-    # relying on the symbol surviving liblogos_core's link-time
-    # dead-strip. liblogos's own SDK pin still drives transitive deps.
     logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk";
-    logos-cpp-sdk.inputs.logos-protocol.follows = "logos-protocol";
     logos-protocol.url = "github:logos-co/logos-protocol";
-    logos-qt-sdk.url = "github:logos-co/logos-qt-sdk";
-    logos-qt-sdk.inputs.logos-protocol.follows = "logos-protocol";
-    logos-qt-sdk.inputs.logos-cpp-sdk.follows = "logos-cpp-sdk";
+    logos-plugin-qt.url = "github:logos-co/logos-plugin-qt";
     logos-liblogos.url = "github:logos-co/logos-liblogos";
-    # liblogos is linked INTO this CLI, so its logos-protocol is the one the
-    # crashing code path actually runs. Without this follows it brought its own,
-    # older protocol while cpp-sdk and qt-sdk followed the root pin — three
-    # protocols in one process image, and bumping the root pin alone fixed
-    # nothing. Measured: 4 SIGSEGVs in 2000 client calls with the root pin
-    # already on the fixed protocol.
-    logos-liblogos.inputs.logos-protocol.follows = "logos-protocol";
+
+    # ONE logos-package-manager for the whole tree. This repo stages
+    # ${liblogosPortable}/lib/*.dll into ctl/bin/, which includes
+    # libpackage_manager_lib, while the package_manager module ships its own
+    # copy in ctl/modules-pkg/package_manager/. PE import tables carry DLL BASE
+    # NAMES and the format has no rpath, so Windows resolves a plugin's
+    # dependency from the EXECUTABLE'S directory: liblogos's copy wins, whatever
+    # the module was built against.
+    #
+    # Left unpinned, the two drift and the loser is decided at dlopen on one
+    # platform only. That is not hypothetical -- the module started calling
+    # nodeResolvedToAnInstalledPackage(DependencyStatus) while liblogos still
+    # pinned an lgpm two commits before it existed, and package_manager stopped
+    # loading with "undefined symbol". A follows makes a future skew an
+    # EVALUATION-time disagreement instead.
+    #
+    # nix-bundle-logos-module-install follows too: it RUNS lgpm at build time to
+    # produce the installed tree, so its pin decides which installer builds the
+    # bundle, and it was the most stale of the three.
+    logos-package-manager.url = "github:logos-co/logos-package-manager";
+    logos-liblogos.inputs.logos-package-manager.follows = "logos-package-manager";
+    logos-package-manager-module.inputs.logos-package-manager.follows = "logos-package-manager";
+    nix-bundle-logos-module-install.inputs.logos-package-manager.follows = "logos-package-manager";
     logos-capability-module.url = "github:logos-co/logos-capability-module";
-    # Bundled alongside capability_module so the CLI can manage packages
-    # itself: package_manager installs/uninstalls and owns the dependency
-    # graph, package_downloader owns the catalogs and downloads. Same pair
-    # Basecamp bundles (see logos-basecamp/flake.nix), so both frontends
-    # drive the identical module API.
+    logos-modules-state-module.url = "github:logos-co/logos-modules-state-module";
     logos-package-manager-module.url = "github:logos-co/logos-package-manager-module";
     logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module?ref=617c64800b65c2981bcbd135e73c2dc82be186cd";
     # Real test-module plugins (test_basic_module) used by the
@@ -38,7 +43,7 @@
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-qt-sdk, logos-liblogos, logos-capability-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
+  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-plugin-qt, logos-liblogos, logos-package-manager, logos-capability-module, logos-modules-state-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       # Build info baked into the logosctl binary so `--version` reports the
@@ -59,8 +64,9 @@
           { name = "logos-liblogos"; commit = revOf logos-liblogos; }
           { name = "logos-cpp-sdk"; commit = revOf logos-cpp-sdk; }
           { name = "logos-protocol"; commit = revOf logos-protocol; }
-          { name = "logos-qt-sdk"; commit = revOf logos-qt-sdk; }
+          { name = "logos-plugin-qt"; commit = revOf logos-plugin-qt; }
           { name = "logos-capability-module"; commit = revOf logos-capability-module; }
+          { name = "logos-modules-state-module"; commit = revOf logos-modules-state-module; }
           { name = "logos-package-manager-module"; commit = revOf logos-package-manager-module; }
           { name = "logos-package-downloader-module"; commit = revOf logos-package-downloader-module; }
         ];
@@ -70,11 +76,12 @@
         pkgs = import nixpkgs { inherit system; };
         cppSdk = logos-cpp-sdk.packages.${system}.default;
         protocolPkg = logos-protocol.packages.${system}.default;
-        qtSdk = logos-qt-sdk.packages.${system}.default;
+        qtHost = logos-plugin-qt.packages.${system}.logos-qt-host;
         liblogos = logos-liblogos.packages.${system}.logos-liblogos;
         liblogosLib = logos-liblogos.packages.${system}.logos-liblogos-lib;
         liblogosPortable = logos-liblogos.packages.${system}.portable;
         capabilityModuleLib = logos-capability-module.packages.${system}.lib;
+        modulesStateModuleLib = logos-modules-state-module.packages.${system}.lib;
         packageManagerModuleLib = logos-package-manager-module.packages.${system}.lib;
         packageManagerModuleLibPortable = logos-package-manager-module.packages.${system}.lib-portable;
         packageDownloaderModuleLib = logos-package-downloader-module.packages.${system}.lib;
@@ -119,11 +126,12 @@
             else import nixpkgs { inherit system; };
           cppSdk = logos-cpp-sdk.packages.${system}.default;
           protocolPkg = logos-protocol.packages.${system}.default;
-          qtSdk = logos-qt-sdk.packages.${system}.default;
+          qtHost = logos-plugin-qt.packages.${system}.logos-qt-host;
           liblogos = logos-liblogos.packages.${system}.logos-liblogos;
           liblogosLib = logos-liblogos.packages.${system}.logos-liblogos-lib;
           liblogosPortable = logos-liblogos.packages.${system}.portable;
           capabilityModuleLib = logos-capability-module.packages.${system}.lib;
+          modulesStateModuleLib = logos-modules-state-module.packages.${system}.lib;
           packageManagerModuleLib = logos-package-manager-module.packages.${system}.lib;
           packageManagerModuleLibPortable = logos-package-manager-module.packages.${system}.lib-portable;
           packageDownloaderModuleLib = logos-package-downloader-module.packages.${system}.lib;
@@ -150,7 +158,7 @@
         });
     in
     {
-      packages = forAllTargets ({ pkgs, system, cppSdk, protocolPkg, qtSdk, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, installDev, installPortable, dirBundler, appBundler }:
+      packages = forAllTargets ({ pkgs, system, cppSdk, protocolPkg, qtHost, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, modulesStateModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, installDev, installPortable, dirBundler, appBundler }:
         let
           pname = "logos-logoscore-cli";
           # VERSION is only present on release branches; dev branches use a placeholder.
@@ -177,6 +185,7 @@
           # Bundled modules (bundle + lgpm install in one step each).
           #
           # capability_module    — the auth handshake every client needs.
+          # modules_state        — the module lifecycle registry liblogos feeds.
           # package_manager      — install/uninstall + the dependency graph.
           # package_downloader   — catalogs, resolution, downloads.
           #
@@ -184,10 +193,12 @@
           # read-only "embedded" directory (paths::bundledModulesDir(),
           # <bin>/../modules). Mirrors logos-basecamp/flake.nix so the CLI
           # and the GUI drive the same module surface.
-          bundledInstallsDev = map installDev [ capabilityModuleLib ];
-          # Kept out of modules/ deliberately: logoscore scans that directory
-          # and its doc-tests assert the exact module list, so anything extra
-          # there would change what it reports.
+          bundledInstallsDev = map installDev [ capabilityModuleLib modulesStateModuleLib ];
+          # Kept out of modules/ deliberately: logoscore scans that directory, so
+          # anything extra there changes what it reports by default. (The doc-tests
+          # assert CONTAINMENT -- expect_contains, never an exact list -- so adding a
+          # module here does not break them. This split is about keeping logoscore's
+          # surface deliberate, not about the assertions.)
           pkgInstallsDev = map installDev [
             packageManagerModuleLib
             packageDownloaderModuleLib
@@ -255,7 +266,7 @@
               pkgs.qt6.qtremoteobjects
               cppSdk
               protocolPkg
-              qtSdk
+              qtHost
               pkgs.stduuid
               pkgs.cli11
               pkgs.fmt
@@ -284,7 +295,7 @@
               # itself reference and would otherwise be dead-stripped).
               "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
               "-DLOGOS_PROTOCOL_ROOT=${protocolPkg}"
-              "-DLOGOS_QT_SDK_ROOT=${qtSdk}"
+              "-DLOGOS_QT_HOST_ROOT=${qtHost}"
             ];
           };
 
@@ -380,7 +391,7 @@
           # unset, every objdump call fails, and the hook reports "Created 0
           # DLL link(s)" -- a silent no-op that only shows up as an .exe that
           # will not start on the target machine.
-          mkBinWindows = { binName }: pkgs.stdenv.mkDerivation {
+          mkBinWindows = { binName, withPkgModules }: pkgs.stdenv.mkDerivation {
             pname = "${pname}-${binName}";
             inherit version meta;
 
@@ -393,8 +404,8 @@
             # a PE, in opposite directions:
             #
             # extraDirs: the bundler carries bin/ and lib/ and nothing else
-            # unless a directory is named here. modules/ is the built-in
-            # module tree this package stages by hand a few lines down; without
+            # unless a directory is named here. modules/ (and modules-pkg/ for
+            # logosctl) is the built-in module tree staged below; without
             # this line the bundle is a STRICT SUBSET of the derivation it
             # bundles -- no modules/, no message saying so, and a logosctl.exe
             # that starts and then reports no modules.
@@ -410,7 +421,7 @@
             # the cost is an unused closure path and if it is necessary the
             # build says so instead of shipping an .exe that will not start.
             passthru = {
-              extraDirs = [ "modules" ];
+              extraDirs = [ "modules" ] ++ pkgs.lib.optional withPkgModules "modules-pkg";
               # qtbase + qtremoteobjects are what the CLI itself links.  The
               # other two come from Qt PLUGINS that qtCliApp stages anyway:
               # `guiApp = false` suppresses the LAUNCHER, not the plugin scan,
@@ -438,7 +449,7 @@
               pkgs.qt6.qtremoteobjects
               cppSdk
               protocolPkg
-              qtSdk
+              qtHost
               liblogosLib
               pkgs.yaml-cpp
               pkgs.spdlog
@@ -451,10 +462,10 @@
 
               mkdir -p $out/bin $out/modules
 
-              exe="${build}/bin/${binName}${exeExt}"
+              exe="${buildPortable}/bin/${binName}${exeExt}"
               if [ ! -f "$exe" ]; then
                 echo "Error: $exe not found" >&2
-                ls -la ${build}/bin >&2 || true
+                ls -la ${buildPortable}/bin >&2 || true
                 exit 1
               fi
               cp "$exe" $out/bin/
@@ -473,14 +484,14 @@
               # interpolated literal path survives into the array and the guard
               # passes vacuously.
               staged=0
-              for dll in ${liblogosLib}/lib/*.dll; do
+              for dll in ${liblogosPortable}/lib/*.dll; do
                 [ -f "$dll" ] || continue
                 cp -L "$dll" $out/bin/
                 staged=$((staged + 1))
               done
               if [ "$staged" -eq 0 ]; then
-                echo "Error: no DLLs under ${liblogosLib}/lib; ${binName}${exeExt} would start with no output" >&2
-                ls -la ${liblogosLib}/lib >&2 || true
+                echo "Error: no DLLs under ${liblogosPortable}/lib; ${binName}${exeExt} would start with no output" >&2
+                ls -la ${liblogosPortable}/lib >&2 || true
                 exit 1
               fi
 
@@ -489,27 +500,82 @@
               # script; there is no wrapper on a PE, so the host has to sit
               # beside the CLI where the default lookup finds it.
               hosts=0
-              for host in ${liblogos}/bin/*.exe; do
+              for host in ${liblogosPortable}/bin/*.exe; do
                 [ -f "$host" ] || continue
                 cp -L "$host" $out/bin/
                 hosts=$((hosts + 1))
               done
               if [ "$hosts" -eq 0 ]; then
-                echo "Error: no module-host .exe under ${liblogos}/bin" >&2
-                ls -la ${liblogos}/bin >&2 || true
+                echo "Error: no module-host .exe under ${liblogosPortable}/bin" >&2
+                ls -la ${liblogosPortable}/bin >&2 || true
                 exit 1
               fi
               chmod -R +w $out/bin
 
-              # Built-in modules. ${liblogos}/modules already carries
-              # capability_module with a windows-x86_64-dev manifest key (see
-              # logos-liblogos/nix/modules.nix, which keys off the TARGET
-              # platform rather than uname), so this is the same tree the
-              # native builds get -- no lgx bundling involved.
-              if [ -d ${liblogos}/modules ]; then
-                cp -r ${liblogos}/modules/. $out/modules/
-                chmod -R +w $out/modules
+              # Built-in modules, from the SAME install-bundler path the native
+              # builds use (installPortable -> nix-bundle-lgx), NOT a hand copy.
+              #
+              # This used to be `cp -r ''${liblogos}/modules/.`, and that is where
+              # the first shipped Windows bundle got a capability_module whose
+              # manifest named **Qt6Core.dll** as the plugin. Two Unix-shaped
+              # assumptions in logos-liblogos/nix/modules.nix combine: it globs
+              # `lib/*.dll` -- which matches only the plugin on Unix, but on
+              # Windows linkDLLsInfolder has staged 14 dependency DLLs beside it
+              # -- and then picks the entry point by taking the FIRST file in
+              # the directory, alphabetically Qt6Core.dll. Neither is visible
+              # natively, and the build succeeded either way.
+              #
+              # Going through the bundler fixes both at once and is what
+              # logos-basecamp already does (binBundleDir = dirBundler
+              # appDistributed -> installPortable): the manifest comes from the
+              # module's own metadata rather than a directory listing, and
+              # nix-bundle-lgx's mkWindowsPayload strips the host-provided
+              # runtime DLLs that bin/ already ships.
+              modcount=0
+              for m in ${modulesPortable}/modules/*; do
+                [ -d "$m" ] || continue
+                cp -r "$m" $out/modules/
+                modcount=$((modcount + 1))
+              done
+              if [ "$modcount" -eq 0 ]; then
+                echo "Error: no modules under ${modulesPortable}/modules" >&2
+                ls -laR ${modulesPortable} >&2 || true
+                exit 1
               fi
+${pkgs.lib.optionalString withPkgModules ''
+              mkdir -p $out/modules-pkg
+              pkgcount=0
+              for m in ${modulesPortable}/modules-pkg/*; do
+                [ -d "$m" ] || continue
+                cp -r "$m" $out/modules-pkg/
+                pkgcount=$((pkgcount + 1))
+              done
+              if [ "$pkgcount" -eq 0 ]; then
+                echo "Error: no modules under ${modulesPortable}/modules-pkg;" >&2
+                echo "       ${binName}${exeExt} would start with no package backend" >&2
+                exit 1
+              fi
+              ''}
+              chmod -R +w $out/modules ${pkgs.lib.optionalString withPkgModules "$out/modules-pkg"}
+
+              # Guard the defect class the change above removes: a manifest
+              # whose "main" names something that is not that module's plugin.
+              # The convention is modules/<name>/<name>_plugin.<ext>, so any
+              # other value is wrong by construction. This fails the BUILD
+              # rather than shipping a bundle that starts and then cannot load
+              # -- which is exactly what happened, because every structural
+              # check (file counts, PE counts, zip entries) passed on it.
+              for man in $out/modules/*/manifest.json ${pkgs.lib.optionalString withPkgModules "$out/modules-pkg/*/manifest.json"}; do
+                [ -f "$man" ] || continue
+                mod=$(basename "$(dirname "$man")")
+                bad=$(${pkgs.buildPackages.jq}/bin/jq -r '.main | if type=="object" then to_entries[].value else . end' "$man" \
+                        | sort -u | grep -v "^''${mod}_plugin\." || true)
+                if [ -n "$bad" ]; then
+                  echo "Error: $man declares an entry point that is not $mod's plugin:" >&2
+                  echo "$bad" >&2
+                  exit 1
+                fi
+              done
 
               runHook postInstall
             '';
@@ -546,7 +612,7 @@
               # see the `build` derivation above for the rationale.
               cppSdk
               protocolPkg
-              qtSdk
+              qtHost
             ];
 
             cmakeFlags = [
@@ -554,7 +620,7 @@
               "-DLOGOS_LIBLOGOS_ROOT=${liblogos}"
               "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
               "-DLOGOS_PROTOCOL_ROOT=${protocolPkg}"
-              "-DLOGOS_QT_SDK_ROOT=${qtSdk}"
+              "-DLOGOS_QT_HOST_ROOT=${qtHost}"
             ];
 
             installPhase = ''
@@ -594,7 +660,7 @@
           # manager ships a distinct `lib-portable`; the other two are
           # variant-agnostic and rely on installPortable to make the bundle
           # self-contained (same split logos-basecamp uses).
-          bundledInstallsPortable = map installPortable [ capabilityModuleLib ];
+          bundledInstallsPortable = map installPortable [ capabilityModuleLib modulesStateModuleLib ];
           pkgInstallsPortable = map installPortable [
             packageManagerModuleLibPortable
             packageDownloaderModuleLib
@@ -639,8 +705,12 @@
               pkgs.cmake
               pkgs.ninja
               pkgs.pkg-config
-              pkgs.qt6.wrapQtAppsNoGuiHook
-            ];
+            ]
+            # Same two-part guard as `build`: the Qt wrapper hooks cannot even
+            # evaluate for a mingw host and would skip a PE anyway, and dropping
+            # the hook alone makes qtbase's setup hook error with "depends on
+            # qtbase, but no wrapping behavior was specified".
+            ++ pkgs.lib.optional (!isWindows) pkgs.qt6.wrapQtAppsNoGuiHook;
 
             buildInputs = [
               # cppSdk propagates Boost, OpenSSL, nlohmann_json (but
@@ -650,7 +720,7 @@
               pkgs.qt6.qtremoteobjects
               cppSdk
               protocolPkg
-              qtSdk
+              qtHost
               pkgs.gtest
               pkgs.stduuid
               pkgs.cli11
@@ -659,12 +729,12 @@
               pkgs.spdlog
             ];
 
-            cmakeFlags = [
+            cmakeFlags = (pkgs.logosQtCrossCmakeFlags or [ ]) ++ [
               "-GNinja"
               "-DLOGOS_LIBLOGOS_ROOT=${liblogosPortable}"
               "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
               "-DLOGOS_PROTOCOL_ROOT=${protocolPkg}"
-              "-DLOGOS_QT_SDK_ROOT=${qtSdk}"
+              "-DLOGOS_QT_HOST_ROOT=${qtHost}"
             ];
           };
 
@@ -733,65 +803,71 @@
           logoscoreCli = pkgs.symlinkJoin { name = pname;            paths = [ binLegacy ]; };
           logosctlCli  = pkgs.symlinkJoin { name = "${pname}-ctl";   paths = [ binCtl ];    };
 
-          binLegacyWin = mkBinWindows { binName = "logoscore"; };
-          binCtlWin    = mkBinWindows { binName = "logosctl";  };
+          binLegacyWin = mkBinWindows { binName = "logoscore"; withPkgModules = false; };
+          binCtlWin    = mkBinWindows { binName = "logosctl";  withPkgModules = true;  };
         in
         if isWindows then {
           # Windows ships the two binaries plus a bundled directory for each.
           #
           # STILL LEFT OUT, and why. Each reason below was re-checked by eval
-          # against the revs this flake locks, because the list this replaces
-          # had two entries whose stated reason had expired:
+          # against the revs this flake locks.
           #
-          #   * modules-pkg/ (package_manager + package_downloader), so
-          #     `logosctl package ...` still has no backend on Windows.
-          #     ONE blocker, not the four the old comment implied. Measured:
-          #       - logos-package-manager-module   packages.x86_64-windows.lib
-          #         and .lib-portable    -- PRESENT
-          #       - logos-capability-module        packages.x86_64-windows.lib
-          #                              -- PRESENT
-          #       - nix-bundle-logos-module-install
-          #         bundlers.x86_64-windows.{dev,portable}  -- PRESENT (it
-          #         takes lgpm from the BUILD system and passes
-          #         `--platform windows-x86_64`, so the cross case is handled)
-          #       - logos-package-downloader-module
-          #         packages.x86_64-windows          -- ABSENT
-          #     Root cause of the one that is missing, and it is not in that
-          #     repo's own sources: logos-module-builder gates the
-          #     x86_64-windows target on its `logos-nix` input, and
-          #     package-downloader-module still pins module-builder 8e4ea1c,
-          #     whose lib/common.nix does not mention x86_64-windows at all.
-          #     package-manager-module and capability-module pin 9d3b7cc, which
-          #     does. So the fix is a pin bump in THAT repo, followed by a
-          #     re-lock here.
+          # modules-pkg/ USED TO BE LISTED HERE and no longer is: package_manager
+          # and package_downloader now ship on Windows. The blocker was real but
+          # cleared upstream -- logos-package-downloader-module gained
+          # packages.x86_64-windows when it bumped logos-module-builder
+          # 8e4ea1c -> 9d3b7cc (that file's systems list is a hardcoded 4-element
+          # array with no x86_64-windows at the older rev). This flake was simply
+          # 3 commits behind; a single-input re-lock was the whole fix.
           #
-          #     Why not ship the half that exists. Shipping package_manager
-          #     alone would be worse than shipping neither, not merely
-          #     incomplete: src/daemon/daemon.cpp:241 loads the two names in a
-          #     loop and `return`s on the first failure -- BEFORE the
-          #     setEmbeddedModulesDirectory / setUserModulesDirectory /
-          #     setKeyringDirectory calls below it. package_manager would come
-          #     up loaded but unconfigured, and installs would land wherever its
-          #     unset defaults point, after one warning on stderr.
+          # Two things the old entry got WRONG, recorded because both were
+          # believed and acted on:
           #
-          #     What package_downloader's arrival does NOT settle: that the
-          #     daemon LOADS either module on Windows (never run anywhere), and
-          #     the size of what it installs -- the modules-pkg path goes
-          #     through .lgx, which has no host-runtime strip on the PE path
-          #     yet, so both packages would carry their own copy of the Qt,
-          #     OpenSSL and libstdc++ DLLs that sit beside logosctl.exe already.
+          #   * Its stated consequence of shipping package_manager alone --
+          #     "installs would land wherever its unset defaults point" -- is
+          #     FALSE. Every one of those directories fails closed when unset.
+          #     The real hazard is narrower and worse: a configured
+          #     `signature_policy: require` is read and then silently DISARMED
+          #     in the half-configured state.
+          #
+          #   * It framed daemon.cpp's first-failure `return` as a reason not to
+          #     ship half. It is not a Windows fact at all -- the same early
+          #     return leaves the daemon half-configured on every platform, and
+          #     because package_manager is first in the list, its failure means
+          #     package_downloader is never attempted even when it would load.
+          #     That is a product defect with its own fix, not a packaging
+          #     constraint. It is now fixed: the loop lives in
+          #     src/daemon/package_bootstrap.cpp, loads each module
+          #     independently, and unloads package_manager rather than let it
+          #     enforce less than the session advertises.
           #
           #   * *-appimage. An AppImage is a Linux ELF runtime concatenated with
           #     a squashfs image; there is no Windows analogue. Confirmed rather
           #     than assumed: nix-bundle-appimage exposes `lib` for
           #     aarch64-linux and x86_64-linux only. Do not force this one.
           #
-          #   * portable. Not blocked -- redundant. mkBinWindows IS the portable
-          #     shape: win-dll-link.sh stages every dependency beside the .exe
-          #     because a PE import table carries base names and no rpath, so
-          #     there is no @rpath/$ORIGIN variant for a `portable` output to
-          #     differ from. This is the one entry the old comment got right,
-          #     though it gave the reason under the wrong heading.
+          #   * portable. NO LONGER LEFT OUT, and the reason it was is worth
+          #     keeping because it was wrong in an instructive way. The old
+          #     entry argued portable was "redundant" on Windows: a PE import
+          #     table carries base names and no rpath, win-dll-link.sh stages
+          #     every dependency beside the .exe, so there is no @rpath/$ORIGIN
+          #     variant for a portable output to differ from.
+          #
+          #     All of that is true and none of it is the whole story. `portable`
+          #     is not only a LAYOUT distinction -- it is a compile-time one.
+          #     LGPM_PORTABLE_BUILD (logos-package-manager/CMakeLists.txt:58)
+          #     decides what platformVariantsToTry() returns: without it, the
+          #     binary appends "-dev" and accepts ONLY dev variants
+          #     (package_manager_lib.cpp:1005-1008). So a dev-built logosctl.exe
+          #     beside modules installed as `windows-x86_64` refuses all three
+          #     with "installed for variant 'windows-x86_64' which is not
+          #     supported on this platform". mkBinWindows therefore builds from
+          #     buildPortable/liblogosPortable, matching the installPortable
+          #     modules it stages.
+          #
+          #     buildPortable needed two Windows fixes to be usable here, both
+          #     of which `build` already had: the Qt host-tool cmakeFlags, and
+          #     the !isWindows guard on wrapQtAppsNoGuiHook.
           #
           #   * tests. Verified here rather than inherited from the old comment.
           #     CMakeLists.txt:277 skips the whole test block under WIN32, and
@@ -887,6 +963,12 @@
             paths = [
               (installDev capabilityModuleLib)
               logos-test-modules.modules.${system}.test_basic_module.install
+              # The access-policy tests need a declared and an undeclared
+              # (caller, target) pair from real module metadata:
+              #   test_ipc_new_api_module   declares [test_basic_module, test_extlib_module]
+              #   test_basic_module declares []  → basic -> extlib is undeclared
+              logos-test-modules.modules.${system}.test_extlib_module.install
+              logos-test-modules.modules.${system}.test_ipc_new_api_module.install
             ];
           };
         in rec {
@@ -935,6 +1017,31 @@
             echo "logoscore integration tests..."
             ${testsPkg}/bin/integration_tests_logoscore --gtest_output=xml:$out/integration-test-results.xml
           '';
+
+          # One-runtime symbol gate. Asserts the logos C++ runtime (TokenManager,
+          # StoreRegistry, LogosAPI, LogosAPIClient) is DEFINED exactly once
+          # across the images that share one process. The assertion is
+          # exactly-one and deliberately names no owner: liblogos_core stopped
+          # being the provider when the runtime became real shared libraries,
+          # and liblogos_protocol / liblogos_qt_host define these types now. This repo saw the LOUD version of a duplicate on
+          # Windows (the link fails with "multiple definition of
+          # `TokenManager::instance()'") and the QUIET version everywhere else,
+          # where it links fine and surfaces at runtime as refused calls.
+          # Build: nix build .#checks.<sys>.symbol-gate
+          symbol-gate = import ./nix/symbol-gate.nix {
+            inherit pkgs;
+            appPkg = self.packages.${system}.default;
+          };
+
+          # Negative control. Plants a REAL duplicate runtime where an
+          # in-process consumer goes and asserts the gate REJECTS it. Ship both
+          # or neither: an absence assertion that has never been seen to fail is
+          # indistinguishable from a broken one.
+          symbol-gate-negative = import ./nix/symbol-gate.nix {
+            inherit pkgs;
+            appPkg = self.packages.${system}.default;
+            negativeControl = true;
+          };
 
           # Aggregate. `nix build .#checks.<sys>.tests` still works and now
           # covers both tools; nix builds the two dependencies concurrently.

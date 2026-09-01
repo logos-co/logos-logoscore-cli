@@ -8,7 +8,11 @@
 // Coverage:
 //   * Error paths (ErrorPathTest): unknown-module load, calling methods on
 //     unknown / unloaded modules, unknown method on a loaded module,
-//     module-info on an unknown module. One fresh daemon per test (the
+//     module-info on an unknown module, and — since core_service started
+//     reading the SDK's error channel instead of inferring failure from a
+//     null result — that a MISSING method, a FAILED call and a provider
+//     REFUSAL each report their own code, the last of which flips a
+//     user-visible exit code from 0 to 4. One fresh daemon per test (the
 //     "module known but not loaded" precondition needs pristine state).
 //   * Full test_basic_module API + concurrency (LoadedModuleTest): every
 //     Q_INVOKABLE return/parameter type (void, bool, int, QString,
@@ -20,11 +24,19 @@
 //     Mirrors logos-logoscore-py/tests/integration/test_basic_module_methods.py
 //     and logos-test-modules/test-basic-module — keep them in sync.
 //
-// Negative `call`/`module-info` cases: this CLI/SDK revision has no fast
-// "not loaded / not found" guard — the request rides the SDK's ~100s RPC
-// timeout (surfacing as RPC_FAILED / non-zero exit, the exact code not
-// stable across revisions). So those are `timeout`-bounded and asserted
-// as "must not succeed" rather than waiting ~100s for an exact code.
+// Negative `call` cases: core_service gates on the loaded set before acquiring,
+// so the answer is MODULE_NOT_LOADED, immediate, and identical every run. They
+// pin the code and exclude exit 124 — `timeout` also exits non-zero, so the old
+// "must not succeed" assertions passed BY hanging.
+//
+// Three of them ARE pinned to an exact code now, because they no longer depend
+// on a timeout: an unknown method on a LOADED module resolves against the
+// module's own method list (METHOD_NOT_FOUND), a rejected token comes back on
+// the error channel (METHOD_FAILED + error.code "unauthorized"), and a provider
+// that ran and refused comes back through the RESULT and is folded
+// (METHOD_FAILED + error.code "dispatch_failed"). All three answer in well
+// under a second, and the last is pinned to the process EXIT CODE as well,
+// since that is what the change alters for a user.
 //
 // Requires LOGOSCTL_BINARY + LOGOSCTL_TEST_MODULES_DIR (the flake's
 // `tests` check wires both, plus LOGOS_HOST_PATH so modules can load).
@@ -42,6 +54,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -121,6 +135,7 @@ public:
             cfg << "version: 2\n"
                 << "modules_dirs:\n"
                 << "  - \"" << modulesDir.string() << "\"\n";
+            if (!extraConfig.empty()) cfg << extraConfig;
         }
         pid = spawnBg({"daemon", "start"}, daemonLog);
     }
@@ -136,6 +151,11 @@ public:
             setsid();
             setenv("LOGOSCTL_CONFIG_DIR", configDir.c_str(), 1);
             setenv("HOME", homeDir.c_str(), 1);
+            // Daemon-side knobs. Deliberately NOT applied to run() below:
+            // these configure the process under test, not the client that
+            // drives it.
+            for (const auto& kv : extraEnv)
+                setenv(kv.first.c_str(), kv.second.c_str(), 1);
             // QLocalServer resolves a bare server name against QDir::tempPath(),
             // which honours $TMPDIR — so this decides where the node's sockets
             // land. Tests that assert on socket files set it to get a private
@@ -218,6 +238,15 @@ public:
     // Optional private socket directory ($TMPDIR for the node). Empty ⇒
     // inherit the ambient temp dir, which is what every non-socket test wants.
     fs::path socketDir;
+    // Extra YAML appended to the daemon's config.yaml, verbatim. Set before
+    // start(). logosctl has no daemon flags — the session's config IS the
+    // surface — so this is how a test varies one daemon setting. The
+    // access-policy tests are the reason it exists: the SAME binaries, the
+    // SAME modules, with the policy as the only variable between two runs.
+    std::string extraConfig;
+    // Extra environment for the DAEMON process only (see spawnBg) — the knob
+    // the shutdown test needs, which is not a config-file setting.
+    std::map<std::string, std::string> extraEnv;
     pid_t    pid = -1;
 };
 
@@ -333,15 +362,17 @@ TEST_F(ErrorPathTest, NoLoadNegativePaths) {
                      &out, kNegativeBudgetSecs), 0)
         << "load-module unknown should not succeed.\n" << out;
 
-    // Calling a method on an unknown module must fail.
-    EXPECT_NE(d.run("call definitely_not_a_real_module_xyz whatever",
-                     &out, kNegativeBudgetSecs), 0)
-        << "call on unknown module should not succeed.\n" << out;
+    // Must fail by ANSWERING. These two used to pass on `timeout`'s 124 alone.
+    const int unknownCall = d.run("call definitely_not_a_real_module_xyz whatever",
+                                  &out, kNegativeBudgetSecs);
+    EXPECT_NE(unknownCall, 0) << "call on unknown module should not succeed.\n" << out;
+    EXPECT_NE(unknownCall, 124) << "call on unknown module must fail fast.\n" << out;
 
     // Calling a method on a known-but-unloaded module must fail.
-    EXPECT_NE(d.run("call test_basic_module returnTrue",
-                     &out, kNegativeBudgetSecs), 0)
-        << "call on unloaded module should not succeed.\n" << out;
+    const int unloadedCall = d.run("call test_basic_module returnTrue",
+                                   &out, kNegativeBudgetSecs);
+    EXPECT_NE(unloadedCall, 0) << "call on unloaded module should not succeed.\n" << out;
+    EXPECT_NE(unloadedCall, 124) << "call on unloaded module must fail fast.\n" << out;
 
     // module-info on an unknown module must fail.
     EXPECT_NE(d.run("module-info definitely_not_a_real_module_xyz",
@@ -349,11 +380,187 @@ TEST_F(ErrorPathTest, NoLoadNegativePaths) {
         << "module-info on unknown module should not succeed.\n" << out;
 }
 
-// Regression for #59: the version, sourced from each module's embedded
-// metadata, must appear in list-modules / module-info / load-module — and,
-// critically, for modules that are merely KNOWN (not yet loaded), since that
-// reads from on-disk metadata rather than a running plugin. test_basic_module
-// declares version 1.0.0 in its metadata.json.
+// ── `watch`: fail fast when unloaded, never fail when loaded ─────────────────
+//
+// The contract has two halves and they are pinned separately below.
+//
+// UNLOADED -> fail fast. A module that is not loaded may never be, so an
+// answer beats parking `watch` on a subscription with no future. This half was
+// already true and these assertions keep it that way.
+//
+// LOADED -> always succeed. This half was NOT true. The daemon answered
+// watchModuleEvents with requestObject() + onEvent(), which is ONE-SHOT:
+// LogosAPIConsumer::requestObject refuses while the target's registry socket
+// has no listener, and nothing retried. `load-module` returns once the plugin
+// is in, but the module publishes its object AFTERWARDS — so there is a window
+// in which the host reports a module loaded and `watch` refused it. Cold, that
+// window is seconds. The failure was the dangerous kind: `watch` answered
+// WATCH_FAILED and exited, and because nothing checked it, whole scripts ran
+// green while observing nothing.
+//
+// Coverage honesty: the unloaded half is deterministic — this fixture's daemon
+// starts with the module discoverable but not loaded, so the state holds still.
+// The loaded half is not, and cannot be made so from the CLI: nothing can hold
+// a module in "loaded but not yet published", so on a warm machine the test
+// below may find the window already shut and pass without exercising it. It is
+// still the requirement worth stating, it is the case that fails on a cold CI
+// worker, and the daemon-side guarantee does not rest on it — past the loaded
+// check nothing on the success path can fail, by construction.
+TEST_F(ErrorPathTest, WatchOnAModuleThatIsNotLoadedFailsFast) {
+    std::string out;
+
+    // `timeout` reports 124. It is checked separately from a plain non-zero
+    // exit because hanging is the specific regression a deferred subscription
+    // would introduce here, and "failed" would not distinguish it.
+    const int named = d.run("watch test_basic_module --event testEvent",
+                            &out, kNegativeBudgetSecs);
+    EXPECT_NE(named, 0) << "watch on an unloaded module must not succeed.\n" << out;
+    EXPECT_NE(named, 124) << "watch on an unloaded module must fail fast, not "
+                             "hang waiting for a load that may never come.\n" << out;
+    EXPECT_NE(out.find("WATCH_FAILED"), std::string::npos) << out;
+
+    // The wildcard form (no --event) reaches the daemon by a different path and
+    // has to answer the same way.
+    const int wildcard = d.run("watch test_basic_module", &out, kNegativeBudgetSecs);
+    EXPECT_NE(wildcard, 0) << "wildcard watch on an unloaded module must not "
+                              "succeed.\n" << out;
+    EXPECT_NE(wildcard, 124) << "wildcard watch on an unloaded module must fail "
+                                "fast.\n" << out;
+    EXPECT_NE(out.find("WATCH_FAILED"), std::string::npos) << out;
+
+    // A name the host has never heard of is the same answer, not a worse one.
+    const int unknown = d.run("watch definitely_not_a_real_module_xyz --event whatever",
+                              &out, kNegativeBudgetSecs);
+    EXPECT_NE(unknown, 0) << "watch on an unknown module must not succeed.\n" << out;
+    EXPECT_NE(unknown, 124) << "watch on an unknown module must fail fast.\n" << out;
+    EXPECT_NE(out.find("WATCH_FAILED"), std::string::npos) << out;
+}
+
+// `call` on an unloaded module must be ANSWERED, not awaited. Before the gate
+// it cost a 20s acquire racing the client's 20s deadline, so the code was a coin
+// flip (measured 5 object_unavailable / 12 RPC_FAILED over 17 calls).
+//
+// Asserts the property, not a tally — the old behaviour was bimodal per RUN, so
+// sampling can pass unfixed. 5s budget, not kNegativeBudgetSecs, so a
+// regression to the acquire deadline fails here.
+TEST_F(ErrorPathTest, CallOnAModuleThatIsNotLoadedIsRefusedNotAwaited) {
+    std::string out;
+
+    const auto t0 = std::chrono::steady_clock::now();
+    const int rc = d.run("call test_basic_module returnTrue", &out, 5);
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t0).count();
+
+    // 124 is `timeout` firing — checked separately because hanging is the
+    // specific regression, and "failed" would not distinguish it.
+    EXPECT_NE(rc, 124) << "call on an unloaded module must be ANSWERED, not "
+                          "awaited.\n" << out;
+    EXPECT_EQ(rc, 3) << "MODULE_NOT_LOADED is exit 3 (call_command.cpp, and "
+                        "docs/spec.md's `call` samples).\n" << out;
+    EXPECT_LT(ms, 2000) << "the gate is an in-process registry lookup; anything "
+                           "near the 20s acquire means it was skipped.\n" << out;
+    EXPECT_EQ(lastJsonObject(out).value("code", std::string{}), "MODULE_NOT_LOADED")
+        << out;
+
+    // An unknown name gets the same answer, and no slower.
+    const auto u0 = std::chrono::steady_clock::now();
+    const int unknown = d.run("call definitely_not_a_real_module_xyz whatever", &out, 5);
+    const auto ums = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - u0).count();
+
+    EXPECT_NE(unknown, 124) << "call on an unknown module must be answered.\n" << out;
+    EXPECT_EQ(unknown, 3) << out;
+    EXPECT_LT(ums, 2000) << out;
+    EXPECT_EQ(lastJsonObject(out).value("code", std::string{}), "MODULE_NOT_LOADED")
+        << out;
+
+    // core_service is not in the loaded set, so the gate must exempt it.
+    // Non-zero is fine here (no token); MODULE_NOT_LOADED is not.
+    d.run("call core_service getModuleStats", &out, kNegativeBudgetSecs);
+    EXPECT_NE(lastJsonObject(out).value("code", std::string{}), "MODULE_NOT_LOADED")
+        << "the gate must exempt core_service.\n" << out;
+}
+
+// Positive control: a module in the load->publish window must still be reached.
+// Shortening the acquire deadline would pass the test above and fail this one.
+// No sleep between load and call — that would be the workaround this forbids.
+TEST_F(ErrorPathTest, CallImmediatelyAfterLoadStillReachesTheModule) {
+    std::string out;
+
+    ASSERT_EQ(d.run("load-module test_basic_module", &out, kNegativeBudgetSecs), 0)
+        << out;
+    EXPECT_EQ(d.run("call test_basic_module returnTrue", &out, kNegativeBudgetSecs), 0)
+        << "a module inside the load->publish window must keep its full acquire "
+           "budget, not be refused by the loaded-set gate and not be cut short "
+           "by a shortened deadline.\n" << out;
+}
+
+// The loaded half: subscribing the INSTANT `load-module` returns must work.
+// No sleep between the two on purpose — a sleep here would be the bug's
+// workaround smuggled into its own regression test.
+TEST_F(ErrorPathTest, WatchSucceedsTheInstantLoadModuleReturns) {
+    std::string out;
+    ASSERT_EQ(d.run("load-module test_basic_module", &out, kNegativeBudgetSecs), 0)
+        << out;
+
+    const fs::path log = d.base / "watch_after_load.log";
+    pid_t w = d.spawnBg({"watch", "test_basic_module", "--event", "testEvent"}, log);
+    ASSERT_GT(w, 0);
+    ProcGuard guard{&d, w};
+
+    // Emitting is idempotent, so re-emit on a cadence rather than sleeping a
+    // fixed time and firing once: whenever the subscription arms, a subsequent
+    // emit lands. Same shape as EmitTestEventRoundTrip.
+    bool got = false;
+    for (int i = 0; i < 300 && !got; ++i) {
+        d.run("call test_basic_module emitTestEvent armed_after_load", &out);
+        if (slurp(log).find("armed_after_load") != std::string::npos) { got = true; break; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    const std::string watchLog = slurp(log);
+    // Checked separately from `got`: an outright refusal and a subscription
+    // that armed but never delivered are different defects, and one assertion
+    // covering both would not say which happened.
+    EXPECT_EQ(watchLog.find("Failed to watch events"), std::string::npos)
+        << "watch refused a module the host reports as loaded.\n"
+        << "--- watch log ---\n" << watchLog;
+    EXPECT_TRUE(got)
+        << "no event reached a subscription taken right after the load.\n"
+        << "--- watch log ---\n" << watchLog;
+}
+
+// Same, for the wildcard form. It subscribes with an EMPTY event name, which
+// LogosObject reads as "every event" but LogosAPIConsumer::onEventWhenAvailable
+// refuses outright — so the daemon cannot serve it the way it serves a named
+// event, and a fix covering only the named form would leave the CLI's DEFAULT
+// invocation silently dead.
+TEST_F(ErrorPathTest, WildcardWatchSucceedsTheInstantLoadModuleReturns) {
+    std::string out;
+    ASSERT_EQ(d.run("load-module test_basic_module", &out, kNegativeBudgetSecs), 0)
+        << out;
+
+    const fs::path log = d.base / "wildcard_watch_after_load.log";
+    pid_t w = d.spawnBg({"watch", "test_basic_module"}, log);
+    ASSERT_GT(w, 0);
+    ProcGuard guard{&d, w};
+
+    bool got = false;
+    for (int i = 0; i < 300 && !got; ++i) {
+        d.run("call test_basic_module emitTestEvent wildcard_after_load", &out);
+        if (slurp(log).find("wildcard_after_load") != std::string::npos) { got = true; break; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    const std::string watchLog = slurp(log);
+    EXPECT_EQ(watchLog.find("Failed to watch events"), std::string::npos)
+        << "wildcard watch refused a module the host reports as loaded.\n"
+        << "--- watch log ---\n" << watchLog;
+    EXPECT_TRUE(got)
+        << "no event reached a wildcard subscription taken right after the "
+           "load.\n--- watch log ---\n" << watchLog;
+}
+
 TEST_F(ErrorPathTest, ReportsModuleVersion) {
     std::string out;
     const std::string kVersion = "\"version\":\"1.0.0\"";
@@ -403,10 +610,140 @@ TEST_F(ErrorPathTest, UnknownMethodOnLoadedModule) {
                      &out, kNegativeBudgetSecs), 0)
         << "unknown method on a loaded module should not succeed.\n" << out;
 
+    // …and it says WHY. A provider answers an unknown method with a bare null
+    // and no transport error (logos_protocol.h: "NOT reported, and it is not an
+    // oversight"), so this envelope can only come from core_service asking the
+    // module for its method list — which makes it the end-to-end proof that the
+    // introspection fallback works against a real module over a real transport.
+    // Before the error-channel switch this read METHOD_FAILED / "Call to
+    // test_basic_module.thisMethodDoesNotExist failed." with no list.
+    const nlohmann::json env = lastJsonObject(out);
+    EXPECT_EQ(env.value("code", std::string{}), "METHOD_NOT_FOUND") << out;
+    // .value(), not operator[]: on a const json a missing key is UB, and this
+    // assertion has to survive the envelope NOT carrying the field.
+    const nlohmann::json avail =
+        env.value("available_methods", nlohmann::json());
+    ASSERT_TRUE(avail.is_array()) << out;
+    EXPECT_NE(std::find(avail.begin(), avail.end(), nlohmann::json("returnTrue")),
+              avail.end())
+        << "available_methods must be the module's real list.\n" << out;
+    EXPECT_EQ(std::find(avail.begin(), avail.end(),
+                        nlohmann::json("thisMethodDoesNotExist")),
+              avail.end()) << out;
+
     // A real method still works fast — proves the failure above was
     // method-scoped, not a wedged daemon.
     ASSERT_EQ(d.run("call test_basic_module returnTrue", &out), 0) << out;
     EXPECT_NE(out.find("true"), std::string::npos) << out;
+}
+
+// A call that genuinely FAILED still reports METHOD_FAILED — and now names the
+// transport's own reason, because the reason arrives on an error channel rather
+// than being inferred from the value.
+//
+// The vehicle is a self-call: core_service refuses a token it did not mint, so
+// this is a fast, deterministic "unauthorized" with no waiting on a timeout.
+// The value it comes back with is null — the SAME null a method that returns
+// nothing would produce — so this and a legitimately-null return are exactly
+// the pair that used to be indistinguishable.
+TEST_F(ErrorPathTest, FailedCallReportsTheErrorChannelNotTheValue) {
+    std::string out;
+    ASSERT_NE(d.run("call core_service getModuleStats", &out,
+                    kNegativeBudgetSecs), 0)
+        << "a rejected call must not report success.\n" << out;
+
+    const nlohmann::json env = lastJsonObject(out);
+    EXPECT_EQ(env.value("status", std::string{}), "error") << out;
+    EXPECT_EQ(env.value("code", std::string{}), "METHOD_FAILED") << out;
+    // The diagnosis, machine-readable. Empty before the switch: the old code
+    // had only a null value to look at and nothing to say about it.
+    const nlohmann::json diag = env.value("error", nlohmann::json());
+    ASSERT_TRUE(diag.is_object()) << out;
+    EXPECT_EQ(diag.value("code", std::string{}), "unauthorized") << out;
+    EXPECT_FALSE(diag.value("message", std::string{}).empty()) << out;
+}
+
+// The whole point, on a live transport: two calls that both come back null are
+// now told apart, and by different means — one by the error channel, one by
+// asking the module what it exposes.
+//
+// What is NOT covered here, deliberately and worth knowing: a method that
+// legitimately RETURNS null. No module in the fixture set has one — the
+// qt-generator refuses an optional return outright, and nothing declares
+// `-> any` and answers null. That case is pinned in tests/test_call_envelope.cpp
+// instead, where the decision itself lives.
+TEST_F(ErrorPathTest, MissingMethodAndFailedCallAreDistinguishable) {
+    std::string out;
+    ASSERT_EQ(d.run("load-module test_basic_module", &out), 0) << out;
+
+    ASSERT_NE(d.run("call test_basic_module thisMethodDoesNotExist", &out,
+                    kNegativeBudgetSecs), 0) << out;
+    const std::string missing = lastJsonObject(out).value("code", std::string{});
+
+    ASSERT_NE(d.run("call core_service getModuleStats", &out,
+                    kNegativeBudgetSecs), 0) << out;
+    const std::string failed = lastJsonObject(out).value("code", std::string{});
+
+    EXPECT_EQ(missing, "METHOD_NOT_FOUND");
+    EXPECT_EQ(failed,  "METHOD_FAILED");
+    EXPECT_NE(missing, failed)
+        << "these collapsed into one code before core_service read the error "
+           "channel; keeping them apart is the entire point.";
+}
+
+// THE THIRD KIND OF FAILURE, end to end: a provider that RAN and REFUSED.
+//
+// This one does not travel on the transport's error channel at all. A strict
+// decode failure inside the generated dispatch answers the canonical
+// {"code":"dispatch_failed","message":...,"origin":...} envelope as its RESULT
+// value (logos-protocol cpp/logos_codec.h, "DECODE STRICTNESS"; the reason it is
+// not folded by the transport is stated at cpp/logos_protocol.h, under
+// lp_invoke_async). core_service has to recognise it and fold it into the error
+// channel itself — core_service::callEnvelope, via dispatchRejection
+// (src/core_service/call_envelope.cpp).
+//
+// WHY THIS TEST EXISTS. The fold changes a USER-VISIBLE exit code: a refusal
+// used to be reported as a SUCCESSFUL call whose result happened to be a
+// three-key map, so `logosctl call` exited 0. It now exits 4. That is exactly
+// the kind of change unit tests cannot vouch for on their own — the unit suite
+// (tests/test_call_envelope.cpp, DispatchRejectionIsMethodFailed) hands
+// callEnvelope a hand-written refusal object, which proves the decision but not
+// that any real provider ever produces that shape. `echoInt` with a
+// non-numeric argument does: the CLI's auto-typing sends the bare string
+// "notanumber" and int64_t has no lenient decode.
+TEST_F(ErrorPathTest, ProviderRefusalIsFoldedIntoTheErrorChannel) {
+    std::string out;
+    ASSERT_EQ(d.run("load-module test_basic_module", &out), 0) << out;
+
+    // CONTROL FIRST, so a red assertion below cannot be blamed on the module or
+    // the transport: the same method, a well-formed argument, succeeds.
+    ASSERT_EQ(d.run("call test_basic_module echoInt 42", &out), 0) << out;
+    EXPECT_NE(out.find("42"), std::string::npos) << out;
+
+    // The refusal. Exit 4 (METHOD_FAILED), not 0 — this is the flip.
+    EXPECT_EQ(d.run("call test_basic_module echoInt notanumber", &out,
+                    kNegativeBudgetSecs), 4)
+        << "a provider refusal must be reported as a failed call, not as a "
+           "successful one returning a three-key map.\n" << out;
+
+    const nlohmann::json env = lastJsonObject(out);
+    EXPECT_EQ(env.value("status", std::string{}), "error") << out;
+    EXPECT_EQ(env.value("code", std::string{}), "METHOD_FAILED") << out;
+
+    // The provider's own code survives the fold, which is what distinguishes a
+    // refusal from a transport failure for a JSON consumer. It must NOT have
+    // been flattened into the generic "call_failed".
+    const nlohmann::json diag = env.value("error", nlohmann::json());
+    ASSERT_TRUE(diag.is_object()) << out;
+    EXPECT_EQ(diag.value("code", std::string{}), "dispatch_failed") << out;
+    EXPECT_FALSE(diag.value("message", std::string{}).empty()) << out;
+
+    // And the refusal was argument-scoped: the daemon and the module are still
+    // live afterwards. Before the fold this call was reported as a SUCCESS, so
+    // nothing about the surrounding state was ever in question — now that it is
+    // an error path, it is worth pinning that it is not a wedging one.
+    ASSERT_EQ(d.run("call test_basic_module echoInt 7", &out), 0) << out;
+    EXPECT_NE(out.find("7"), std::string::npos) << out;
 }
 
 // Crash-isolation: modules run in a separate logos_host subprocess
@@ -981,4 +1318,264 @@ TEST_F(SocketLifecycleTest, BootReapsStaleSocketsButSparesLiveOnesAndFiles)
     ASSERT_TRUE(fs::exists(plain))
         << "the reaper deleted a regular file sharing the prefix: " << plain;
     EXPECT_EQ(slurp(plain), "not a socket") << "regular file was modified";
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Deny-by-default inter-module access enforcement (`access_policy`)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The end-to-end proof, on a REAL daemon: the session's `access_policy` is set
+// to the deny-by-default document before modules load. logosctl takes it from
+// daemon config; logoscore spells the same document `--access-policy enforce`
+// (see test_integration_logoscore.cpp).
+//
+// The direct CLI probe below is deliberately a HOST call, not a synthetic
+// module call. `fromModuleName` is legacy, untrusted input; capability_module
+// must derive the caller from the token and therefore see this as `core`.
+// The declared module-to-module half is driven through test_ipc_new_api_module
+// below, where the call genuinely originates in that module's process.
+namespace {
+
+// requestModule is the legacy two-argument surface. The first argument is
+// intentionally supplied here to prove it CANNOT forge the caller identity;
+// the dispatch token is authoritative. Returns nullopt only when the client
+// call itself failed (as distinct from an empty refusal result).
+std::optional<std::string> requestModuleToken(const LogosctlDaemon& d,
+                                              const std::string& caller,
+                                              const std::string& target,
+                                              std::string* raw)
+{
+    std::string out;
+    const std::string cmd =
+        "call capability_module requestModule " + caller + " " + target;
+    const int rc = d.run(cmd, &out, /*timeoutSecs=*/20);
+    if (raw) *raw = out;
+    if (rc != 0) return std::nullopt;
+    nlohmann::json env = lastJsonObject(out);
+    if (env.value("status", std::string{}) != "ok") return std::nullopt;
+    const nlohmann::json result = env.value("result", nlohmann::json{});
+    if (result.is_string()) return result.get<std::string>();
+    if (result.is_null()) return std::string{};
+    return std::nullopt;
+}
+
+// The bare deny-by-default document — the same text `logoscore
+// --access-policy enforce` expands to (src/daemon/access_policy_arg.h). `mode`
+// is the runtime's only switch; with no explicit `restrictions` the runtime
+// derives them from the declared dependency graph.
+constexpr const char* kEnforceDoc =
+    R"({"version":1,"mode":"enforce","restrictions":{}})";
+
+// Bring up a daemon with the three modules loaded. `policyDoc` empty ⇒ no
+// access_policy in the session config at all (today's default).
+class AccessPolicyFixture : public ::testing::Test {
+protected:
+    LogosctlDaemon d;
+
+    void bootWith(const std::string& policyDoc) {
+        std::string why;
+        if (!d.envReady(why)) GTEST_SKIP() << why;
+        if (!policyDoc.empty()) {
+            // A JSON document carried as a YAML string, exactly as
+            // docs/logosctl.md tells operators to write it.
+            d.extraConfig = std::string("access_policy: '") + policyDoc + "'\n";
+        }
+        d.start(::testing::UnitTest::GetInstance()->current_test_info()->name());
+        ASSERT_TRUE(d.waitReady())
+            << "daemon did not become reachable.\n--- daemon log ---\n"
+            << slurp(d.daemonLog);
+
+        // test_ipc_new_api_module declares both others, so one load pulls all three.
+        std::string out;
+        if (d.run("load-module test_ipc_new_api_module", &out, /*timeoutSecs=*/30) != 0)
+            GTEST_SKIP() << "test_ipc_new_api_module not available in this modules dir:\n"
+                         << out;
+        ASSERT_EQ(d.run("list-modules --loaded", &out), 0) << out;
+        for (const char* m : {"test_ipc_new_api_module", "test_basic_module", "test_extlib_module"})
+            ASSERT_NE(out.find(m), std::string::npos)
+                << m << " must be loaded before probing the gate.\n" << out
+                << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+    }
+
+    void TearDown() override { d.shutdown(); }
+};
+
+} // namespace
+
+TEST_F(AccessPolicyFixture, EnforcePolicy_IgnoresTheForgedLegacyCallerName) {
+    bootWith(kEnforceDoc);
+    if (::testing::Test::IsSkipped() || ::testing::Test::HasFatalFailure()) return;
+
+    std::string raw;
+    // This RPC originates in logosctl's core_service. Passing
+    // test_basic_module here used to make the test *pretend* that module had
+    // called; the caller-identity hardening deliberately rejects that premise.
+    // `core` is an allowed control-plane caller, so the token is minted, while
+    // the daemon log proves the legacy string was ignored rather than trusted.
+    auto token = requestModuleToken(d, "test_basic_module", "test_extlib_module", &raw);
+    ASSERT_TRUE(token.has_value()) << "requestModule call failed outright:\n" << raw;
+    EXPECT_FALSE(token->empty())
+        << "the host control plane must retain its allowed request path under "
+           "enforcement.\n"
+        << raw << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+    const std::string log = slurp(d.daemonLog);
+    EXPECT_NE(log.find("ignoring leftover fromModuleName='test_basic_module' "
+                       "(token-bound caller is 'core')"), std::string::npos)
+        << "capability_module trusted the caller-supplied legacy name instead "
+           "of the token-bound host identity.\n" << log;
+}
+
+TEST_F(AccessPolicyFixture, EnforcePolicy_StillAllowsADeclaredPair) {
+    bootWith(kEnforceDoc);
+    if (::testing::Test::IsSkipped() || ::testing::Test::HasFatalFailure()) return;
+
+    // A real module-originated call: test_ipc_new_api_module declares
+    // test_basic_module, so its typed wrapper asks capability_module for a
+    // token from inside the module process. This is the integration oracle for
+    // the allow path; the denied-pair oracle belongs in capability_module's
+    // own tests, where it can establish a real caller scope without forging
+    // this legacy RPC argument from the host.
+    std::string out;
+    ASSERT_EQ(d.run("call test_ipc_new_api_module callBasicEcho policy_ok", &out, 20), 0)
+        << "a declared module-to-module call must remain allowed under enforce.\n"
+        << out << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+    EXPECT_NE(out.find("policy_ok"), std::string::npos) << out;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Shutdown reply — the answer has to outlive the daemon that sent it
+//
+// `daemon stop` is the one call whose reply races its own delivery. The
+// daemon answers, then leaves its event loop; the answer only reaches the
+// wire when the loop next services that socket's write notifier. Lose that
+// order and the client sits out its full RPC deadline, sees nothing, and
+// reports RPC_FAILED — exit 3 — for a shutdown that worked perfectly.
+//
+// That is what took down the "Stop the daemon" step of
+// doctests/logosctl-daemon.test.yaml on a loaded macOS runner: one failure in
+// nine otherwise identical shutdowns in the same job.
+//
+// The race is invisible at the shipped grace period — 265 consecutive stops
+// on the released binary never lost a reply, on either side of the PR it was
+// first blamed on, which is why this reached CI in the first place.
+// $LOGOSCTL_SHUTDOWN_GRACE_MS collapses that margin to nothing, which is the
+// same window a stalled main thread opens up, and makes the bug reproducible
+// on demand. Measured through this fixture on an idle macOS box: the pre-fix
+// daemon lost 6 replies in 100 stops, the fixed one none in 120.
+//
+// If the daemon half ever regresses, expect this to fail as `daemon stop`
+// exiting 3 with "the daemon (pid N) is still running 15s later" rather than
+// as a lostReplies count. The daemon here is this process's own child, so it
+// lingers as a zombie until reaped and the client's kill(pid, 0) confirmation
+// sees it as alive — an artifact of the harness, not of the product, where no
+// client is ever the daemon's parent.
+//
+// Not mirrored into test_integration_logoscore.cpp: both front-ends drive the
+// same CoreServiceImpl::shutdown and the same RpcClient::shutdown, so a second
+// copy would retest the same two functions through a tool that is on its way
+// out.
+// ═══════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// How many stop cycles to run. A race can only be guarded statistically, so
+// this number is an explicit purchase: at the 6%-per-cycle loss rate measured
+// through this fixture, 60 cycles catches a regression 97.6% of the time and
+// costs about 30 seconds. Raise it with $LOGOSCTL_STOP_CYCLES when chasing
+// something rarer — 100 cycles buys 99.8% for another 20 seconds.
+int stopCycles()
+{
+    if (const char* v = std::getenv("LOGOSCTL_STOP_CYCLES")) {
+        const int n = std::atoi(v);
+        if (n > 0) return n;
+    }
+    return 60;
+}
+
+// The daemon here is this process's own child, so kill(pid, 0) — what
+// logosctl::processAlive asks, and the right question for a client that is
+// unrelated to the daemon — reports a zombie as alive. Reap it instead.
+bool waitForChildExit(pid_t p, int timeoutMs)
+{
+    if (p <= 0) return true;
+    const auto deadline = std::chrono::steady_clock::now()
+                        + std::chrono::milliseconds(timeoutMs);
+    for (;;) {
+        int st = 0;
+        const pid_t r = ::waitpid(p, &st, WNOHANG);
+        if (r == p) return true;
+        if (r < 0 && errno == ECHILD) return true;
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+}
+
+} // namespace
+
+TEST(ShutdownReplyTest, StopSucceedsWithNoGracePeriod)
+{
+    {
+        LogosctlDaemon probe;
+        std::string why;
+        if (!probe.envReady(why)) GTEST_SKIP() << why;
+    }
+
+    const int cycles = stopCycles();
+    int reportedFailure = 0;
+    int lostReplies     = 0;
+    int survived        = 0;
+
+    for (int i = 0; i < cycles; ++i) {
+        LogosctlDaemon d;
+        std::string why;
+        ASSERT_TRUE(d.envReady(why)) << why;
+        // Zero grace: quit the instant the answer has been handed over. The
+        // daemon must still get it out.
+        d.extraEnv["LOGOSCTL_SHUTDOWN_GRACE_MS"] = "0";
+        d.start("stopreply_" + std::to_string(i));
+        ASSERT_TRUE(d.waitReady())
+            << "cycle " << i << ": daemon never became reachable\n"
+            << slurp(d.daemonLog);
+
+        const pid_t daemonPid = d.pid;
+
+        std::string out;
+        const int rc = d.run("daemon stop", &out, /*timeoutSecs=*/60);
+        const nlohmann::json j = lastJsonObject(out);
+
+        if (rc != 0) ++reportedFailure;
+        EXPECT_EQ(rc, 0)
+            << "cycle " << i << ": `daemon stop` exited " << rc << "\n" << out
+            << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+        EXPECT_EQ(j.value("status", std::string{}), "ok")
+            << "cycle " << i << ": " << out;
+
+        // The other half of the contract, and the reason "treat silence as
+        // success" is not on its own an acceptable fix: a stop that reports
+        // ok must correspond to a daemon that is actually gone.
+        const bool gone = waitForChildExit(daemonPid, 15000);
+        if (!gone) ++survived;
+        EXPECT_TRUE(gone)
+            << "cycle " << i << ": daemon pid " << daemonPid
+            << " still running after a successful-looking stop\n"
+            << slurp(d.daemonLog);
+        if (gone) d.pid = -1;   // reaped above; don't let killGroup wait again
+
+        // `confirmed_by` is stamped only when the client had to fall back to
+        // watching the daemon die because no reply ever arrived. At zero grace
+        // that fallback is the safety net, not the mechanism.
+        if (j.contains("confirmed_by")) ++lostReplies;
+
+        d.shutdown();
+    }
+
+    EXPECT_EQ(reportedFailure, 0)
+        << reportedFailure << "/" << cycles << " stops reported failure";
+    EXPECT_EQ(survived, 0)
+        << survived << "/" << cycles << " daemons outlived their own stop";
+    EXPECT_EQ(lostReplies, 0)
+        << lostReplies << "/" << cycles << " shutdown replies were lost and had to be "
+           "confirmed by watching the process exit. The client covered for it and the "
+           "command still succeeded, but the daemon is leaving its event loop before "
+           "its answer is on the wire.";
 }

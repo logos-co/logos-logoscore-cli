@@ -5,6 +5,14 @@ int StopCommand::execute(const std::vector<std::string>& args)
 {
     (void)args;
 
+    // The stale-session guard that used to stand here is now inside
+    // ensureConnected(), where every RPC-opening command gets it. `stop` needed
+    // it first and needs it most: it reports success when the shutdown RPC
+    // produces no reply but the daemon's pid is gone -- the normal outcome,
+    // since the daemon is being asked to die mid-sentence -- and that inference
+    // is only sound about a pid that was alive when we asked. Against a session
+    // whose daemon died last week, an unguarded `stop` would wait out the RPC
+    // deadline and then call the silence a successful shutdown.
     int err = ensureConnected();
     if (err != 0)
         return err;

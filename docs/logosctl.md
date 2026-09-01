@@ -212,6 +212,15 @@ check, `warn` (the default when the key is absent) installs and prints a
 warning, `require` refuses the install. It takes effect on the next daemon
 start, like everything else in this file.
 
+If the value cannot be delivered to the package manager at startup — the module
+did not load, or its object could not be acquired — the daemon unloads the
+package manager rather than leave it enforcing its own `warn` default while
+this file, `logosctl config get` and `state.json` all still say `require`.
+Package commands are unavailable for that session, and the reason is on stderr.
+A failure to set the *directories* is not treated the same way: every directory
+fails closed on its own (an install refuses with `User modules directory is not
+set`), so that case warns and leaves the manager up.
+
 A `local` listener is always added to every module, so same-host clients and the
 daemon's own cross-module calls keep working whatever else you configure. Any
 `tcp`/`tcp_ssl` entries are additional, outward-facing listeners.
@@ -303,14 +312,16 @@ logosctl call MODULE METHOD [args...]
 logosctl watch MODULE [--event NAME]
 
 # Packages — what is on disk
-# install/upgrade/remove share one option set:
+# install/upgrade share one option set:
 #   --file X.lgx  --dir D  --version V  --root-hash H  --catalog C
 #   -y|--yes  --dry-run  --no-deps  --no-dependents
-logosctl package install NAME...     # or --file X.lgx / --dir D
-logosctl package upgrade NAME
+# remove takes names only:  -y  --dry-run  --no-dependents
+logosctl package install NAME|FILE.lgx ...   # a path installs from disk
+logosctl package install --dir D             # every .lgx in a directory
+logosctl package upgrade NAME|FILE.lgx
 logosctl package remove NAME         # + dependents by default
 logosctl package ls [--type core|ui]
-logosctl package show NAME|FILE.lgx  # installed detail, or inspect an .lgx
+logosctl package show NAME|FILE.lgx  # detail + every version, or inspect an .lgx
 logosctl package deps NAME [-r|--recursive] [--reverse]
 logosctl package search [QUERY] [--category C] [--catalog C]
 logosctl package download NAME [--version V] [--root-hash H] [--catalog C] [-o|--output DIR]
@@ -340,6 +351,13 @@ accepted wherever `ls` is, `info` wherever `show` is, and `uninstall` for
 because they are the only ones with no runtime-module meaning — `ls`, `show`
 and `remove` would each be ambiguous between a package and a loaded module.
 
+`package search` shows one row per package: the newest version, and `(+N)` when
+older releases exist. `package show NAME` names every one of them on an
+`available:` line, and answers for a package that is only in a catalog as well
+as one that is installed. Pass any of those values to `package install` or
+`package download` with `--version` to select that exact release; without it,
+the newest version is used.
+
 Two defaults are worth stating plainly, because they are the opposite of what
 some tools do:
 
@@ -352,6 +370,12 @@ some tools do:
 - **`module load` always resolves dependencies.** There is no `--no-deps` on
   it — that flag exists only on `package install` / `package upgrade`, which
   are about files on disk, not about what is running.
+- **An argument ending in `.lgx` is a path, not a name.** `install` and
+  `upgrade` read it as a file on disk and skip the catalog entirely, so a
+  local package installs with no catalog configured and no network. `--file`
+  says so explicitly and `--dir` takes every `.lgx` in a directory. Catalog
+  names and local files cannot be mixed in one command — they resolve by
+  different rules, so run them separately.
 
 Installing does not require a daemon restart: the daemon re-scans afterwards,
 and only modules that were *already running* are stopped and restarted.
@@ -399,6 +423,31 @@ logosctl call blobstore put 'json:@blob.json'   # {"_bytes":"..."} from a file
 | `3` | Module error (not found, load/unload failed) |
 | `4` | Method error (not found, call failed, timeout) |
 
+A session left behind by a daemon that is no longer there is exit 2 as well,
+and is reported immediately rather than after the RPC deadline — whether the
+daemon crashed:
+
+```
+$ logosctl module ls --json
+{"status":"error","code":"NO_DAEMON","message":"No daemon running (stale state file: pid 51203 is gone)."}
+```
+
+or was stopped normally, which leaves no pid to name and is settled by the
+socket instead:
+
+```
+$ logosctl module ls --json
+{"status":"error","code":"NO_DAEMON","message":"No daemon running (no local endpoint at /tmp/logos_core_service_a1b2c3d4e5f6). A daemon that stopped removes it; start one in this session to get it back."}
+```
+
+Start a daemon (`logosctl daemon start`) and both are restored; nothing needs
+cleaning up by hand. A client dialing a *remote* daemon is unaffected by either
+check.
+
+`module ls` and `stats` report an unanswered RPC as `DAEMON_UNREACHABLE`
+(exit 2), never as an empty list — `[]` means the daemon answered and nothing
+matched.
+
 
 #### Packages
 
@@ -420,6 +469,15 @@ logosctl package show storage_module    # or a path to an .lgx to inspect it
 logosctl package deps storage_module -r
 logosctl package upgrade storage_module -y
 logosctl package remove storage_module -y
+```
+
+A package you already have on disk needs none of that — no catalog, no
+network. Give `install` the path:
+
+```bash
+logosctl install ./storage_module.lgx -y      # or: --file ./storage_module.lgx
+logosctl install --dir ./downloads -y         # every .lgx in a directory
+logosctl package show ./storage_module.lgx    # inspect one without installing
 ```
 
 `install` puts files on disk; it does **not** load anything. Loading is a
@@ -591,9 +649,11 @@ access_policy: |
 The string is handed to the runtime (via `logos_core_set_access_policy`)
 before any module is loaded.
 
-> **Note:** enforcement is not yet implemented on the runtime side — the
-> policy is currently accepted and validated but **not enforced** (the
-> underlying `logos_core_set_access_policy` is a no-op for now).
+> **Note:** the value must be a full policy document. The `enforce` shorthand
+> is a `logoscore` flag spelling (`--access-policy enforce`); here, write the
+> equivalent document — `{"version":1,"mode":"enforce","restrictions":{}}` —
+> which arms deny-by-default with the allow-lists derived from each module's
+> declared dependencies.
 
 > **Note:** the legacy inline mode (`-c "module.method(args)"` / `--quit-on-finish`,
 > which ran calls in a single short-lived process) has been removed. Use a daemon

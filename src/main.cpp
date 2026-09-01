@@ -27,6 +27,7 @@
 #include "daemon/daemon.h"
 #include "daemon/daemon_state.h"
 #include "daemon/log_sink.h"
+#include "daemon/access_policy_arg.h"
 #include "client/client_state.h"
 #include "client/client.h"
 #include "client/output.h"
@@ -211,44 +212,15 @@ static std::string preScanConfigDir(int argc, char* argv[])
     return {};
 }
 
-// Resolve the --access-policy argument: inline JSON if it starts with
-// '{', otherwise a path to read from disk. Parse-checks the result and
-// returns nullopt (after a stderr diagnostic) on any error.
+// Resolve the --access-policy argument (see daemon/access_policy_arg.h for the
+// three accepted spellings) and print the reason on stderr if it can't be.
 static std::optional<std::string> resolveAccessPolicy(const std::string& arg)
 {
-    std::string content;
-    std::string source;  // for diagnostics
-
-    auto firstNonSpace = std::find_if(arg.begin(), arg.end(),
-        [](unsigned char c) { return !std::isspace(c); });
-    const bool looksInline = (firstNonSpace != arg.end() && *firstNonSpace == '{');
-
-    if (looksInline) {
-        content = arg;
-        source = "inline --access-policy JSON";
-    } else {
-        std::ifstream ifs(arg, std::ios::binary);
-        if (!ifs) {
-            std::cerr << "Error: --access-policy file '" << arg
-                      << "' could not be opened." << std::endl;
-            return std::nullopt;
-        }
-        std::ostringstream ss;
-        ss << ifs.rdbuf();
-        content = ss.str();
-        source = "--access-policy file '" + arg + "'";
-    }
-
-    // Parse-check only; schema enforcement is the runtime's job.
-    try {
-        (void)nlohmann::json::parse(content);
-    } catch (const std::exception& e) {
-        std::cerr << "Error: " << source << " is not valid JSON: "
-                  << e.what() << std::endl;
-        return std::nullopt;
-    }
-
-    return content;
+    std::string error;
+    auto resolved = logoscore::resolveAccessPolicyArg(arg, &error);
+    if (!resolved)
+        std::cerr << "Error: " << error << std::endl;
+    return resolved;
 }
 
 // Collapse the two-token group verbs into the single tokens CLI11 has

@@ -16,14 +16,35 @@ name: Build & Release
 # Version stamping: `--version` is baked at build time from a VERSION
 # file at the repo root (read by flake.nix). VERSION exists only on release/**
 # branches — add it (e.g. `echo 0.2.0 > VERSION`) on the release branch and this
-# job bakes that version in. master builds fall back to `pre-release-<sha7>`,
-# dirty local builds to `dev`; the commit hash (with a `-dirty` marker) is
-# always reported.
+# job bakes that version in and uses it as the release tag. master builds fall
+# back to `pre-release-<sha7>`, dirty local builds to `dev`; the commit hash
+# (with a `-dirty` marker) is always reported.
 #
 #   Linux (x86_64 + aarch64): build the AppImage, chmod +x, wrap in a tar.gz.
 #   macOS (aarch64):          build the portable bundle dir (bin/ + lib/),
 #                             strip the Gatekeeper quarantine flag the way
 #                             Homebrew handles casks, wrap in a tar.gz.
+#   Windows (x86_64):         cross-build the bundle dir on a Linux runner and
+#                             zip it. Nix does not run on Windows, so there is
+#                             no native leg here at all.
+#
+# Nix and the binary cache come from logos-co/setup-nix-cache-action, replacing
+# three different setups this file used to carry (install-nix-action@v27,
+# DeterminateSystems, and cachix/cachix-action pointed at the `logos-co` cachix).
+#
+# The swap is what makes the Windows leg viable, and it was measured rather than
+# assumed. The mingw Qt/boost closure is primed in the Logos Attic cache
+# (cache.nix.logos.co), NOT in cachix, so the first Windows run substituted
+# nothing from it -- 0 paths from Attic against 612 from cache.nixos.org -- and
+# spent 27 minutes rebuilding boost, libpng, sqlite and Qt from source before
+# falling over inside boost.
+#
+# Reading needs no credentials: both Attic caches are public to read, and the
+# action configures them as substituters unconditionally, so fork PRs pull too.
+# PUBLISHING is separate and currently inactive here -- this repo has neither
+# ATTIC_TOKEN_CI nor the public-cache environment that carries
+# ATTIC_TOKEN_PUBLIC, and the action skips the push on an empty token rather
+# than failing. Adding the repo secret turns publishing on with no edit here.
 
 on:
   push:
@@ -35,6 +56,9 @@ on:
 
 jobs:
   build-appimage:
+    # ATTIC_TOKEN_PUBLIC only exists in the public-cache environment; master
+    # jobs must opt into it to publish to the public cache.
+    environment: ${{ github.ref == 'refs/heads/master' && 'public-cache' || '' }}
     strategy:
       # Don't let a failure in the under-validation logosctl block a
       # logoscore release.
@@ -51,15 +75,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: cachix/install-nix-action@v27
+      - uses: logos-co/setup-nix-cache-action@v1
         with:
-          extra_nix_config: |
+          attic-token-ci: ${{ secrets.ATTIC_TOKEN_CI }}
+          attic-token-public: ${{ secrets.ATTIC_TOKEN_PUBLIC }}
+          extra-nix-config: |
             experimental-features = nix-command flakes
-
-      - uses: cachix/cachix-action@v15
-        with:
-          name: logos-co
-          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
 
       - name: Build ${{ matrix.tool.output }}
         run: nix build .#${{ matrix.tool.output }} -L
@@ -87,6 +108,9 @@ jobs:
           path: ${{ matrix.tool.bin }}-*-linux.tar.gz
 
   build-macos-bundle:
+    # ATTIC_TOKEN_PUBLIC only exists in the public-cache environment; master
+    # jobs must opt into it to publish to the public cache.
+    environment: ${{ github.ref == 'refs/heads/master' && 'public-cache' || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -98,12 +122,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: DeterminateSystems/nix-installer-action@main
-
-      - uses: cachix/cachix-action@v15
+      - uses: logos-co/setup-nix-cache-action@v1
         with:
-          name: logos-co
-          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+          attic-token-ci: ${{ secrets.ATTIC_TOKEN_CI }}
+          attic-token-public: ${{ secrets.ATTIC_TOKEN_PUBLIC }}
 
       - name: Build ${{ matrix.tool.output }}
         run: nix build .#${{ matrix.tool.output }} -L
@@ -133,14 +155,81 @@ jobs:
           name: macos-${{ matrix.tool.bin }}-aarch64-darwin
           path: ${{ matrix.tool.bin }}-aarch64-macos.tar.gz
 
+  # ────────────────────────────────────────────────────────────────────────
+  # Windows. A CROSS build on a Linux runner -- nix does not run on Windows, so
+  # there is no windows-latest runner here. Executing the result on real Windows
+  # is covered separately by logos-windows-ci.
+  #
+  # Same two tools and the same bundle-dir outputs the macOS job packages, so
+  # this is one more leg of an established shape rather than a new one.
+  build-windows-bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        tool:
+          - { bin: logoscore, output: cli-bundle-dir }
+          - { bin: logosctl, output: ctl-bundle-dir }
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: logos-co/setup-nix-cache-action@v1
+        with:
+          attic-token-ci: ${{ secrets.ATTIC_TOKEN_CI }}
+
+      - name: Build ${{ matrix.tool.output }} for Windows
+        run: nix build .#packages.x86_64-windows.${{ matrix.tool.output }} -L
+
+      # NO smoke test here, and that is deliberate rather than an omission: this
+      # runner cannot execute a PE. Running the binary is what logos-windows-ci's
+      # native-smoke leg does, on a real windows-latest runner. Asserting
+      # `--help` under wine would be a weaker claim dressed as the same one.
+      - name: Package bundle as a zip
+        run: |
+          set -euo pipefail
+          dst="${{ matrix.tool.bin }}-x86_64-windows"
+          src=$(readlink -f result)
+          staged=$(find -L "$src" -type f | wc -l | tr -d ' ')
+          [ "$staged" -gt 0 ] || { echo "::error::the bundle is empty"; exit 1; }
+          # -L DEREFERENCES. The bundle's DLLs are symlinks into the nix store,
+          # and an archive of dangling links extracts to a tree that cannot
+          # start. nix-bundle-lgx shipped exactly that: `cp -a` implied
+          # --no-dereference, the payload lost 75% of its files, and the step
+          # exited 0. The count check below is why that cannot recur quietly.
+          rm -rf "$dst" && mkdir "$dst"
+          cp -rL "$src"/. "$dst/"
+          chmod -R u+w "$dst"
+          zip -qr "$dst.zip" "$dst"
+          zipped=$(unzip -l "$dst.zip" | tail -1 | awk '{print $2}')
+          echo "bundle $staged file(s) -> zip $zipped entr(ies)"
+          if [ "$zipped" -lt "$staged" ]; then
+            echo "::error::the zip holds $zipped entries but the bundle has $staged files."
+            echo "::error::Something was not dereferenced; the extracted tree would be"
+            echo "::error::missing DLLs and could not start."
+            exit 1
+          fi
+          n_exe=$(find "$dst" -name '*.exe' | wc -l | tr -d ' ')
+          [ "$n_exe" -gt 0 ] || { echo "::error::no .exe in the bundle"; exit 1; }
+          echo "exe(s): $n_exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.tool.bin }}-x86_64
+          path: ${{ matrix.tool.bin }}-x86_64-windows.zip
+
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
-    needs: [build-appimage, build-macos-bundle]
+    needs: [build-appimage, build-macos-bundle, build-windows-bundle]
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
+      # The artifacts contain only the bundles; check out the release branch
+      # as well so the GitHub release tag matches the version baked into them.
+      - uses: actions/checkout@v4
+
       # Collect every matrix artifact rather than naming each one, so adding
       # or removing a tool does not mean editing a list here.
       - uses: actions/download-artifact@v4
@@ -150,7 +239,10 @@ jobs:
 
       - name: Generate tag
         id: tag
-        run: echo "tag=pre-release-${GITHUB_SHA::7}-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+        run: |
+          version="$(tr -d '\r\n' < VERSION)"
+          [ -n "$version" ] || { echo "::error::VERSION must not be empty"; exit 1; }
+          echo "tag=$version" >> "$GITHUB_OUTPUT"
 
       - uses: softprops/action-gh-release@v2
         with:
@@ -201,5 +293,13 @@ jobs:
             ```
 
             Now `logoscore` runs from anywhere.
+          # NOTE: `files:` below is a LITERAL block scalar -- every line in it is
+          # a glob handed to the action, and a '#' line would be passed as a
+          # pattern rather than ignored. Commentary belongs out here.
+          #
+          # The Windows bundles are .zip because Explorer opens one and nothing
+          # on Windows opens a .tar.gz. `merge-multiple: true` above flattens
+          # every artifact into artifacts/, so a depth-1 glob reaches them.
           files: |
             artifacts/*.tar.gz
+            artifacts/*-windows.zip

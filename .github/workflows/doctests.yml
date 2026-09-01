@@ -38,6 +38,9 @@ concurrency:
 jobs:
   doctests:
     name: doc-tests (${{ matrix.os }})
+    # ATTIC_TOKEN_PUBLIC only exists in the public-cache environment; master
+    # jobs must opt into it to publish to the public cache.
+    environment: ${{ github.ref == 'refs/heads/master' && 'public-cache' || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -50,14 +53,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-
-      - name: Setup Cachix
-        uses: cachix/cachix-action@v15
+      - name: Set up Nix cache
+        uses: logos-co/setup-nix-cache-action@v1
         with:
-          name: logos-co
-          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+          attic-token-ci: ${{ secrets.ATTIC_TOKEN_CI }}
+          attic-token-public: ${{ secrets.ATTIC_TOKEN_PUBLIC }}
 
       # Resolve the commit under test. For pull requests this is the PR's head
       # commit (not the synthetic merge commit); for pushes it's the pushed
@@ -143,9 +143,43 @@ jobs:
             echo "Generated ${out} successfully"
           done
 
+  # ────────────────────────────────────────────────────────────────────────
+  # The Windows leg. A job HERE rather than its own workflow because
+  # actions/download-artifact scopes to the CURRENT WORKFLOW RUN -- a report
+  # uploaded elsewhere is invisible to the publish job below.
+  #
+  # It cross-builds logosctl, gates the PE format and import closure, ships the
+  # tree to a real windows-latest runner and runs the spec's own Windows half
+  # there. That half is everything after the nix build: listing the bundled
+  # modules, starting the daemon, discovering the modules through it, stopping
+  # it. On Windows those last three exercise the QtRO named-pipe transport,
+  # which nothing in CI has touched before.
+  windows:
+    name: Windows (cross-build, gates, doc-test leg)
+    uses: logos-co/logos-windows-ci/.github/workflows/windows-ci.yml@v1
+    secrets: inherit
+    with:
+      targets: ctl
+      doctest-spec: doctests/logosctl-modules-bundle.test.yaml
+      doctest-artifact: doctest-report
+      # Default is 30, and a dependency bump that shifts the closure lands just
+      # over it: this PR's relocks measured 32, which failed the guard with
+      # "This is what an unprimed mingw Qt closure looks like" and pointed at
+      # logos-basecamp's ~1.5 h prime job. That diagnosis does not fit the
+      # number — the guard's own docs put a COLD Windows CLI at 100 derivations,
+      # so 32 is a warm closure plus one bump, not an unprimed Qt world.
+      #
+      # 60 lets an ordinary closure shift through while still catching a
+      # genuinely cold build before it burns four hours. This repo has an Attic
+      # push token and the reusable workflow forwards it to
+      # setup-nix-cache-action, so the run that builds those derivations also
+      # PUSHES them: the next run is back to single digits without anyone
+      # priming by hand.
+      cold-derivation-budget: 60
+
   publish-report:
     name: Publish report to GitHub Pages
-    needs: doctests
+    needs: [doctests, windows]
     # Run even when tests fail — a failing run is exactly when you want to open
     # the report. Skip on forks, where GITHUB_TOKEN can't push or comment.
     if: ${{ always() && github.event.pull_request.head.repo.fork != true }}
@@ -165,7 +199,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          # No `name:` → downloads every artifact into artifacts/<name>/...
+          # A pattern, now that the run carries more than reports: without it
+          # this also pulls the Windows job's staged tree (logosctl.exe plus its
+          # DLL closure) and the raw execution records, neither of which this
+          # job reads. Each artifact still lands in artifacts/<name>/, which is
+          # what the loop below expects.
+          pattern: doctest-report-*
 
       - name: Arrange site directory
         id: arrange
@@ -181,7 +220,7 @@ jobs:
 
           mkdir -p "site/$BASE"
           found=""
-          for os in ubuntu-latest macos-latest; do
+          for os in ubuntu-latest macos-latest windows-latest; do
             src="artifacts/doctest-report-$os/index.html"
             if [ -f "$src" ]; then
               mkdir -p "site/$BASE/$os"
@@ -198,7 +237,7 @@ jobs:
             echo "<style>body{font:16px system-ui;margin:40px;max-width:640px}a{color:#2563eb}</style>"
             echo "<h1>logosctl doc-test reports</h1>"
             echo "<p><strong>$BASE</strong> · commit <code>${GITHUB_SHA::7}</code></p><ul>"
-            for os in ubuntu-latest macos-latest; do
+            for os in ubuntu-latest macos-latest windows-latest; do
               if [ -d "site/$BASE/$os" ]; then
                 echo "<li><a href=\"./$os/\">$os</a></li>"
               fi

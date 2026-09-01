@@ -293,9 +293,13 @@ Stop the running daemon.
 logosctl daemon stop
 ```
 
-Sends a shutdown request to the daemon via `core_service`. The daemon performs a clean shutdown: unloads all modules, removes `daemon/state.json`, and exits. The client prints a confirmation message and exits.
+If `daemon/state.json` records this client's daemon instance with a pid that is no longer alive, the session is stale: `stop` reports `NO_DAEMON` and exits 2 without dialing anything. This is not specific to `stop` — see [No daemon running](#no-daemon-running) — but it matters most here, because the shutdown path below reads a missing reply as a successful shutdown.
 
-If the daemon exits before the RPC response arrives (expected behavior), the client treats the connection loss as a successful shutdown.
+Otherwise it sends a shutdown request to the daemon via `core_service`. The daemon performs a clean shutdown: unloads all modules, removes `daemon/state.json`, and exits. The client prints a confirmation message and exits.
+
+If the daemon exits before the RPC response arrives (expected behavior), the client treats the missing reply as a successful shutdown — but only after confirming that the daemon really is gone, by watching the pid recorded in `daemon/state.json` (or, for a remote daemon, by re-probing the endpoint). A daemon that neither answers nor exits is reported as an error, not quietly accepted. When the confirmation path is used, the JSON form carries an extra `"confirmed_by"` field naming the evidence (`process-exit` or `endpoint-unreachable`); when the reply arrives normally it is absent.
+
+`LOGOSCTL_SHUTDOWN_GRACE_MS` (daemon-side, default `200`) sets how long the daemon waits after answering before it leaves its event loop. It is a margin, not a correctness mechanism — the daemon drains the transport before quitting regardless — so `0` is a legal setting, and is what the shutdown regression test uses.
 
 **Human:**
 ```
@@ -837,8 +841,12 @@ verbatim. Each entry carries `name`, `signature`, `returnType`, `isInvokable`,
 The `events` array is the module's `getPluginEvents` introspection. Each entry
 carries `name`, `signature`, `parameters` (each `{name, type}`), and — when the
 event is documented — `description`. There is no `returnType`/`isInvokable`:
-events are void. Modules with no declared events report an empty array (legacy
-`provider` modules always do).
+events are void. Modules with no declared events report an empty array — legacy
+Q_INVOKABLE modules (`interface: "legacy"`) always do, since they have no
+`logos_events:` section for the introspection to read. (This used to say
+"legacy `provider` modules"; `interface: "provider"` is no longer a buildable
+module kind — the module builder refuses it and points at
+`interface: "universal"`.)
 
 **Crashed module (JSON):**
 ```json
@@ -918,11 +926,44 @@ $ logosctl call chat nonexistent_method --json
 {"status":"error","code":"METHOD_NOT_FOUND","message":"Method 'nonexistent_method' not found on module 'chat'.","available_methods":["send_message","get_history","set_nickname","get_status"]}
 ```
 
+**Failed call (JSON):**
+```
+$ logosctl call chat send_message --json
+{"status":"error","code":"METHOD_FAILED","message":"Call to chat.send_message failed (unauthorized: token not recognized).","error":{"code":"unauthorized","message":"token not recognized","origin":"chat"}}
+```
+
+`METHOD_FAILED` covers every failure the transport itself detected, and `error`
+carries which one, verbatim from the protocol's call-error vocabulary:
+`object_unavailable`, `timeout`, `transport_error`, `call_failed`,
+`unauthorized`, plus the codes a provider that RAN and refused answers as its
+result rather than on the error channel: `dispatch_failed` (it refused the
+argument VALUES) and `invalid_args` (wrong argument COUNT). `unknown_method` is
+recognised too, ahead of any provider emitting it.
+
+That in-band set is CLOSED, deliberately. A method may legitimately return a
+`{code, message, origin}` map of its own; matching the shape rather than the
+code would turn its data into an error. Anything outside the set comes back as
+`"result"`.
+
+> **This changed.** `invalid_args` used to be matched by nobody, so
+> `logosctl call test_basic_module isPositive` with the argument missing exited
+> **0** with `status: "ok"` and the refusal object as its `result`. It now exits
+> **4** with `METHOD_FAILED` and `error.code: "invalid_args"`.
+
+A result of `null` is **not** a failure. It is a value — an empty optional, or a
+method that returns nothing in particular — and reports `status: "ok"` with
+`"result": null`. The one case `null` cannot express is an unknown method name,
+which no provider distinguishes on the wire; `call` resolves that by asking the
+module for its method list, which is where `METHOD_NOT_FOUND` above comes from.
+
 **Timeout error (JSON):**
 ```
 $ logosctl call chat slow_operation --json
 {"status":"error","code":"TIMEOUT","message":"Call to chat.slow_operation timed out after 30s."}
 ```
+
+> `TIMEOUT` is not yet emitted by `call`: a deadline that elapses arrives as
+> `METHOD_FAILED` with `error.code == "timeout"`.
 
 ### `watch`
 
@@ -1003,6 +1044,57 @@ $ logosctl module ls --json
 {"status":"error","code":"NO_DAEMON","message":"No running logosctl daemon. Start one with: logosctl daemon start"}
 ```
 
+#### A session whose daemon is gone
+
+A session directory can outlive its daemon, and from the client's side it still
+looks dialable: the dial spec and token are right where they were. Such a
+session is refused **up front**, before anything is dialed. Every command whose
+first act is an RPC applies the check: `call`, `catalog`, `key`, `module ls` /
+`load` / `show` / `reload` / `unload`, `package` (all subcommands), `stats`,
+`stop`, `watch`.
+
+The check exists because connecting proves nothing. A LocalSocket client
+succeeds against a socket path with no listener, and QtRO reports nothing for
+an absent peer, so the request is sent, never answered and never refused — and
+the command waits out the full RPC deadline (20s) before reporting a failure
+the session could have named immediately.
+
+It comes in two shapes, settled by different evidence:
+
+**The daemon crashed.** `daemon/state.json` is still there, naming a pid that
+is no longer alive.
+
+```
+$ logosctl module ls --json
+{"status":"error","code":"NO_DAEMON","message":"No daemon running (stale state file: pid 51203 is gone)."}
+```
+
+**The daemon was stopped.** A clean shutdown *removes* `daemon/state.json`, so
+there is no pid to check. What settles it is the socket the dial resolves to:
+either it is not there (a clean stop unlinks it) or it is there and refuses the
+connection (a hard kill leaves the file behind, and so does a clean stop for
+the moment between its reply and its teardown).
+
+```
+$ logosctl module ls --json
+{"status":"error","code":"NO_DAEMON","message":"No daemon running (no local endpoint at /tmp/logos_core_service_a1b2c3d4e5f6). A daemon that stopped removes it; start one in this session to get it back."}
+```
+
+Both are exit 2, and both are immediate.
+
+Cases that deliberately fall through to a normal dial rather than being
+refused: a `tcp` / `tcp_ssl` dial (no local socket to look for, and no local
+pid either), a dial spec with no `instance_id`, a `daemon/state.json` whose
+`instance_id` does not match the client's, and a socket that accepts the
+connection. The `instance_id` ones are what keep a *remote* client working when
+a co-resident daemon has left its own state file behind — that pid says nothing
+about the daemon at the far end of a TCP connection, and a remote dial spec
+carries no `instance_id`, so it never matches.
+
+`status` asks the same question and answers it as a status report instead of an
+error — `{"daemon":{"status":"not_running","reason":"stale state file: pid
+51203 is gone","pid":51203}}`, exit 1 — as a single JSON document.
+
 ### Output Rules
 
 - Primary output (results, data) goes to stdout.
@@ -1039,6 +1131,12 @@ All errors in JSON mode follow this structure:
 ```
 
 Error codes: `NO_DAEMON`, `DAEMON_UNREACHABLE`, `MODULE_NOT_FOUND`, `MODULE_LOAD_FAILED`, `MODULE_NOT_LOADED`, `METHOD_NOT_FOUND`, `METHOD_FAILED`, `TIMEOUT`, `AUTH_FAILED`, `INVALID_ARGS`.
+
+**An unanswered query is never reported as an empty result.** `module ls` and
+`stats` return `DAEMON_UNREACHABLE` with exit 2 when the RPC produced no reply,
+rather than printing `[]` and exiting 0 — a caller cannot tell that apart from
+a healthy session with nothing loaded. `status` likewise exits 1, not 0, when
+its report is the synthesized "not running" one.
 
 ---
 

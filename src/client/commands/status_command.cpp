@@ -1,7 +1,5 @@
 #include "status_command.h"
 #include "../client_state.h"
-#include "../../daemon/daemon_state.h"
-#include "../../process_util.h"
 
 int StatusCommand::execute(const std::vector<std::string>& args)
 {
@@ -13,21 +11,24 @@ int StatusCommand::execute(const std::vector<std::string>& args)
         return 1;
     }
 
-    {
-        const DaemonRuntimeState rs = DaemonRuntimeStateFile::read();
-        if (rs.fileOk && rs.pid > 0 && !logosctl::processAlive(rs.pid)) {
-            LogosMap result{{"daemon", LogosMap{
-                {"status", "not_running"},
-                {"reason", "stale state file (daemon crashed; pid no longer alive)"},
-                {"pid",    rs.pid},
-            }}};
-            output().printStatus(result);
-            return 1;
-        }
+    // The same guard ensureConnected() applies, one step earlier and reported
+    // differently: "no daemon" is an answer to `status`, not an error, so this
+    // prints a status report and exits 1 rather than NO_DAEMON and 2.
+    if (const std::optional<StaleSession> stale = detectStaleSession()) {
+        LogosMap result{{"daemon", LogosMap{
+            {"status", "not_running"},
+            {"reason", stale->reason},
+            {"pid",    stale->pid},
+        }}};
+        output().printStatus(result);
+        return 1;
     }
 
-    int err = ensureConnected();
-    if (err != 0) {
+    // Connect directly rather than through ensureConnected(): that helper
+    // PRINTS a NO_DAEMON error envelope on failure, and this command's answer
+    // to "no daemon" is a status report. Going through it put two JSON
+    // documents on stdout for one command, which no `jq` invocation survives.
+    if (!client().isConnected() && !client().connect()) {
         LogosMap result{{"daemon", LogosMap{
             {"status", "not_running"},
             {"reason", client().lastError()},
@@ -51,5 +52,12 @@ int StatusCommand::execute(const std::vector<std::string>& args)
     }
 
     output().printStatus(status);
-    return 0;
+
+    // RpcClient::getStatus synthesises a `not_running` report when the RPC
+    // produced no reply, and marks it with `rpc_error`. That report has a
+    // "daemon" key, so it used to reach the success branch here: `status`
+    // printed "not_running" and exited 0. Exit 0 reads as "the daemon is fine"
+    // to anything checking the code rather than the text, and docs/project.md
+    // has always promised 1 for a daemon that is not running.
+    return status.contains("rpc_error") ? 1 : 0;
 }

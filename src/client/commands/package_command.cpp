@@ -45,6 +45,26 @@ const char* actionVerb(const std::string& action)
     return "keep";
 }
 
+// `versions` arrives newest-first from the catalog.  A catalog can contain
+// more than one artifact for the same release, though, so show each version
+// once rather than making the user guess whether repeated text is meaningful.
+std::vector<std::string> availableVersions(const nlohmann::json& versions)
+{
+    std::vector<std::string> result;
+    if (!versions.is_array()) return result;
+
+    for (const auto& release : versions) {
+        if (!release.is_object()) continue;
+        const auto manifest = release.value("manifest", nlohmann::json::object());
+        if (!manifest.is_object()) continue;
+        const std::string version = manifest.value("version", std::string{});
+        if (!version.empty()
+            && std::find(result.begin(), result.end(), version) == result.end())
+            result.push_back(version);
+    }
+    return result;
+}
+
 } // namespace
 
 int PackageCommand::execute(const std::vector<std::string>& args)
@@ -78,7 +98,7 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
     CLI::App cli{"package " + op};
     cli.set_help_flag();
     std::vector<std::string> names;
-    cli.add_option("names", names, "Package name(s)");
+    cli.add_option("names", names, "Package name(s), or path(s) to .lgx files");
     std::string file, dir, version, rootHash, catalog;
     cli.add_option("--file", file, "Install from a local .lgx file");
     cli.add_option("--dir", dir, "Install every .lgx in a directory");
@@ -95,24 +115,62 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
         parseArgs(cli, args);
     } catch (const CLI::ParseError&) {
         output().printError("INVALID_ARGS",
-            "Usage: logosctl package " + op + " <name...> [--version V] [-y] [--dry-run]");
+            "Usage: logosctl package " + op + " <name|file.lgx ...> "
+            "[--version V] [-y] [--dry-run]");
         return 1;
     }
 
-    // Expand --file / --dir into concrete paths up front so the daemon is
-    // handed a settled list rather than re-deriving it.
+    // `remove` names an installed package; there is nothing on disk for it to
+    // read. Both flags were accepted and then ignored by the daemon, so the
+    // command reported "already up to date" and removed nothing.
+    if (op == "remove" && (!file.empty() || !dir.empty())) {
+        output().printError("INVALID_ARGS",
+            "--file / --dir apply to install and upgrade. "
+            "Give remove the package name.");
+        return 1;
+    }
+
+    // Expand --file / --dir / positional paths into concrete paths up front so
+    // the daemon is handed a settled list rather than re-deriving it.
     LogosList localFiles = LogosList::array();
-    if (!file.empty()) localFiles.push_back(std::filesystem::absolute(file).string());
+    auto addFile = [&](const std::string& p) {
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(p, ec)) {
+            output().printError("INVALID_ARGS", "No such .lgx file: " + p);
+            return false;
+        }
+        localFiles.push_back(std::filesystem::absolute(p).string());
+        return true;
+    };
+
+    // A positional argument ending in `.lgx` is a path, not a catalog name.
+    // `package show` has read it that way all along, and the catalog cannot
+    // hold a name with a `.lgx` suffix anyway, so the alternative reading was
+    // never useful -- it just sent the path to the resolver, which failed with
+    // "no candidate matches './foo.lgx'" and read like the file was rejected.
+    if (op != "remove") {
+        std::vector<std::string> catalogNames;
+        for (const auto& n : names) {
+            if (!endsWithLgx(n)) { catalogNames.push_back(n); continue; }
+            if (!addFile(n)) return 1;
+        }
+        names = catalogNames;
+    }
+
+    if (!file.empty() && !addFile(file)) return 1;
     if (!dir.empty()) {
         std::error_code ec;
         if (!std::filesystem::is_directory(dir, ec)) {
             output().printError("INVALID_ARGS", "Not a directory: " + dir);
             return 1;
         }
+        // Count what the directory itself contributed: sharing the emptiness
+        // test with --file let an empty --dir pass unreported.
+        const size_t before = localFiles.size();
         for (const auto& e : std::filesystem::directory_iterator(dir, ec))
             if (e.is_regular_file() && e.path().extension() == ".lgx")
                 localFiles.push_back(std::filesystem::absolute(e.path()).string());
-        if (localFiles.empty()) {
+        if (localFiles.size() == before) {
             output().printError("INVALID_ARGS", "No .lgx files found in: " + dir);
             return 1;
         }
@@ -120,7 +178,21 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
 
     if (names.empty() && localFiles.empty()) {
         output().printError("INVALID_ARGS",
-            "Nothing to " + op + ". Name a package, or pass --file / --dir.");
+            op == "remove"
+                ? std::string("Nothing to remove. Name an installed package.")
+                : "Nothing to " + op + ". Name a package, or give a path to an "
+                  ".lgx file (or --file / --dir).");
+        return 1;
+    }
+
+    // The daemon plans one way or the other -- local files bypass the catalog
+    // entirely -- so a request carrying both silently dropped the named
+    // packages and installed only the files. Refuse it instead of doing half
+    // of what was asked.
+    if (!names.empty() && !localFiles.empty()) {
+        output().printError("INVALID_ARGS",
+            "Cannot mix catalog packages with local .lgx files in one "
+            + op + ". Run them as separate commands.");
         return 1;
     }
 
@@ -343,25 +415,57 @@ int PackageCommand::show(const std::vector<std::string>& args)
                             r.value("message", std::string{}), r);
         return 1;
     }
+    LogosMap installed = LogosMap::object();
     for (const auto& p : r["result"]) {
-        if (p.value("name", std::string{}) != target) continue;
-        if (output().isJsonMode()) { output().printRaw(p.dump()); return 0; }
-        for (const char* k : {"name", "version", "type", "category", "author",
-                              "license", "description", "installType", "installDir"}) {
-            if (p.contains(k) && p[k].is_string() && !p[k].get<std::string>().empty())
-                output().printRaw(fmt::format("{:<14} {}", std::string(k) + ":",
-                                              p[k].get<std::string>()));
-        }
-        const auto& deps = p["dependencies"];
-        if (deps.is_array() && !deps.empty()) {
-            std::vector<std::string> d;
-            for (const auto& e : deps) d.push_back(e.get<std::string>());
-            output().printRaw(fmt::format("{:<14} {}", "dependencies:", fmt::join(d, ", ")));
-        }
+        if (p.value("name", std::string{}) == target) { installed = p; break; }
+    }
+    // A JSON caller asking about an installed package gets the installed
+    // record it always got, without paying for the catalog round-trip.
+    if (output().isJsonMode() && !installed.empty()) {
+        output().printRaw(installed.dump());
         return 0;
     }
-    output().printError("PACKAGE_NOT_INSTALLED", "Package '" + target + "' is not installed.");
-    return 1;
+
+    // Which versions exist is a catalog fact, not an on-disk one, so it takes
+    // a second lookup -- and the same lookup is what lets `show` answer for a
+    // package that is not installed yet.
+    LogosMap catalogEntry = LogosMap::object();
+    LogosMap c = client().callModuleMethod(kPd, "getCatalog", LogosList::array());
+    if (c.value("status", std::string{}) != "error" && c["result"].is_array()) {
+        for (const auto& p : c["result"]) {
+            if (p.value("name", std::string{}) == target) { catalogEntry = p; break; }
+        }
+    }
+
+    if (installed.empty() && catalogEntry.empty()) {
+        output().printError("PACKAGE_NOT_FOUND",
+            "No package named '" + target + "' is installed or in any catalog.");
+        return 1;
+    }
+    if (output().isJsonMode()) { output().printRaw(catalogEntry.dump()); return 0; }
+
+    const LogosMap& info = installed.empty() ? catalogEntry : installed;
+    for (const char* k : {"name", "version", "type", "category", "author",
+                          "license", "description", "installType", "installDir"}) {
+        if (info.contains(k) && info[k].is_string() && !info[k].get<std::string>().empty())
+            output().printRaw(fmt::format("{:<14} {}", std::string(k) + ":",
+                                          info[k].get<std::string>()));
+    }
+    const auto deps = info.value("dependencies", LogosList::array());
+    if (deps.is_array() && !deps.empty()) {
+        std::vector<std::string> d;
+        for (const auto& e : deps) if (e.is_string()) d.push_back(e.get<std::string>());
+        if (!d.empty())
+            output().printRaw(fmt::format("{:<14} {}", "dependencies:", fmt::join(d, ", ")));
+    }
+    // The whole list belongs here rather than in `search`: one package, one
+    // line per fact, and room to name every release.
+    const auto versions = availableVersions(catalogEntry.value("versions", LogosList::array()));
+    if (!versions.empty())
+        output().printRaw(fmt::format("{:<14} {}", "available:", fmt::join(versions, ", ")));
+    if (installed.empty())
+        output().printRaw(fmt::format("{:<14} {}", "installed:", "no"));
+    return 0;
 }
 
 // ── deps ─────────────────────────────────────────────────────────────────────
@@ -459,19 +563,23 @@ int PackageCommand::search(const std::vector<std::string>& args)
     if (output().isJsonMode()) { output().printRaw(hits.dump()); return 0; }
     if (hits.empty()) { output().printRaw("No packages found."); return 0; }
 
-    output().printRaw(fmt::format("{:<24} {:<10} {:<14} {}",
+    // One row per package, latest version only: the full list is wide enough to
+    // wrap every row and cost more than it tells you. `(+N)` says older
+    // releases exist; `package show` lists them.
+    output().printRaw(fmt::format("{:<24} {:<16} {:<12} {}",
                                   "NAME", "VERSION", "CATEGORY", "DESCRIPTION"));
     for (const auto& p : hits) {
-        std::string version = "-";
-        const auto& versions = p["versions"];
-        if (versions.is_array() && !versions.empty()) {
-            const auto& m = versions[0]["manifest"];
-            if (m.is_object()) version = m.value("version", std::string("-"));
+        const auto versions = availableVersions(p.value("versions", LogosList::array()));
+        std::string versionText = "-";
+        if (!versions.empty()) {
+            versionText = versions.front();
+            if (versions.size() > 1)
+                versionText += fmt::format(" (+{})", versions.size() - 1);
         }
         std::string desc = p.value("description", std::string{});
-        if (desc.size() > 48) desc = desc.substr(0, 45) + "...";
-        output().printRaw(fmt::format("{:<24} {:<10} {:<14} {}",
-            p.value("name", std::string{}), version,
+        if (desc.size() > 44) desc = desc.substr(0, 41) + "...";
+        output().printRaw(fmt::format("{:<24} {:<16} {:<12} {}",
+            p.value("name", std::string{}), versionText,
             p.value("category", std::string("-")), desc));
     }
     return 0;

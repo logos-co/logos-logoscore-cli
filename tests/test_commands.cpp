@@ -5,13 +5,20 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
+#include <map>
+#include <optional>
 #include <sstream>
 #include <string>
+#include <unistd.h>
 #include <vector>
 #include "client/client.h"
+#include "client/client_state.h"
 #include "client/output.h"
 #include "client/commands/command.h"
+#include "config.h"
+#include "daemon/daemon_state.h"
 
 // Mock client for testing commands without a real daemon
 class MockClient : public Client {
@@ -22,11 +29,18 @@ public:
     LogosMap  loadModuleResult;
     LogosMap  unloadModuleResult;
     LogosMap  reloadModuleResult;
-    LogosList listModulesResult;
+    // Default to a PRESENT, empty list so "the test never set this" keeps
+    // meaning "the daemon answered with nothing". A test that wants a failed
+    // RPC assigns std::nullopt explicitly.
+    std::optional<LogosList> listModulesResult = LogosList::array();
     LogosMap  statusResult;
     LogosMap  moduleInfoResult;
-    LogosList moduleStatsResult;
+    std::optional<LogosList> moduleStatsResult = LogosList::array();
     LogosMap  callMethodResult;
+    // `package show` makes two different calls -- installed list, then
+    // catalog -- so one canned reply cannot express both. Keyed entries win
+    // over `callMethodResult`.
+    std::map<std::string, LogosMap> callMethodResultByMethod;
     LogosMap  shutdownResult;
     LogosMap  refreshModulesResult;
     LogosMap  planPackageResult;
@@ -34,6 +48,14 @@ public:
     LogosMap  downloadResult;
 
     // Track calls
+    //
+    // `connectAttempts` / `rpcCalls` are the two the stale-session cases read.
+    // A guard that fires has to be visible as the ABSENCE of contact -- the
+    // whole point is that no byte goes to a socket nobody is listening on --
+    // and per-method breadcrumbs like `lastLoadedModule` cannot express that
+    // for a command whose method takes no distinguishing argument.
+    int  connectAttempts = 0;
+    int  rpcCalls = 0;
     bool shutdownCalled = false;
     bool refreshModulesCalled = false;
     bool applyPackageCalled = false;
@@ -58,6 +80,7 @@ public:
     bool watchShouldSucceed = false;
 
     bool connect() override {
+        ++connectAttempts;
         m_connected = shouldConnect;
         m_lastError = shouldConnect ? "" : connectError;
         return shouldConnect;
@@ -67,23 +90,27 @@ public:
     std::string lastError() const override { return m_lastError; }
 
     LogosMap loadModule(const std::string& name) override {
+        ++rpcCalls;
         lastLoadedModule = name;
         return loadModuleResult;
     }
 
     LogosMap unloadModule(const std::string& name, bool withDependents) override {
+        ++rpcCalls;
         lastUnloadedModule = name;
         lastUnloadWithDependents = withDependents;
         return unloadModuleResult;
     }
 
     LogosMap refreshModules() override {
+        ++rpcCalls;
         refreshModulesCalled = true;
         return refreshModulesResult;
     }
 
     LogosMap planPackageOperation(const std::string& op, const LogosList& names,
                                   const LogosMap& opts) override {
+        ++rpcCalls;
         lastPackageOp = op;
         lastPackageNames = names;
         lastPackageOpts = opts;
@@ -92,6 +119,7 @@ public:
 
     LogosMap applyPackageOperation(const std::string& op, const LogosList& names,
                                    const LogosMap& opts) override {
+        ++rpcCalls;
         lastPackageOp = op;
         lastPackageNames = names;
         lastPackageOpts = opts;
@@ -100,45 +128,54 @@ public:
     }
 
     LogosMap downloadPackage(const std::string& name, const LogosMap& opts) override {
+        ++rpcCalls;
         lastDownloadName = name;
         lastDownloadOpts = opts;
         return downloadResult;
     }
 
     LogosMap reloadModule(const std::string& name) override {
+        ++rpcCalls;
         lastReloadedModule = name;
         return reloadModuleResult;
     }
 
-    LogosList listModules(const std::string& filter) override {
+    std::optional<LogosList> listModules(const std::string& filter) override {
+        ++rpcCalls;
         lastListFilter = filter;
         return listModulesResult;
     }
 
-    LogosMap getStatus() override { return statusResult; }
+    LogosMap getStatus() override { ++rpcCalls; return statusResult; }
 
     LogosMap getModuleInfo(const std::string& name) override {
+        ++rpcCalls;
         lastInfoModule = name;
         return moduleInfoResult;
     }
 
-    LogosList getModuleStats() override { return moduleStatsResult; }
+    std::optional<LogosList> getModuleStats() override { ++rpcCalls; return moduleStatsResult; }
 
     LogosMap callModuleMethod(const std::string& module, const std::string& method,
                                const LogosList& args) override {
+        ++rpcCalls;
         lastCallModule = module;
         lastCallMethod = method;
         lastCallArgs   = args;
+        auto it = callMethodResultByMethod.find(method);
+        if (it != callMethodResultByMethod.end()) return it->second;
         return callMethodResult;
     }
 
     LogosMap shutdown() override {
+        ++rpcCalls;
         shutdownCalled = true;
         return shutdownResult;
     }
 
     bool watchModuleEvents(const std::string& module, const std::string& eventName,
                             std::function<void(const LogosMap&)> callback) override {
+        ++rpcCalls;
         (void)callback;
         lastWatchModule    = module;
         lastWatchEventName = eventName;
@@ -155,8 +192,46 @@ protected:
     MockClient mockClient;
     Output output{true}; // Force JSON mode for testable output
 
+    // Commands consult the session on disk (StopCommand reads
+    // daemon/state.json to tell a live daemon from a stale one), so every
+    // case runs against an empty session of its own. Without this the suite
+    // reads whatever ~/.logosctl the developer happens to have, and a session
+    // left over from last week decides whether `stop` succeeds. Mirrors
+    // DaemonStateTest, which isolates the same three layers.
+    std::string origHome;
+    std::string origConfigDir;
+    bool        origConfigDirSet = false;
+    std::filesystem::path testDir;
+
     void SetUp() override {
         mockClient.shouldConnect = true;
+
+        testDir = std::filesystem::temp_directory_path()
+                / ("logosctl_test_cmd_" + std::to_string(getpid()));
+        std::filesystem::create_directories(testDir);
+
+        const char* home = std::getenv("HOME");
+        origHome = home ? home : "";
+        setenv("HOME", testDir.c_str(), 1);
+
+        const char* cd = std::getenv("LOGOSCTL_CONFIG_DIR");
+        origConfigDirSet = cd != nullptr;
+        origConfigDir = origConfigDirSet ? cd : "";
+        unsetenv("LOGOSCTL_CONFIG_DIR");
+
+        Config::setConfigDir(testDir.string());
+    }
+
+    void TearDown() override {
+        ClientStateFile::setOverride(std::nullopt);
+        Config::setConfigDir("");
+        setenv("HOME", origHome.c_str(), 1);
+        if (origConfigDirSet)
+            setenv("LOGOSCTL_CONFIG_DIR", origConfigDir.c_str(), 1);
+        else
+            unsetenv("LOGOSCTL_CONFIG_DIR");
+        std::error_code ec;
+        std::filesystem::remove_all(testDir, ec);
     }
 
     std::string captureOutput(std::function<void()> fn) {
@@ -518,6 +593,80 @@ TEST_F(CommandTest, Call_MethodNotFound)
         int exitCode = cmd->execute({"chat", "bad"});
         EXPECT_EQ(exitCode, 4);
     });
+}
+
+// core_service now answers an unknown method with the module's real method list
+// (it asks the module, because no provider distinguishes "no such method" from
+// "returned null" on the wire). Both output modes have to surface it.
+TEST_F(CommandTest, Call_MethodNotFound_JsonCarriesAvailableMethods)
+{
+    mockClient.callMethodResult = LogosMap{
+        {"status", "error"}, {"code", "METHOD_NOT_FOUND"},
+        {"message", "Method 'bad' not found on module 'chat'."},
+        {"available_methods", LogosList::array({"send_message", "get_history"})}
+    };
+
+    auto cmd = createCommand("call", mockClient, output);
+    std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"chat", "bad"}), 4);
+    });
+
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["code"].get<std::string>(), "METHOD_NOT_FOUND");
+    EXPECT_EQ(doc["available_methods"],
+              nlohmann::json::array({"send_message", "get_history"}));
+}
+
+TEST_F(CommandTest, Call_MethodNotFound_HumanListsAvailableMethods)
+{
+    // Human mode prints the message and nothing else, so the list has to be
+    // folded into the message — and it goes to stderr, not stdout.
+    //
+    // setHumanMode(true), not Output{false}: the latter only declines to FORCE
+    // JSON and then auto-detects from the TTY, which makes the test depend on
+    // how the runner's stdout is wired (nix gives builds a pty, a plain pipe
+    // does not) — the sibling OutputTest cases are TTY-dependent for exactly
+    // this reason.
+    Output humanOutput{false};
+    humanOutput.setHumanMode(true);
+    mockClient.callMethodResult = LogosMap{
+        {"status", "error"}, {"code", "METHOD_NOT_FOUND"},
+        {"message", "Method 'bad' not found on module 'chat'."},
+        {"available_methods", LogosList::array({"send_message", "get_history"})}
+    };
+
+    auto cmd = createCommand("call", mockClient, humanOutput);
+    std::stringstream buffer;
+    auto oldBuf = std::cerr.rdbuf(buffer.rdbuf());
+    EXPECT_EQ(cmd->execute({"chat", "bad"}), 4);
+    std::cerr.rdbuf(oldBuf);
+
+    const std::string err = buffer.str();
+    EXPECT_NE(err.find("Method 'bad' not found on module 'chat'."), std::string::npos)
+        << err;
+    EXPECT_NE(err.find("Available methods: send_message, get_history"),
+              std::string::npos) << err;
+}
+
+// The behaviour change, at the CLI layer: a null RESULT is a successful call.
+// It used to be unreachable — core_service turned every null into
+// METHOD_FAILED, because it read the value instead of the error channel.
+TEST_F(CommandTest, Call_NullResultIsSuccess)
+{
+    mockClient.callMethodResult = LogosMap{
+        {"status", "ok"}, {"module", "chat"}, {"method", "maybe_get"},
+        {"result", nullptr}
+    };
+
+    auto cmd = createCommand("call", mockClient, output);
+    std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"chat", "maybe_get"}), 0);
+    });
+
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["status"].get<std::string>(), "ok");
+    ASSERT_TRUE(doc.contains("result"));
+    EXPECT_TRUE(doc["result"].is_null());
 }
 
 TEST_F(CommandTest, Call_ModuleNotLoaded)
@@ -935,6 +1084,537 @@ TEST_F(CommandTest, Stop_NoDaemon)
     EXPECT_EQ(doc["code"].get<std::string>(), "NO_DAEMON");
 }
 
+// ── stop: telling a live daemon from a session someone forgot to clean up ────
+//
+// `stop` reports success when the shutdown RPC produces no reply but the
+// daemon's pid is gone -- which is the normal outcome, since the daemon is
+// being asked to die mid-sentence. That inference is only sound about a pid
+// that was alive when we asked. A session whose daemon died last week has a
+// state.json naming a dead pid and a dial spec beside it that still
+// "connects" (a LocalSocket client never checks that anyone is listening), so
+// without the guard these three become one indistinguishable "ok".
+
+namespace {
+
+// Beyond every platform's pid ceiling (macOS 99998, Linux's default 4194304,
+// and not a multiple of 4, which Windows pids always are), so kill(pid, 0)
+// answers ESRCH rather than "some unrelated process".
+constexpr long long kPidThatCannotExist = 2147483646LL;
+
+// Write a session that says "instance <id> is running as pid <pid>", as a
+// booted daemon would, and a client dial spec pointing at the same instance.
+void seedSession(const std::string& instanceId, long long pid)
+{
+    DaemonRuntimeState rs;
+    rs.instanceId = instanceId;
+    rs.pid        = pid;
+    rs.startedAt  = currentUtcIso8601();
+    ASSERT_TRUE(DaemonRuntimeStateFile::write(rs));
+
+    ClientState cs;
+    cs.fileOk        = true;
+    cs.schemaVersion = kClientStateSchemaVersion;
+    cs.tokenFile     = "auto.json";
+    cs.instanceId    = instanceId;
+    ClientStateFile::setOverride(cs);
+}
+
+} // namespace
+
+TEST_F(CommandTest, Stop_StaleSession_ReportsNoDaemonWithoutCallingShutdown)
+{
+    seedSession("deadbeef1234", kPidThatCannotExist);
+    if (::testing::Test::HasFatalFailure()) return;
+
+    auto cmd = createCommand("stop", mockClient, output);
+    std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 2);
+    });
+
+    EXPECT_FALSE(mockClient.shutdownCalled)
+        << "there is nothing to shut down -- the RPC must not be attempted, or "
+           "its silence becomes evidence that it worked";
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["code"].get<std::string>(), "NO_DAEMON");
+}
+
+TEST_F(CommandTest, Stop_LiveSession_StillStops)
+{
+    // The control. A guard that refuses every session would satisfy the test
+    // above and break the command; this pins the other side of the line.
+    seedSession("deadbeef1234", static_cast<long long>(getpid()));
+    if (::testing::Test::HasFatalFailure()) return;
+
+    mockClient.shutdownResult = LogosMap{
+        {"status", "ok"}, {"message", "Daemon shutting down."}
+    };
+
+    auto cmd = createCommand("stop", mockClient, output);
+    std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 0);
+    });
+
+    EXPECT_TRUE(mockClient.shutdownCalled);
+    EXPECT_EQ(parseJson(out)["status"].get<std::string>(), "ok");
+}
+
+TEST_F(CommandTest, Stop_StaleSessionForAnotherInstance_DoesNotBlockARemoteStop)
+{
+    // A remote client can have a co-resident daemon's leftovers in its own
+    // session directory. Those describe someone else's daemon -- the instance
+    // ids differ -- and must not stop it from stopping the one it dials.
+    DaemonRuntimeState rs;
+    rs.instanceId = "aaaaaaaaaaaa";       // the dead co-resident daemon
+    rs.pid        = kPidThatCannotExist;
+    rs.startedAt  = currentUtcIso8601();
+    ASSERT_TRUE(DaemonRuntimeStateFile::write(rs));
+
+    ClientState cs;                        // ...dialing a different one
+    cs.fileOk        = true;
+    cs.schemaVersion = kClientStateSchemaVersion;
+    cs.tokenFile     = "remote.json";
+    cs.instanceId    = "bbbbbbbbbbbb";
+    ClientStateFile::setOverride(cs);
+
+    mockClient.shutdownResult = LogosMap{
+        {"status", "ok"}, {"message", "Daemon shutting down."}
+    };
+
+    auto cmd = createCommand("stop", mockClient, output);
+    std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 0);
+    });
+
+    EXPECT_TRUE(mockClient.shutdownCalled);
+    EXPECT_EQ(parseJson(out)["status"].get<std::string>(), "ok");
+}
+
+// ── every command that opens with an RPC refuses a dead session ─────────────
+//
+// The guard above is not a `stop` detail. Any command whose first act is an
+// RPC has the same problem, for the same reason: the LocalSocket "connect"
+// against a session nobody is serving succeeds, the request goes nowhere, and
+// QtRO has nothing to report -- so the command sits until Timeout(20000) in
+// logos-protocol's cpp/logos_mode.h expires, twenty seconds after the session
+// directory on disk could have said "that pid is gone".
+//
+// So the guard lives in Command::ensureConnected(), which is the one door all
+// of them go through, and these sweep both sides of it: nothing is dialled
+// when the session is provably dead, and nothing is refused when it is not.
+
+namespace {
+
+struct RpcCommand {
+    const char*              command;   // createCommand() name
+    std::vector<std::string> args;
+    const char*              typed;     // how a person would type it
+};
+
+// One entry per ensureConnected() call site in src/client/commands, package's
+// six included. A command added there without a line here is a command with
+// no coverage for this, which is how the other thirteen got missed the first
+// time round.
+const std::vector<RpcCommand> kRpcCommands{
+    {"call",          {"chat", "send", "hi"}, "call chat send hi"},
+    {"catalog",       {"ls"},                 "catalog ls"},
+    {"key",           {"ls"},                 "key ls"},
+    {"list-modules",  {},                     "module ls"},
+    {"load-module",   {"chat"},               "module load chat"},
+    {"module-info",   {"chat"},               "module show chat"},
+    {"package",       {"install", "chat"},    "package install chat"},
+    {"package",       {"ls"},                 "package ls"},
+    {"package",       {"show", "chat"},       "package show chat"},
+    {"package",       {"deps", "chat"},       "package deps chat"},
+    {"package",       {"search", "chat"},     "package search chat"},
+    {"package",       {"download", "chat"},   "package download chat"},
+    {"reload-module", {"chat"},               "module reload chat"},
+    {"stats",         {},                     "stats"},
+    {"stop",          {},                     "stop"},
+    {"unload-module", {"chat"},               "module unload chat"},
+    {"watch",         {"chat"},               "watch chat"},
+};
+
+// Well-formed replies for every RPC, so that a command which gets further than
+// it should fails on the assertion below rather than on an exception thrown
+// while reading a default-constructed (null) result. Only the stale-session
+// cases need this -- they are the ones where reaching an RPC is the bug.
+void primeReplies(MockClient& c)
+{
+    c.loadModuleResult   = LogosMap{{"status", "ok"}, {"version", "1.0.0"}};
+    c.unloadModuleResult = LogosMap{{"status", "ok"}};
+    c.reloadModuleResult = LogosMap{{"status", "ok"}};
+    c.moduleInfoResult   = LogosMap{{"status", "ok"}, {"name", "chat"}};
+    c.callMethodResult   = LogosMap{{"status", "ok"}, {"result", nullptr}};
+    c.shutdownResult     = LogosMap{{"status", "ok"}, {"message", "bye"}};
+    c.planPackageResult  = LogosMap{{"status", "ok"}, {"changes", LogosList::array()}};
+    c.applyPackageResult = LogosMap{{"status", "ok"}};
+    c.downloadResult     = LogosMap{{"status", "ok"}, {"result", LogosMap{{"path", "/p.lgx"}}}};
+    c.listModulesResult  = LogosList::array();
+    c.moduleStatsResult  = LogosList::array();
+}
+
+} // namespace
+
+TEST_F(CommandTest, EveryRpcCommand_StaleSession_FailsWithoutDialling)
+{
+    for (const RpcCommand& c : kRpcCommands) {
+        SCOPED_TRACE(c.typed);
+
+        seedSession("deadbeef1234", kPidThatCannotExist);
+        if (::testing::Test::HasFatalFailure()) return;
+
+        MockClient mock;          // fresh counters per command
+        mock.shouldConnect = true;  // connecting is not the thing that saves us
+        primeReplies(mock);
+
+        auto cmd = createCommand(c.command, mock, output);
+        ASSERT_NE(cmd, nullptr);
+
+        const std::string printed = captureOutput([&]() {
+            EXPECT_EQ(cmd->execute(c.args), 2);
+        });
+
+        EXPECT_EQ(mock.connectAttempts, 0)
+            << "dialled a session whose daemon is known to be gone";
+        EXPECT_EQ(mock.rpcCalls, 0)
+            << "sent an RPC into a dead session -- this is the twenty-second "
+               "wait the guard exists to prevent";
+
+        const nlohmann::json doc = parseJson(printed);
+        EXPECT_EQ(doc["code"].get<std::string>(), "NO_DAEMON");
+        EXPECT_NE(doc["message"].get<std::string>().find("stale state file"),
+                  std::string::npos)
+            << "the message has to say WHY, or the operator cannot find the "
+               "session directory to clean up: " << doc["message"];
+    }
+}
+
+// The other side of the line, three ways. A guard that refused everything
+// would pass the sweep above and break the CLI, so each of these seeds a
+// session the guard must stay silent about and checks that the command still
+// gets as far as dialling. `shouldConnect = false` stops it there: what is
+// under test is whether the guard let it try, not what the daemon replies.
+TEST_F(CommandTest, EveryRpcCommand_LiveSession_StillDials)
+{
+    for (const RpcCommand& c : kRpcCommands) {
+        SCOPED_TRACE(c.typed);
+
+        seedSession("deadbeef1234", static_cast<long long>(getpid()));
+        if (::testing::Test::HasFatalFailure()) return;
+
+        MockClient mock;
+        mock.shouldConnect = false;   // stop at the door; the dial is the point
+
+        auto cmd = createCommand(c.command, mock, output);
+        ASSERT_NE(cmd, nullptr);
+        captureOutput([&]() { EXPECT_EQ(cmd->execute(c.args), 2); });
+
+        EXPECT_EQ(mock.connectAttempts, 1)
+            << "refused a session whose daemon is alive";
+    }
+}
+
+TEST_F(CommandTest, EveryRpcCommand_StaleSessionForAnotherInstance_StillDials)
+{
+    // A remote client's session directory can hold a co-resident daemon's
+    // leftovers. They describe someone else's dead daemon; the one at the far
+    // end of its TCP connection is fine, and has no local pid to check.
+    for (const RpcCommand& c : kRpcCommands) {
+        SCOPED_TRACE(c.typed);
+
+        DaemonRuntimeState rs;
+        rs.instanceId = "aaaaaaaaaaaa";           // the dead co-resident daemon
+        rs.pid        = kPidThatCannotExist;
+        rs.startedAt  = currentUtcIso8601();
+        ASSERT_TRUE(DaemonRuntimeStateFile::write(rs));
+
+        ClientState cs;                          // ...dialing a different one
+        cs.fileOk        = true;
+        cs.schemaVersion = kClientStateSchemaVersion;
+        cs.tokenFile     = "remote.json";
+        cs.instanceId    = "bbbbbbbbbbbb";
+        ClientStateFile::setOverride(cs);
+
+        MockClient mock;
+        mock.shouldConnect = false;
+
+        auto cmd = createCommand(c.command, mock, output);
+        ASSERT_NE(cmd, nullptr);
+        captureOutput([&]() { EXPECT_EQ(cmd->execute(c.args), 2); });
+
+        EXPECT_EQ(mock.connectAttempts, 1)
+            << "a co-resident daemon's leftovers blocked a remote client";
+    }
+}
+
+TEST_F(CommandTest, EveryRpcCommand_NoStateFileAtAll_StillDials)
+{
+    // The ordinary remote case: a hand-written dial spec, no daemon/state.json
+    // anywhere, and therefore no local pid to have an opinion about. "No
+    // evidence of a dead daemon" must not be read as "the daemon is dead".
+    for (const RpcCommand& c : kRpcCommands) {
+        SCOPED_TRACE(c.typed);
+
+        ClientState cs;
+        cs.fileOk        = true;
+        cs.schemaVersion = kClientStateSchemaVersion;
+        cs.tokenFile     = "remote.json";
+        ClientStateFile::setOverride(cs);        // no instance_id: a TCP dial
+
+        MockClient mock;
+        mock.shouldConnect = false;
+
+        auto cmd = createCommand(c.command, mock, output);
+        ASSERT_NE(cmd, nullptr);
+        captureOutput([&]() { EXPECT_EQ(cmd->execute(c.args), 2); });
+
+        EXPECT_EQ(mock.connectAttempts, 1)
+            << "refused a client with no local daemon to check";
+    }
+}
+
+// ── an unanswered query is not an empty answer ──────────────────────────────
+//
+// `module ls` and `stats` were the only two commands that reported a failed
+// RPC as data. Both returned LogosList::array() when nothing replied, so
+// against a daemon that was not running they printed `[]` and exited 0 -- the
+// one outcome a script cannot argue with. Everything else in the client
+// returns an error envelope for the same failure.
+
+TEST_F(CommandTest, ListModules_UnansweredRpc_IsNotAnEmptyList)
+{
+    mockClient.listModulesResult = std::nullopt;   // the RPC produced no reply
+
+    auto cmd = createCommand("list-modules", mockClient, output);
+    const std::string printed = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 2)
+            << "exit 0 here means \"the daemon answered, nothing is loaded\"";
+    });
+
+    const nlohmann::json doc = parseJson(printed);
+    EXPECT_EQ(doc["status"].get<std::string>(), "error");
+    EXPECT_EQ(doc["code"].get<std::string>(), "DAEMON_UNREACHABLE");
+}
+
+TEST_F(CommandTest, ListModules_AnsweredWithNothing_IsStillSuccess)
+{
+    // The control: an empty list is a perfectly good answer, and must not be
+    // turned into an error by the check above.
+    mockClient.listModulesResult = LogosList::array();
+
+    auto cmd = createCommand("list-modules", mockClient, output);
+    const std::string printed = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 0);
+    });
+
+    EXPECT_TRUE(parseJson(printed).is_array());
+    EXPECT_TRUE(parseJson(printed).empty());
+}
+
+TEST_F(CommandTest, Stats_UnansweredRpc_IsNotAnEmptyList)
+{
+    mockClient.moduleStatsResult = std::nullopt;
+
+    auto cmd = createCommand("stats", mockClient, output);
+    const std::string printed = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 2);
+    });
+
+    const nlohmann::json doc = parseJson(printed);
+    EXPECT_EQ(doc["status"].get<std::string>(), "error");
+    EXPECT_EQ(doc["code"].get<std::string>(), "DAEMON_UNREACHABLE");
+}
+
+TEST_F(CommandTest, Stats_AnsweredWithNothing_IsStillSuccess)
+{
+    mockClient.moduleStatsResult = LogosList::array();
+
+    auto cmd = createCommand("stats", mockClient, output);
+    const std::string printed = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 0);
+    });
+
+    EXPECT_TRUE(parseJson(printed).is_array());
+}
+
+// `status` had the same shape of bug by a different route: RpcClient::getStatus
+// synthesises a not_running report when nothing replies, and that report has a
+// "daemon" key, so it reached the success branch and exited 0.
+TEST_F(CommandTest, Status_UnansweredRpc_ReportsNotRunningAndExitsNonZero)
+{
+    // A live session, so `status` gets past "not_configured" and past the
+    // stale-session guard and actually reaches the RPC.
+    seedSession("deadbeef1234", static_cast<long long>(getpid()));
+    if (::testing::Test::HasFatalFailure()) return;
+
+    mockClient.statusResult = LogosMap{
+        {"daemon",    LogosMap{{"status", "not_running"}, {"version", "1.0.0"}}},
+        {"modules",   LogosList::array()},
+        {"rpc_error", "core_service not reachable"},
+    };
+
+    auto cmd = createCommand("status", mockClient, output);
+    const std::string printed = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 1)
+            << "exit 0 reads as \"the daemon is fine\" to anything checking the "
+               "code rather than the text";
+    });
+
+    const nlohmann::json doc = parseJson(printed);
+    EXPECT_EQ(doc["daemon"]["status"].get<std::string>(), "not_running");
+}
+
+TEST_F(CommandTest, Status_LiveDaemon_StillExitsZero)
+{
+    seedSession("deadbeef1234", static_cast<long long>(getpid()));
+    if (::testing::Test::HasFatalFailure()) return;
+
+    mockClient.statusResult = LogosMap{
+        {"daemon",  LogosMap{{"status", "running"}, {"pid", 4242}}},
+        {"modules", LogosList::array()},
+    };
+
+    auto cmd = createCommand("status", mockClient, output);
+    const std::string printed = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 0);
+    });
+
+    EXPECT_EQ(parseJson(printed)["daemon"]["status"].get<std::string>(), "running");
+}
+
+// ── status: same evidence, reported as a status rather than an error ────────
+
+TEST_F(CommandTest, Status_StaleSession_ReportsNotRunningWithoutDialling)
+{
+    seedSession("deadbeef1234", kPidThatCannotExist);
+    if (::testing::Test::HasFatalFailure()) return;
+
+    auto cmd = createCommand("status", mockClient, output);
+    const std::string printed = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({}), 1);
+    });
+
+    EXPECT_EQ(mockClient.connectAttempts, 0);
+    EXPECT_EQ(mockClient.rpcCalls, 0);
+
+    const nlohmann::json doc = parseJson(printed);
+    EXPECT_EQ(doc["daemon"]["status"].get<std::string>(), "not_running");
+    EXPECT_EQ(doc["daemon"]["pid"].get<long long>(), kPidThatCannotExist)
+        << "naming the pid is what lets an operator confirm it really is gone";
+}
+
+TEST_F(CommandTest, Status_StaleSessionForAnotherInstance_StillDials)
+{
+    DaemonRuntimeState rs;
+    rs.instanceId = "aaaaaaaaaaaa";
+    rs.pid        = kPidThatCannotExist;
+    rs.startedAt  = currentUtcIso8601();
+    ASSERT_TRUE(DaemonRuntimeStateFile::write(rs));
+
+    ClientState cs;
+    cs.fileOk        = true;
+    cs.schemaVersion = kClientStateSchemaVersion;
+    cs.tokenFile     = "remote.json";
+    cs.instanceId    = "bbbbbbbbbbbb";
+    ClientStateFile::setOverride(cs);
+
+    mockClient.shouldConnect = false;
+
+    auto cmd = createCommand("status", mockClient, output);
+    captureOutput([&]() { EXPECT_EQ(cmd->execute({}), 1); });
+
+    EXPECT_EQ(mockClient.connectAttempts, 1)
+        << "a co-resident daemon's leftovers decided a remote client's status";
+}
+
+// ── package search ──────────────────────────────────────────────────────────
+
+// Search shows the latest version and a count of the rest: the full list made
+// every row wrap, which is what the column was supposed to prevent.
+TEST_F(CommandTest, PackageSearch_ShowsLatestVersionAndCountsTheRest)
+{
+    mockClient.callMethodResult = LogosMap{
+        {"status", "ok"},
+        {"result", LogosList::array({
+            LogosMap{
+                {"name", "storage_module"},
+                {"category", "storage"},
+                {"description", "Persistent storage"},
+                {"versions", LogosList::array({
+                    LogosMap{{"manifest", LogosMap{{"version", "2.0.0"}}}},
+                    LogosMap{{"manifest", LogosMap{{"version", "1.5.0"}}}},
+                    // Different artifacts for the same release must not make
+                    // the user-facing version list misleadingly repetitive.
+                    LogosMap{{"manifest", LogosMap{{"version", "2.0.0"}}}},
+                })},
+            },
+        })},
+    };
+    Output humanOutput;
+    humanOutput.setHumanMode(true);
+
+    auto cmd = createCommand("package", mockClient, humanOutput);
+    const std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"search", "storage"}), 0);
+    });
+
+    EXPECT_EQ(mockClient.lastCallModule, "package_downloader");
+    EXPECT_EQ(mockClient.lastCallMethod, "getCatalog");
+    EXPECT_NE(out.find("VERSION"), std::string::npos);
+    // Two distinct releases from three catalog artifacts -> "+1", not "+2".
+    EXPECT_NE(out.find("2.0.0 (+1)"), std::string::npos);
+    EXPECT_EQ(out.find("1.5.0"), std::string::npos);
+}
+
+// The other half of the split: `show` is where every version is named, and it
+// answers for catalog-only packages rather than refusing them as uninstalled.
+TEST_F(CommandTest, PackageShow_ListsEveryVersionForACatalogOnlyPackage)
+{
+    mockClient.callMethodResultByMethod["getInstalledPackages"] =
+        LogosMap{{"status", "ok"}, {"result", LogosList::array()}};
+    mockClient.callMethodResultByMethod["getCatalog"] = LogosMap{
+        {"status", "ok"},
+        {"result", LogosList::array({
+            LogosMap{
+                {"name", "storage_module"},
+                {"category", "storage"},
+                {"description", "Persistent storage"},
+                {"versions", LogosList::array({
+                    LogosMap{{"manifest", LogosMap{{"version", "2.0.0"}}}},
+                    LogosMap{{"manifest", LogosMap{{"version", "1.5.0"}}}},
+                    LogosMap{{"manifest", LogosMap{{"version", "2.0.0"}}}},
+                })},
+            },
+        })},
+    };
+    Output humanOutput;
+    humanOutput.setHumanMode(true);
+
+    auto cmd = createCommand("package", mockClient, humanOutput);
+    const std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"show", "storage_module"}), 0);
+    });
+
+    EXPECT_NE(out.find("available:"), std::string::npos);
+    EXPECT_NE(out.find("2.0.0, 1.5.0"), std::string::npos);
+    EXPECT_NE(out.find("installed:"), std::string::npos);
+}
+
+TEST_F(CommandTest, PackageShow_FailsWhenNeitherInstalledNorInAnyCatalog)
+{
+    mockClient.callMethodResultByMethod["getInstalledPackages"] =
+        LogosMap{{"status", "ok"}, {"result", LogosList::array()}};
+    mockClient.callMethodResultByMethod["getCatalog"] =
+        LogosMap{{"status", "ok"}, {"result", LogosList::array()}};
+
+    auto cmd = createCommand("package", mockClient, output);
+    const std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"show", "nope_module"}), 1);
+    });
+
+    EXPECT_NE(out.find("PACKAGE_NOT_FOUND"), std::string::npos);
+}
+
 // ---------------------------------------------------------------------------
 // package download
 //
@@ -1077,4 +1757,142 @@ TEST_F(CommandTest, PackageMutate_SaysSoWhenNoReasonWasReported)
 
     const std::string msg = parseJson(out)["message"].get<std::string>();
     EXPECT_NE(msg.find("no reason reported"), std::string::npos) << msg;
+}
+
+// ── local .lgx files ────────────────────────────────────────────────────────
+//
+// install/upgrade take a package off disk as readily as out of a catalog. The
+// two resolve by completely different rules, and the daemon plans one way or
+// the other -- so what the client hands over has to be unambiguously one or
+// the other before it leaves here.
+
+// A path is a path. Reading it as a catalog name sent it to the resolver,
+// which came back "no candidate matches './foo.lgx'" -- a package-not-found
+// error for a file that was sitting right there.
+TEST_F(CommandTest, PackageInstall_PositionalLgxPathIsReadAsAFile)
+{
+    const std::string path = testing::TempDir() + "logosctl_pkg_positional.lgx";
+    { std::ofstream f(path); f << "not really an archive"; }
+
+    mockClient.planPackageResult = LogosMap{
+        {"status", "ok"},
+        {"changes", LogosList::array({LogosMap{{"name","m"},{"action","install"}}})},
+        {"affected_loaded", LogosList::array()}};
+    mockClient.applyPackageResult = LogosMap{{"status", "ok"}};
+
+    auto cmd = createCommand("package", mockClient, output);
+    int exitCode = 1;
+    captureOutput([&]() { exitCode = cmd->execute({"install", path, "-y"}); });
+    std::remove(path.c_str());
+
+    EXPECT_EQ(exitCode, 0);
+    // It travels as a local file, not as a name.
+    EXPECT_TRUE(mockClient.lastPackageNames.empty());
+    const auto& files = mockClient.lastPackageOpts["localFiles"];
+    ASSERT_TRUE(files.is_array());
+    ASSERT_EQ(files.size(), 1u);
+    EXPECT_EQ(files[0].get<std::string>(),
+              std::filesystem::absolute(path).string());
+}
+
+TEST_F(CommandTest, PackageInstall_MissingLgxPathIsReportedAsAMissingFile)
+{
+    auto cmd = createCommand("package", mockClient, output);
+    int exitCode = 0;
+    std::string out = captureOutput([&]() {
+        exitCode = cmd->execute({"install", "./no_such_package.lgx", "-y"});
+    });
+
+    EXPECT_EQ(exitCode, 1);
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["code"].get<std::string>(), "INVALID_ARGS");
+    EXPECT_NE(doc["message"].get<std::string>().find("No such .lgx file"),
+              std::string::npos) << doc.dump();
+    // Nothing reached the daemon, so nothing was half-installed.
+    EXPECT_FALSE(mockClient.applyPackageCalled);
+}
+
+// The plan is either/or, so a request carrying both used to install the files
+// and silently drop the names.
+TEST_F(CommandTest, PackageInstall_RefusesToMixCatalogNamesWithLocalFiles)
+{
+    const std::string path = testing::TempDir() + "logosctl_pkg_mixed.lgx";
+    { std::ofstream f(path); }
+
+    auto cmd = createCommand("package", mockClient, output);
+    int exitCode = 0;
+    std::string out = captureOutput([&]() {
+        exitCode = cmd->execute({"install", "storage_module", path, "-y"});
+    });
+    std::remove(path.c_str());
+
+    EXPECT_EQ(exitCode, 1);
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["code"].get<std::string>(), "INVALID_ARGS");
+    EXPECT_NE(doc["message"].get<std::string>().find("Cannot mix"),
+              std::string::npos) << doc.dump();
+    EXPECT_FALSE(mockClient.applyPackageCalled);
+}
+
+// --file plus an empty --dir: the emptiness test used to look at the combined
+// list, so the directory contributing nothing went unreported.
+TEST_F(CommandTest, PackageInstall_EmptyDirIsReportedEvenAlongsideAFile)
+{
+    const std::string dir = testing::TempDir() + "logosctl_pkg_empty_dir";
+    std::filesystem::create_directories(dir);
+    const std::string path = testing::TempDir() + "logosctl_pkg_with_dir.lgx";
+    { std::ofstream f(path); }
+
+    auto cmd = createCommand("package", mockClient, output);
+    int exitCode = 0;
+    std::string out = captureOutput([&]() {
+        exitCode = cmd->execute({"install", "--file", path, "--dir", dir, "-y"});
+    });
+    std::remove(path.c_str());
+    std::filesystem::remove(dir);
+
+    EXPECT_EQ(exitCode, 1);
+    EXPECT_NE(parseJson(out)["message"].get<std::string>().find("No .lgx files found"),
+              std::string::npos) << out;
+    EXPECT_FALSE(mockClient.applyPackageCalled);
+}
+
+// `remove` names an installed package. Both flags were accepted and then
+// ignored by the daemon, so the command reported "already up to date" and
+// removed nothing.
+TEST_F(CommandTest, PackageRemove_RejectsFileAndDirRatherThanIgnoringThem)
+{
+    const std::string path = testing::TempDir() + "logosctl_pkg_remove.lgx";
+    { std::ofstream f(path); }
+
+    auto cmd = createCommand("package", mockClient, output);
+    int exitCode = 0;
+    std::string out = captureOutput([&]() {
+        exitCode = cmd->execute({"remove", "--file", path, "-y"});
+    });
+    std::remove(path.c_str());
+
+    EXPECT_EQ(exitCode, 1);
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["code"].get<std::string>(), "INVALID_ARGS");
+    EXPECT_NE(doc["message"].get<std::string>().find("--file / --dir apply to install"),
+              std::string::npos) << doc.dump();
+    EXPECT_FALSE(mockClient.applyPackageCalled);
+}
+
+// Removal is by name even when the name happens to end in `.lgx`: there is no
+// file to read, so the path stays a name and the daemon reports it as not
+// installed.
+TEST_F(CommandTest, PackageRemove_KeepsAnLgxArgumentAsAName)
+{
+    mockClient.planPackageResult = LogosMap{
+        {"status", "error"}, {"code", "NOT_INSTALLED"},
+        {"message", "Package './thing.lgx' is not installed."}};
+
+    auto cmd = createCommand("package", mockClient, output);
+    captureOutput([&]() { cmd->execute({"remove", "./thing.lgx", "-y"}); });
+
+    ASSERT_EQ(mockClient.lastPackageNames.size(), 1u);
+    EXPECT_EQ(mockClient.lastPackageNames[0].get<std::string>(), "./thing.lgx");
+    EXPECT_TRUE(mockClient.lastPackageOpts["localFiles"].empty());
 }
