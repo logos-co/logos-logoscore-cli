@@ -29,7 +29,7 @@
     # Basecamp bundles (see logos-basecamp/flake.nix), so both frontends
     # drive the identical module API.
     logos-package-manager-module.url = "github:logos-co/logos-package-manager-module";
-    logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module";
+    logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module?ref=617c64800b65c2981bcbd135e73c2dc82be186cd";
     # Real test-module plugins (test_basic_module) used by the
     # daemon-backed integration tests in tests/test_integration.cpp.
     logos-test-modules.url = "github:logos-co/logos-test-modules";
