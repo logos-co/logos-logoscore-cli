@@ -4,8 +4,8 @@
 #include <string>
 #include <vector>
 
-// Bringing up the two bundled package modules and pointing package_manager at
-// this session's directories.
+// Bringing up the bundled modules and pointing package_manager at this
+// session's directories.
 //
 // The decision logic lives here, behind injected hooks, rather than inline in
 // daemon.cpp: what a load failure skips — and what it must NOT skip — is the
@@ -15,6 +15,7 @@ namespace package_bootstrap {
 
 inline constexpr const char* kPackageManager    = "package_manager";
 inline constexpr const char* kPackageDownloader = "package_downloader";
+inline constexpr const char* kStorageModule     = "storage_module";
 
 // Everything run() needs from the outside world.
 struct Hooks {

@@ -75,6 +75,7 @@ package_bootstrap::Dirs sessionDirs()
 
 const char* kPm = package_bootstrap::kPackageManager;
 const char* kPd = package_bootstrap::kPackageDownloader;
+const char* kSt = package_bootstrap::kStorageModule;
 
 } // namespace
 
@@ -187,7 +188,7 @@ TEST(PackageBootstrap, ManagerFailureStillAttemptsTheDownloader)
 
     const auto out = package_bootstrap::run(h.hooks(), sessionDirs(), "require");
 
-    EXPECT_EQ(h.loadAttempts, (std::vector<std::string>{kPm, kPd}));
+    EXPECT_EQ(h.loadAttempts, (std::vector<std::string>{kPm, kPd, kSt}));
     EXPECT_FALSE(out.managerLoaded);
     EXPECT_TRUE(out.downloaderLoaded);
 

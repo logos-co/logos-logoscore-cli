@@ -35,13 +35,14 @@
     logos-modules-state-module.url = "github:logos-co/logos-modules-state-module";
     logos-package-manager-module.url = "github:logos-co/logos-package-manager-module";
     logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module";
+    logos-storage-module.url = "github:logos-co/logos-storage-module?ref=fac9a7a3eb5b9cdf58c875ef9b5d16d2bb71c5e9";
     logos-test-modules.url = "github:logos-co/logos-test-modules";
     nix-bundle-logos-module-install.url = "github:logos-co/nix-bundle-logos-module-install";
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-plugin-qt, logos-liblogos, logos-package-manager, logos-capability-module, logos-modules-state-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
+  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-plugin-qt, logos-liblogos, logos-package-manager, logos-capability-module, logos-modules-state-module, logos-package-manager-module, logos-package-downloader-module, logos-storage-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       # Build info baked into the logosctl binary so `--version` reports the
@@ -67,6 +68,7 @@
           { name = "logos-modules-state-module"; commit = revOf logos-modules-state-module; }
           { name = "logos-package-manager-module"; commit = revOf logos-package-manager-module; }
           { name = "logos-package-downloader-module"; commit = revOf logos-package-downloader-module; }
+          { name = "logos-storage-module"; commit = revOf logos-storage-module; }
         ];
       };
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f {
@@ -83,6 +85,8 @@
         packageManagerModuleLib = logos-package-manager-module.packages.${system}.lib;
         packageManagerModuleLibPortable = logos-package-manager-module.packages.${system}.lib-portable;
         packageDownloaderModuleLib = logos-package-downloader-module.packages.${system}.lib;
+        storageModuleLib = logos-storage-module.packages.${system}.lib;
+        storageModuleLibPortable = logos-storage-module.packages.${system}.lib-portable;
         installDev = nix-bundle-logos-module-install.bundlers.${system}.dev;
         installPortable = nix-bundle-logos-module-install.bundlers.${system}.portable;
         # Both binaries here are headless: they link Qt for its object system
@@ -133,6 +137,8 @@
           packageManagerModuleLib = logos-package-manager-module.packages.${system}.lib;
           packageManagerModuleLibPortable = logos-package-manager-module.packages.${system}.lib-portable;
           packageDownloaderModuleLib = logos-package-downloader-module.packages.${system}.lib;
+          storageModuleLib = logos-storage-module.packages.${system}.lib;
+          storageModuleLibPortable = logos-storage-module.packages.${system}.lib-portable;
           installDev = nix-bundle-logos-module-install.bundlers.${system}.dev;
           installPortable = nix-bundle-logos-module-install.bundlers.${system}.portable;
           # Keyed by the BUILD system, not the target, and that is the whole
@@ -156,7 +162,7 @@
         });
     in
     {
-      packages = forAllTargets ({ pkgs, system, cppSdk, protocolPkg, qtHost, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, modulesStateModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, installDev, installPortable, dirBundler, appBundler }:
+      packages = forAllTargets ({ pkgs, system, cppSdk, protocolPkg, qtHost, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, modulesStateModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, storageModuleLib, storageModuleLibPortable, installDev, installPortable, dirBundler, appBundler }:
         let
           pname = "logos-logoscore-cli";
           # VERSION is only present on release branches; dev branches use a placeholder.
@@ -186,6 +192,8 @@
           # modules_state        — the module lifecycle registry liblogos feeds.
           # package_manager      — install/uninstall + the dependency graph.
           # package_downloader   — catalogs, resolution, downloads.
+          # storage_module       — the Logos Storage node packages will be
+          #                        fetched from by CID (see APPROACH.md).
           #
           # These land in $out/modules and are picked up at runtime as the
           # read-only "embedded" directory (paths::bundledModulesDir(),
@@ -200,6 +208,7 @@
           pkgInstallsDev = map installDev [
             packageManagerModuleLib
             packageDownloaderModuleLib
+            storageModuleLib
           ];
           modules = pkgs.runCommand "${pname}-modules-${version}"
             { inherit meta; }
@@ -659,10 +668,11 @@ ${pkgs.lib.optionalString withPkgModules ''
           # variant-agnostic and rely on installPortable to make the bundle
           # self-contained (same split logos-basecamp uses).
           bundledInstallsPortable = map installPortable [ capabilityModuleLib modulesStateModuleLib ];
-          pkgInstallsPortable = map installPortable [
+          pkgInstallsPortable = map installPortable ([
             packageManagerModuleLibPortable
             packageDownloaderModuleLib
-          ];
+            # Exclude storage_module on Windows temporary
+          ] ++ pkgs.lib.optional (!isWindows) storageModuleLibPortable);
           modulesPortable = pkgs.runCommand "${pname}-modules-portable-${version}"
             { inherit meta; }
             ''
