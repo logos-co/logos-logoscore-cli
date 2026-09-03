@@ -25,6 +25,9 @@ constexpr BundledModule kBundled[] = {
     {kPackageDownloader,
      "catalog commands (`package search`, `package download`) will be "
      "unavailable in this session; locally installed packages are unaffected"},
+    {kStorageModule,
+     "the Logos Storage node (`call storage_module ...`) will be unavailable "
+     "in this session; package commands are unaffected"},
 };
 
 } // namespace
@@ -41,7 +44,7 @@ Outcome run(const Hooks& hooks, const Dirs& dirs,
             continue;
         }
         if (std::string_view(m.name) == kPackageManager) out.managerLoaded    = true;
-        else                                             out.downloaderLoaded = true;
+        else if (std::string_view(m.name) == kPackageDownloader) out.downloaderLoaded = true;
         if (hooks.note)
             hooks.note(std::string("Loaded bundled module: ") + m.name);
     }
