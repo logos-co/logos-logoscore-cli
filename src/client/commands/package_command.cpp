@@ -516,10 +516,12 @@ std::string PackageCommand::formatDependencyRow(const LogosMap& n)
     // replacing it — the user still needs to know the package is absent, only
     // not that the install is broken. `--json` carries the field itself.
     if (n.value("optional", false)) status += " (optional)";
+    // Empty, not absent: a not_installed row carries `"version": ""`, so a
+    // default on the lookup never fired and the column rendered blank.
+    std::string version = n.value("version", std::string{});
+    if (version.empty()) version = "-";
     return fmt::format("{:<28} {:<12} {}",
-                       n.value("name", std::string{}),
-                       n.value("version", std::string("-")),
-                       status);
+                       n.value("name", std::string{}), version, status);
 }
 
 // ── search ───────────────────────────────────────────────────────────────────

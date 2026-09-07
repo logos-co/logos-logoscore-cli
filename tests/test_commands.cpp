@@ -1924,6 +1924,17 @@ TEST(PackageDepsRow, LeavesARequiredDependencyUnmarked)
     EXPECT_EQ(row.find("optional"), std::string::npos) << row;
 }
 
+TEST(PackageDepsRow, ShowsADashWhenNothingIsInstalled)
+{
+    // `"version": ""` is PRESENT but empty, so the `-` default on the lookup
+    // never fired and the column rendered blank. Pinned as the whole row, so
+    // this is also where the column layout is anchored.
+    const std::string row = PackageCommand::formatDependencyRow(
+        LogosMap{{"name", "libbar"}, {"status", "not_installed"},
+                 {"version", ""}, {"installType", ""}});
+    EXPECT_EQ(row, "libbar                       -            not_installed");
+}
+
 TEST(PackageDepsRow, MarksAnOptionalDependencyThatIsInstalled)
 {
     // The flag is per-EDGE, not a verdict about the package, so it shows on a
