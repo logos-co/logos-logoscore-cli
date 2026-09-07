@@ -503,13 +503,23 @@ int PackageCommand::deps(const std::vector<std::string>& args)
                                   : "This package has no dependencies.");
         return 0;
     }
-    for (const auto& n : nodes) {
-        output().printRaw(fmt::format("{:<28} {:<12} {}",
-            n.value("name", std::string{}),
-            n.value("version", std::string("-")),
-            n.value("status", n.value("installType", std::string{}))));
-    }
+    for (const auto& n : nodes) output().printRaw(formatDependencyRow(n));
     return 0;
+}
+
+std::string PackageCommand::formatDependencyRow(const LogosMap& n)
+{
+    // A dependENT row carries no status, so installType stands in. It never
+    // carries `optional` either: the reverse walk reads required edges only.
+    std::string status = n.value("status", n.value("installType", std::string{}));
+    // Optionality is not a status, so it rides alongside one rather than
+    // replacing it — the user still needs to know the package is absent, only
+    // not that the install is broken. `--json` carries the field itself.
+    if (n.value("optional", false)) status += " (optional)";
+    return fmt::format("{:<28} {:<12} {}",
+                       n.value("name", std::string{}),
+                       n.value("version", std::string("-")),
+                       status);
 }
 
 // ── search ───────────────────────────────────────────────────────────────────

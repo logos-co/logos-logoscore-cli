@@ -17,6 +17,7 @@
 #include "client/client_state.h"
 #include "client/output.h"
 #include "client/commands/command.h"
+#include "client/commands/package_command.h"
 #include "config.h"
 #include "daemon/daemon_state.h"
 
@@ -1895,4 +1896,53 @@ TEST_F(CommandTest, PackageRemove_KeepsAnLgxArgumentAsAName)
     ASSERT_EQ(mockClient.lastPackageNames.size(), 1u);
     EXPECT_EQ(mockClient.lastPackageNames[0].get<std::string>(), "./thing.lgx");
     EXPECT_TRUE(mockClient.lastPackageOpts["localFiles"].empty());
+}
+
+// ── `package deps` row rendering ─────────────────────────────────────────────
+//
+// `optional` reaches the CLI on every dependency row (package-manager-module
+// #67). `--json` passes it through untouched; the human table has to say it
+// out loud, or an absent optional dependency is indistinguishable from a
+// broken install — the same row, the same `not_installed`.
+
+TEST(PackageDepsRow, MarksAnOptionalDependency)
+{
+    const std::string row = PackageCommand::formatDependencyRow(
+        LogosMap{{"name", "nice_to_have"}, {"status", "not_installed"},
+                 {"version", ""}, {"installType", ""}, {"optional", true}});
+    EXPECT_NE(row.find("not_installed (optional)"), std::string::npos) << row;
+}
+
+TEST(PackageDepsRow, LeavesARequiredDependencyUnmarked)
+{
+    // The identical row but for the flag: absent means required, so nothing is
+    // appended and every pre-existing row renders byte-for-byte as before.
+    const std::string row = PackageCommand::formatDependencyRow(
+        LogosMap{{"name", "needed"}, {"status", "not_installed"},
+                 {"version", ""}, {"installType", ""}});
+    EXPECT_NE(row.find("not_installed"), std::string::npos) << row;
+    EXPECT_EQ(row.find("optional"), std::string::npos) << row;
+}
+
+TEST(PackageDepsRow, MarksAnOptionalDependencyThatIsInstalled)
+{
+    // The flag is per-EDGE, not a verdict about the package, so it shows on a
+    // satisfied row too — that is what tells a user this one is safe to remove.
+    const std::string row = PackageCommand::formatDependencyRow(
+        LogosMap{{"name", "extra"}, {"status", "installed"},
+                 {"version", "1.0.0"}, {"installType", "user"},
+                 {"optional", true}});
+    EXPECT_NE(row.find("installed (optional)"), std::string::npos) << row;
+    EXPECT_NE(row.find("1.0.0"), std::string::npos) << row;
+}
+
+TEST(PackageDepsRow, ADependentRowFallsBackToInstallType)
+{
+    // resolveFlatDependents emits no `status`. Unchanged by the above, and the
+    // reverse walk never marks optionality in the first place.
+    const std::string row = PackageCommand::formatDependencyRow(
+        LogosMap{{"name", "parent"}, {"version", "2.0.0"},
+                 {"installType", "user"}});
+    EXPECT_NE(row.find("user"), std::string::npos) << row;
+    EXPECT_EQ(row.find("optional"), std::string::npos) << row;
 }

@@ -20,6 +20,11 @@ public:
         return "Install, remove and inspect packages";
     }
 
+    // One row of `package deps` human output. Public because reaching it
+    // through deps() needs a live daemon, and the rendering is worth a test of
+    // its own.
+    static std::string formatDependencyRow(const LogosMap& n);
+
 private:
     int mutate(const std::string& op, const std::vector<std::string>& args);
     int list(const std::vector<std::string>& args);
