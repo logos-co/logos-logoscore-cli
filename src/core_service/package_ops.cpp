@@ -501,7 +501,7 @@ LogosMap apply(LogosAPI* api, Op op,
     // separate explicit act.
     LogosList reloaded = LogosList::array();
     for (const auto& m : toRestore) {
-        if (logos_core_load_module(m.c_str(), /*with_dependencies=*/true))
+        if (logos_core_load_module(m.c_str(), LOGOS_LOAD_REQUIRED_DEPS))
             reloaded.push_back(m);
     }
 
