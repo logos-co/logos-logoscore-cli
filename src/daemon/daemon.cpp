@@ -247,7 +247,7 @@ void bootstrapPackageModules(LogosAPI* api,
     package_bootstrap::Hooks hooks;
 
     hooks.loadModule = [](const std::string& name) {
-        return logos_core_load_module(name.c_str(), LOGOS_LOAD_REQUIRED_DEPS);
+        return logos_core_load_module(name.c_str(), LOGOS_LOAD_REQUIRED_AND_OPTIONAL);
     };
     hooks.unloadModule = [](const std::string& name) {
         logos_core_unload_module(name.c_str(), /*with_dependents=*/true);
