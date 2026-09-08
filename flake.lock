@@ -203226,17 +203226,17 @@
         ]
       },
       "locked": {
-        "lastModified": 1788246717,
-        "narHash": "sha256-qffD2IBEejc+FuIGB7mvW86KzwM60SDC6b/5DeSGhRQ=",
+        "lastModified": 1788502841,
+        "narHash": "sha256-rcbnE1nnfw0IaCrd8jDyORnBP3IeaCdOB6Fp6IUbu0g=",
         "owner": "logos-co",
         "repo": "logos-package-downloader",
-        "rev": "6b9eaa8903ef831453e780e88d6c4cfe3bb8bb62",
+        "rev": "4964ebf28dcc207310f0e3a609857d460def65d4",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
         "repo": "logos-package-downloader",
-        "rev": "6b9eaa8903ef831453e780e88d6c4cfe3bb8bb62",
+        "rev": "4964ebf28dcc207310f0e3a609857d460def65d4",
         "type": "github"
       }
     },
@@ -203247,16 +203247,16 @@
         "storage_module": "storage_module"
       },
       "locked": {
-        "lastModified": 1788270759,
-        "narHash": "sha256-0y1Z6cL8bRQYdyLQtMyATNtEzhYKhPGFfFUf0vsE7AI=",
+        "lastModified": 1788851310,
+        "narHash": "sha256-vTEQGxYUPt8q0uFLrUy2NFn0mao94XbAOwiiQogOAXA=",
         "owner": "logos-co",
         "repo": "logos-package-downloader-module",
-        "rev": "7b5ed8e9db1ebb095b01521d0f64088b3c956cc9",
+        "rev": "5d8531ecb508f7073675dca4529530c42ef2ad17",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
-        "ref": "7b5ed8e9db1ebb095b01521d0f64088b3c956cc9",
+        "ref": "5d8531ecb508f7073675dca4529530c42ef2ad17",
         "repo": "logos-package-downloader-module",
         "type": "github"
       }
@@ -476486,17 +476486,17 @@
         "logos-storage": "logos-storage"
       },
       "locked": {
-        "lastModified": 1787919249,
-        "narHash": "sha256-FkFnUxvpMHEks/4Eha0r+arGj55xaCDDK6baH7cU3XU=",
+        "lastModified": 1788515463,
+        "narHash": "sha256-0TxQqRDu5TPlNa+Hs1fmFFHIr4QfIuJDrAl7SpXTxg8=",
         "owner": "logos-co",
         "repo": "logos-storage-module",
-        "rev": "fac9a7a3eb5b9cdf58c875ef9b5d16d2bb71c5e9",
+        "rev": "30ade568b46d66e5aff28d917f079a84388f6a4f",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
         "repo": "logos-storage-module",
-        "rev": "fac9a7a3eb5b9cdf58c875ef9b5d16d2bb71c5e9",
+        "rev": "30ade568b46d66e5aff28d917f079a84388f6a4f",
         "type": "github"
       }
     }
