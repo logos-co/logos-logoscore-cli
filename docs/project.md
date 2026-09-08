@@ -128,7 +128,7 @@ The CLI uses these functions from liblogos (declared in `logos_core.h`):
 | `logos_core_start()` | Daemon |
 | `logos_core_exec()` | Daemon |
 | `logos_core_cleanup()` | Daemon |
-| `logos_core_load_module(name, true)` | Daemon, core_service |
+| `logos_core_load_module(name, LOGOS_LOAD_REQUIRED_DEPS)` | Daemon, core_service |
 | `logos_core_unload_module(name, false)` | core_service |
 | `logos_core_get_known_modules()` | core_service |
 | `logos_core_get_loaded_modules()` | core_service |
@@ -424,7 +424,7 @@ method, scanned by a code generator; neither is used here any more.)
 
 | Method | What it does (daemon-side) |
 |---|---|
-| `loadModule(name)` | Calls `logos_core_load_module(name, true)`. Returns `{"status":"ok","module":"...","version":"...","dependencies_loaded":[...]}` |
+| `loadModule(name)` | Calls `logos_core_load_module(name, LOGOS_LOAD_REQUIRED_DEPS)`. Returns `{"status":"ok","module":"...","version":"...","dependencies_loaded":[...]}` |
 | `unloadModule(name, withDependents)` | Calls `logos_core_unload_module(name, withDependents)`. With `withDependents` (the CLI default) liblogos cascades the unload to every module that depends on `name`, leaves-first, so nothing is left talking to a dead provider. Returns `{"status":"ok","module":"...","dependents_unloaded":[...]}` |
 | `refreshModules()` | Re-scans the daemon's module directories so a package installed since boot becomes loadable without a restart — this is what lets `install` be followed by `load` in one session |
 | `planPackageOperation(op, names, opts)` / `applyPackageOperation(op, names, opts)` | Daemon-side plan/apply for `install` / `remove` / `update` (see `src/core_service/package_ops.h`). The split exists so the client can show what would change and prompt; `--dry-run` stops after the plan |
@@ -1057,7 +1057,7 @@ logosctl module load waku
         "core_service", "loadModule", "waku")
       ───── IPC (Qt Remote Objects) ─────→
                                           CoreServiceImpl::loadModule("waku")
-                                            → logos_core_load_module("waku", true)
+                                            → logos_core_load_module("waku", LOGOS_LOAD_REQUIRED_DEPS)
                                             → build result JSON
       ←──── IPC (return value) ──────────
     → Output::printSuccess(result)
@@ -1081,9 +1081,9 @@ Client commands call core_service methods, which delegate to liblogos internally
 
 | CLI command | core_service method | liblogos function called internally |
 |---|---|---|
-| `load-module` | `loadModule(name)` | `logos_core_load_module(name, true)` |
+| `load-module` | `loadModule(name)` | `logos_core_load_module(name, LOGOS_LOAD_REQUIRED_DEPS)` |
 | `unload-module` | `unloadModule(name, withDependents)` | `logos_core_unload_module(name, withDependents)` — liblogos does the leaves-first cascade |
-| `reload-module` | `reloadModule(name)` | `logos_core_unload_module(name, false)` + `logos_core_load_module(name, true)` |
+| `reload-module` | `reloadModule(name)` | `logos_core_unload_module(name, false)` + `logos_core_load_module(name, LOGOS_LOAD_REQUIRED_DEPS)` |
 | `list-modules` | `listModules(filter)` | `logos_core_get_known_modules`, `logos_core_get_loaded_modules` |
 | `status` | `getStatus()` | reads daemon state + `listModules` |
 | `module-info` | `getModuleInfo(name)` | plugin metadata + methods introspection |

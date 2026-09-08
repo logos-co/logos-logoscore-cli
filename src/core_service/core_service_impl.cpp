@@ -116,13 +116,13 @@ StdLogosResult CoreServiceImpl::loadModule(const std::string& name)
 {
     // Snapshot the loaded set before the call so we can report which
     // *dependencies* this load brought up as a side effect.
-    // logos_core_load_module(..., /*with_dependencies=*/true) resolves and
+    // logos_core_load_module(..., LOGOS_LOAD_REQUIRED_DEPS) resolves and
     // loads the target's transitive dependency closure, so any module that
     // wasn't loaded before but is loaded after — other than the target
     // itself — was auto-resolved on its behalf.
     std::vector<std::string> before = getLoadedModuleNames();
 
-    bool ok = logos_core_load_module(name.c_str(), true);
+    bool ok = logos_core_load_module(name.c_str(), LOGOS_LOAD_REQUIRED_DEPS);
     if (!ok) {
         LogosMap errResult;
         errResult["status"] = "error";
@@ -279,13 +279,13 @@ StdLogosResult CoreServiceImpl::reloadModule(const std::string& name)
         logos_core_unload_module(name.c_str(), false);
     }
 
-    bool ok = logos_core_load_module(name.c_str(), true);
+    bool ok = logos_core_load_module(name.c_str(), LOGOS_LOAD_REQUIRED_DEPS);
     if (!ok) {
         // Non-destructive on failure: if it was running, try to bring it back
         // (the user asked to reload, not to take it down) and report whether
         // the prior instance was restored.
         if (wasLoaded) {
-            const bool restored = logos_core_load_module(name.c_str(), true);
+            const bool restored = logos_core_load_module(name.c_str(), LOGOS_LOAD_REQUIRED_DEPS);
             result["status"]   = "error";
             result["error"]    = restored
                 ? "reload failed; previous instance restored"
