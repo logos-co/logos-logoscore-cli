@@ -116,13 +116,13 @@ StdLogosResult CoreServiceImpl::loadModule(const std::string& name)
 {
     // Snapshot the loaded set before the call so we can report which
     // *dependencies* this load brought up as a side effect.
-    // logos_core_load_module(..., LOGOS_LOAD_REQUIRED_DEPS) resolves and
+    // logos_core_load_module(..., LOGOS_LOAD_REQUIRED_AND_OPTIONAL) resolves and
     // loads the target's transitive dependency closure, so any module that
     // wasn't loaded before but is loaded after — other than the target
     // itself — was auto-resolved on its behalf.
     std::vector<std::string> before = getLoadedModuleNames();
 
-    bool ok = logos_core_load_module(name.c_str(), LOGOS_LOAD_REQUIRED_DEPS);
+    bool ok = logos_core_load_module(name.c_str(), LOGOS_LOAD_REQUIRED_AND_OPTIONAL);
     if (!ok) {
         LogosMap errResult;
         errResult["status"] = "error";
@@ -148,7 +148,20 @@ StdLogosResult CoreServiceImpl::loadModule(const std::string& name)
     result["status"] = "ok";
     result["module"] = name;
     result["version"] = getModuleVersion(name);
+    // Still "what this load brought up", which now includes the optional
+    // dependencies that were installed — they are auto-resolved on the
+    // target's behalf like any other.
     result["dependencies_loaded"] = dependenciesLoaded;
+    // ...and the other half of that answer. Loading optionals never fails, so
+    // without this a caller cannot tell an optional dependency that is not
+    // installed from one it simply did not think to ask about. Only present
+    // when something WAS left out: a key that is always there says nothing.
+    if (char* report = logos_core_optional_load_report(name.c_str())) {
+        const std::string json(report);
+        delete[] report;
+        if (json != "[]" && !json.empty())
+            result["optional_skipped"] = LogosList::parse(json);
+    }
     return {true, result};
 }
 
@@ -279,13 +292,13 @@ StdLogosResult CoreServiceImpl::reloadModule(const std::string& name)
         logos_core_unload_module(name.c_str(), false);
     }
 
-    bool ok = logos_core_load_module(name.c_str(), LOGOS_LOAD_REQUIRED_DEPS);
+    bool ok = logos_core_load_module(name.c_str(), LOGOS_LOAD_REQUIRED_AND_OPTIONAL);
     if (!ok) {
         // Non-destructive on failure: if it was running, try to bring it back
         // (the user asked to reload, not to take it down) and report whether
         // the prior instance was restored.
         if (wasLoaded) {
-            const bool restored = logos_core_load_module(name.c_str(), LOGOS_LOAD_REQUIRED_DEPS);
+            const bool restored = logos_core_load_module(name.c_str(), LOGOS_LOAD_REQUIRED_AND_OPTIONAL);
             result["status"]   = "error";
             result["error"]    = restored
                 ? "reload failed; previous instance restored"
