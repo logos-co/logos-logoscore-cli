@@ -1,0 +1,93 @@
+name: Release AppImage
+
+# On every push to a release/** branch, build the logoscore AppImage for each
+# supported Linux arch and attach the results to a DRAFT GitHub release. The
+# release is keyed by a tag derived from the branch name (release/v3 -> v3), so
+# repeated pushes update the same draft instead of piling up new ones. Nothing
+# is published automatically — a maintainer reviews the draft and hits publish.
+
+on:
+  push:
+    branches:
+      - 'release/**'
+
+# Allow concurrent pushes to the same release branch to supersede each other —
+# only the latest commit's artifacts matter for the draft.
+concurrency:
+  group: release-appimage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-appimage:
+    name: Build AppImage (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64-linux
+            runner: ubuntu-latest
+          - arch: aarch64-linux
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # Pull cached build outputs (liblogos, capability module, SDK, ...) so the
+      # AppImage build doesn't recompile the whole dependency chain from source.
+      - uses: cachix/cachix-action@v15
+        with:
+          name: logos-co
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+
+      - name: Build cli-appimage
+        run: nix build '.#cli-appimage' --print-build-logs
+
+      # mkAppImage emits result/logoscore.AppImage. Rename per-arch so the two
+      # matrix jobs' artifacts don't collide when merged in the release job.
+      - name: Stage AppImage
+        run: |
+          mkdir -p dist
+          cp result/logoscore.AppImage "dist/logoscore-${{ matrix.arch }}.AppImage"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage-${{ matrix.arch }}
+          path: dist/logoscore-${{ matrix.arch }}.AppImage
+          if-no-files-found: error
+
+  draft-release:
+    name: Update draft release
+    needs: build-appimage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create/update the draft release and its assets
+
+    steps:
+      - name: Download AppImage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: appimage-*
+          merge-multiple: true
+
+      # release/v3 -> v3. Drafts are keyed by this tag; the tag itself is only
+      # created in git when a maintainer publishes the release.
+      - name: Derive release tag from branch
+        id: tag
+        run: echo "tag=${GITHUB_REF_NAME#release/}" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          files: artifacts/*.AppImage
+          fail_on_unmatched_files: true
