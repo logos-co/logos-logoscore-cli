@@ -1,8 +1,25 @@
 #include "call_command.h"
 #include "../../string_utils.h"
 #include <fmt/format.h>
+#include <cctype>
 #include <fstream>
 #include <sstream>
+
+namespace {
+// Only a decimal literal (optional sign, then a digit or '.') may become a
+// number. std::stod also accepts hex floats -- so a 0x address or tx hash was
+// consumed WHOLE and sent as a double -- plus "inf"/"nan", which JSON cannot
+// carry. Everything else stays a string.
+bool isDecimalLiteral(const std::string& s)
+{
+    size_t i = (!s.empty() && (s[0] == '+' || s[0] == '-')) ? 1 : 0;
+    if (i >= s.size())
+        return false;
+    if (s[i] == '0' && i + 1 < s.size() && (s[i + 1] == 'x' || s[i + 1] == 'X'))
+        return false;
+    return std::isdigit(static_cast<unsigned char>(s[i])) || s[i] == '.';
+}
+}  // namespace
 
 std::optional<std::string> CallCommand::resolveFileParam(const std::string& param)
 {
@@ -128,6 +145,10 @@ int CallCommand::execute(const std::vector<std::string>& args)
             // only tried for a non-negative literal because stoull("-1") happily
             // wraps to 18446744073709551615.
             const std::string num = strutil::trim(resolved);
+            if (!isDecimalLiteral(num)) {
+                resolvedArgs.push_back(resolved);
+                continue;
+            }
             bool isInt = false;
             long long intVal = 0;
             try {
