@@ -4,6 +4,7 @@
 #include "../local_endpoint.h"
 #include "../platform_compat.h"
 #include "../process_util.h"
+#include "../rpc_deadlines.h"
 #include "client_state.h"
 
 #include <logos_api.h>
@@ -51,13 +52,13 @@ struct RpcClient::Impl {
 
 namespace {
 
-// Deadlines for the operations that leave the machine. The transport's default
-// is 20 seconds -- fine for "is the daemon up", useless for "fetch and install
-// a blockchain node". These are generous on purpose: the cost of waiting too
-// long is a slow command, the cost of waiting too little is telling someone
-// their install failed while it is still running and about to succeed.
-constexpr int kCatalogTimeoutMs  = 2  * 60 * 1000;   // resolve against the catalog
-constexpr int kTransferTimeoutMs = 30 * 60 * 1000;   // download + install
+// Deadlines for the operations that leave the machine come from rpc_deadlines.h,
+// shared with the daemon's own calls into the package modules. Generous on
+// purpose: the cost of waiting too long is a slow command, the cost of waiting
+// too little is telling someone their install failed while it is still
+// running and about to succeed.
+constexpr int kCatalogTimeoutMs  = rpc_deadlines::kCatalogMs;
+constexpr int kTransferTimeoutMs = rpc_deadlines::kTransferMs;
 
 // Deadlines for `shutdown`, which is the one call whose reply is expected to
 // go missing -- see RpcClient::shutdown below.
