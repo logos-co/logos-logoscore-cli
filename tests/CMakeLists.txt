@@ -68,6 +68,7 @@ add_executable(unit_tests
     test_local_endpoint.cpp
     test_package_bootstrap.cpp
     test_call_envelope.cpp
+    test_rpc_deadlines.cpp
 )
 
 target_include_directories(unit_tests PRIVATE

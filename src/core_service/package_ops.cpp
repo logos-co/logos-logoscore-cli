@@ -1,9 +1,12 @@
 #include "package_ops.h"
 #include "config.h"
 #include "logos_core.h"
+#include "rpc_deadlines.h"
 
 #include <logos_api.h>
 #include <logos_api_client.h>
+#include <logos_call_error.h>
+#include <logos_json_convert.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -24,16 +27,36 @@ LogosMap err(const std::string& code, const std::string& message)
     return LogosMap{{"status", "error"}, {"code", code}, {"message", message}};
 }
 
-// Thin call helper. Returns a null json when the module isn't reachable, which
-// every caller treats as a hard failure — there is no partial-success path
-// through a module we cannot talk to.
+// Thin call helper. Returns a null json when the call itself failed — module
+// unreachable, transport error, deadline — which every caller treats as a hard
+// failure; `why` receives the transport's reason. The deadline is per method
+// (rpc_deadlines.h): the package modules do the whole download or archive walk
+// inside the call, and the transport default is 20 s.
 nlohmann::json call(LogosAPI* api, const char* module, const std::string& method,
-                    const LogosList& args = LogosList::array())
+                    const LogosList& args = LogosList::array(),
+                    std::string* why = nullptr)
 {
     if (!api) return nullptr;
     LogosAPIClient* client = api->getClient(module);
-    if (!client) return nullptr;
-    return client->invokeRemoteMethod(module, method, args);
+    if (!client) {
+        if (why) *why = std::string(module) + " is not reachable";
+        return nullptr;
+    }
+    logos::CallError err;
+    const QVariant ret = client->invokeRemoteMethod(
+        QString::fromStdString(module), QString::fromStdString(method),
+        logos::nlohmannArgsToQVariantList(args),
+        rpc_deadlines::forPackageCall(method), &err);
+    if (!err.ok()) {
+        if (why) *why = err.message;
+        return nullptr;
+    }
+    return logos::qvariantToNlohmann(ret);
+}
+
+std::string withReason(const std::string& base, const std::string& why)
+{
+    return why.empty() ? base : base + ": " + why;
 }
 
 // The package modules answer mutating calls with {success, error?}. Anything
@@ -156,13 +179,15 @@ std::vector<std::string> affectedLoaded(const std::vector<std::string>& affected
 nlohmann::json resolveClosure(LogosAPI* api,
                               const std::vector<std::string>& names,
                               const Options& opts,
-                              const LogosList& installed)
+                              const LogosList& installed,
+                              std::string* why)
 {
     if (!opts.withDeps) {
         // --no-deps: act only on what was named. Still shaped like resolver
         // output so the rest of the pipeline is identical.
         nlohmann::json r = call(api, kPd, "resolveDependencies",
-                                LogosList{dependenciesJson(names, opts), std::string{}});
+                                LogosList{dependenciesJson(names, opts), std::string{}},
+                                why);
         if (!r.is_array()) return nullptr;
         nlohmann::json filtered = nlohmann::json::array();
         for (const auto& e : r)
@@ -171,7 +196,8 @@ nlohmann::json resolveClosure(LogosAPI* api,
     }
     return call(api, kPd, "resolveDependencies",
                 LogosList{dependenciesJson(names, opts),
-                          installedPackagesJson(installed)});
+                          installedPackagesJson(installed)},
+                why);
 }
 
 // The cascade set for a removal: the package plus everything that depends on
@@ -244,9 +270,11 @@ LogosMap plan(LogosAPI* api, Op op,
         // the plan still shows what it would do.
         if (!opts.localFiles.empty()) {
             for (const auto& f : opts.localFiles) {
-                nlohmann::json info = call(api, kPm, "inspectPackage", LogosList{f});
+                std::string why;
+                nlohmann::json info = call(api, kPm, "inspectPackage", LogosList{f}, &why);
                 if (!info.is_object())
-                    return err("INSPECT_FAILED", "Could not inspect '" + f + "'.");
+                    return err("INSPECT_FAILED",
+                               withReason("Could not inspect '" + f + "'", why));
                 if (info.contains("error") && !info.value("error", std::string{}).empty())
                     return err("INSPECT_FAILED", info.value("error", std::string{}));
                 const std::string n = info.value("name", std::string{});
@@ -264,12 +292,13 @@ LogosMap plan(LogosAPI* api, Op op,
                 });
             }
         } else {
-            nlohmann::json resolved = resolveClosure(api, names, opts, installed);
+            std::string why;
+            nlohmann::json resolved = resolveClosure(api, names, opts, installed, &why);
             if (!resolved.is_array())
                 return err("RESOLVE_FAILED",
-                           "Could not resolve packages from the catalog. "
-                           "Check that a catalog is configured and reachable "
-                           "(`catalog ls`, `catalog refresh`).");
+                           withReason("Could not resolve packages from the catalog. "
+                                      "Check that a catalog is configured and reachable "
+                                      "(`catalog ls`, `catalog refresh`)", why));
 
             for (const auto& e : resolved) {
                 // The resolver reports unsatisfiable constraints inline.
@@ -437,11 +466,12 @@ LogosMap apply(LogosAPI* api, Op op,
                 : call(api, kPm, "confirmInstall", LogosList{name});
             if (!ok(confirmR, &e)) { closeGate(api, op, name); return fail("confirm", e); }
 
-            nlohmann::json ins = call(api, kPm, "installPlugin", LogosList{file, false});
+            std::string why;
+            nlohmann::json ins = call(api, kPm, "installPlugin", LogosList{file, false}, &why);
             if (!ins.is_object() || !ins.value("error", std::string{}).empty()) {
                 return fail("install", ins.is_object()
                     ? ins.value("error", std::string("install failed"))
-                    : "package_manager did not respond");
+                    : withReason("package_manager did not respond", why));
             }
             installedNow.push_back(name);
         }
@@ -466,13 +496,16 @@ LogosMap apply(LogosAPI* api, Op op,
         }
 
         const LogosList installed = installedPackages(api);
+        std::string why;
         nlohmann::json downloaded = call(api, kPd, "downloadResolvedDependencies",
                                          LogosList{dependenciesJson(names, opts),
                                                    opts.withDeps
                                                        ? installedPackagesJson(installed)
-                                                       : std::string{}});
+                                                       : std::string{}},
+                                         &why);
         if (!downloaded.is_array())
-            return fail("download", "package_downloader did not return a download set");
+            return fail("download",
+                        withReason("package_downloader did not return a download set", why));
 
         for (const auto& d : downloaded) {
             if (d.contains("error") && !d.value("error", std::string{}).empty())
@@ -481,11 +514,12 @@ LogosMap apply(LogosAPI* api, Op op,
             const std::string path = d.value("path", std::string{});
             if (path.empty()) continue;   // already satisfied, nothing fetched
 
-            nlohmann::json ins = call(api, kPm, "installPlugin", LogosList{path, false});
+            std::string why;
+            nlohmann::json ins = call(api, kPm, "installPlugin", LogosList{path, false}, &why);
             if (!ins.is_object() || !ins.value("error", std::string{}).empty()) {
                 return fail("install", d.value("name", std::string("?")) + ": "
                     + (ins.is_object() ? ins.value("error", std::string("install failed"))
-                                       : "package_manager did not respond"));
+                                       : withReason("package_manager did not respond", why)));
             }
             installedNow.push_back(d.value("name", std::string{}));
         }
@@ -513,10 +547,12 @@ LogosMap apply(LogosAPI* api, Op op,
 LogosMap download(LogosAPI* api, const std::string& name,
                   const Options& opts, const std::string& destDir)
 {
+    std::string why;
     nlohmann::json r = call(api, kPd, "downloadPinned",
-                            LogosList{opts.catalog, name, opts.version, opts.rootHash});
+                            LogosList{opts.catalog, name, opts.version, opts.rootHash},
+                            &why);
     if (!r.is_object())
-        return err("DOWNLOAD_FAILED", "package_downloader did not respond");
+        return err("DOWNLOAD_FAILED", withReason("package_downloader did not respond", why));
 
     const std::string error = r.value("error", std::string{});
     std::string path = r.value("path", std::string{});
