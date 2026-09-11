@@ -817,6 +817,39 @@ TEST_F(CommandTest, Call_TrimsWhitespaceForNumericCoercion)
     EXPECT_DOUBLE_EQ(mockClient.lastCallArgs[1].get<double>(), 1.5);
 }
 
+// std::stod accepts hex floats, so a 0x address or tx hash was consumed whole
+// and reached the module as a DOUBLE; its typed dispatch then failed with
+// "expected string at arg0, got number". Only decimal notation is a number:
+// hex stays a string (no `str:` needed), and so do inf/nan, which JSON cannot
+// carry. Exponent forms are still decimal and still coerce.
+TEST_F(CommandTest, Call_KeepsHexLiteralsAsStrings)
+{
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}};
+    auto cmd = createCommand("call", mockClient, output);
+    const std::vector<std::string> literals = {
+        "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",                          // address
+        "0x88df016429689c079f3b2f6ad39fa052532c56795b733da78a91ebe6a713944b",  // tx hash
+        "0X1P3",   // hex float, upper-case prefix
+        "-0x10",   // signed hex
+        "inf",
+        "nan",
+    };
+    std::vector<std::string> args = {"m", "f"};
+    args.insert(args.end(), literals.begin(), literals.end());
+    args.push_back("1e3");
+    captureOutput([&]() {
+        EXPECT_EQ(cmd->execute(args), 0);
+    });
+    ASSERT_EQ(mockClient.lastCallArgs.size(), literals.size() + 1);
+    for (size_t i = 0; i < literals.size(); ++i) {
+        ASSERT_TRUE(mockClient.lastCallArgs[i].is_string())
+            << literals[i] << " reached the daemon as " << mockClient.lastCallArgs[i].dump();
+        EXPECT_EQ(mockClient.lastCallArgs[i].get<std::string>(), literals[i]);
+    }
+    EXPECT_TRUE(mockClient.lastCallArgs.back().is_number_float());
+    EXPECT_DOUBLE_EQ(mockClient.lastCallArgs.back().get<double>(), 1000.0);
+}
+
 // ── call: json: / str: argument prefixes ─────────────────────────────────────
 // Scalar coercion can only produce bool/int/double/string, so `json:<value>`
 // opts into JSON parsing (list / map / nested), `json:@file` parses file

@@ -37,9 +37,13 @@ private:
 
 class OutputTest : public ::testing::Test {
 protected:
-    // Force JSON mode for predictable output in tests
     Output jsonOutput{true};
-    Output humanOutput{false};  // Note: in test environment, TTY detection varies
+    // Human mode is forced, never left to isatty(stdout): CaptureStdout swaps
+    // std::cout's streambuf and leaves fd 1 alone, and Nix runs builders on a
+    // pseudo-terminal, so the auto-detect passed under `nix build` yet rendered
+    // JSON whenever a local run had stdout piped (7 tests failed that way).
+    Output humanOutput{false};
+    OutputTest() { humanOutput.setHumanMode(true); }
 };
 
 // ── JSON Mode Tests ──────────────────────────────────────────────────────────
@@ -276,7 +280,7 @@ TEST_F(OutputTest, PrintStats_Json)
 TEST_F(OutputTest, PrintModuleList_Human)
 {
     Output out(false);
-    out.setJsonMode(false);
+    out.setHumanMode(true);
 
     CaptureStdout cap;
     LogosList modules = nlohmann::json::array({
@@ -295,7 +299,7 @@ TEST_F(OutputTest, PrintModuleList_Human)
 TEST_F(OutputTest, PrintModuleList_Human_LongNameDoesNotCollideWithVersion)
 {
     Output out(false);
-    out.setJsonMode(false);
+    out.setHumanMode(true);
 
     CaptureStdout cap;
     LogosList modules = nlohmann::json::array({
@@ -315,7 +319,7 @@ TEST_F(OutputTest, PrintModuleList_Human_LongNameDoesNotCollideWithVersion)
 TEST_F(OutputTest, PrintModuleList_Human_MissingVersionShowsDash)
 {
     Output out(false);
-    out.setJsonMode(false);
+    out.setHumanMode(true);
 
     CaptureStdout cap;
     LogosList modules = nlohmann::json::array({
@@ -333,7 +337,7 @@ TEST_F(OutputTest, PrintModuleList_Human_MissingVersionShowsDash)
 TEST_F(OutputTest, PrintModuleInfo_Human_RendersVersion)
 {
     Output out(false);
-    out.setJsonMode(false);
+    out.setHumanMode(true);
 
     CaptureStdout cap;
     LogosMap info{{"name", "chat"}, {"version", "0.2.0"}, {"status", "loaded"}};
@@ -346,7 +350,7 @@ TEST_F(OutputTest, PrintModuleInfo_Human_RendersVersion)
 TEST_F(OutputTest, PrintModuleInfo_Human_MissingVersionShowsDash)
 {
     Output out(false);
-    out.setJsonMode(false);
+    out.setHumanMode(true);
 
     CaptureStdout cap;
     LogosMap info{{"name", "chat"}, {"status", "not_loaded"}};

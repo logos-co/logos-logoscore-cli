@@ -18,7 +18,7 @@ inline constexpr const char* kPackageDownloader = "package_downloader";
 
 // Everything run() needs from the outside world.
 struct Hooks {
-    // logos_core_load_module(name, with_dependencies=true).
+    // logos_core_load_module(name, LOGOS_LOAD_REQUIRED_AND_OPTIONAL).
     std::function<bool(const std::string& module)> loadModule;
 
     // logos_core_unload_module(name, with_dependents=true). Called only to

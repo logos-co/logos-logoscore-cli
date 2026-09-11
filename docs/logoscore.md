@@ -129,15 +129,21 @@ strings are all expressible:
 | `str:<text>` | `<text>` verbatim as a string — no parsing, no coercion | `str:json:x` → `"json:x"`, `str:42` → `"42"` |
 | `@<file>` | the file's raw contents as a string | `@config.json` |
 | `true` / `false` | a boolean | `true` |
-| a whole number | an integer | `42` |
-| a decimal number | a double | `3.14` |
-| anything else | a string | `hello` |
+| a whole number, in decimal | an integer | `42`, `-7` |
+| a decimal number | a double | `3.14`, `1e6` |
+| anything else | a string | `hello`, `0xf39F…` |
 
 `json:` and `str:` are the two explicit escapes, mirroring the convention used
 by `jq` (`--arg` / `--argjson`) and HTTPie (`=` / `:=`): the default path never
 guesses a container, `json:` opts into parsing, and `str:` forces a literal
 string for any value the default rules would otherwise reinterpret (a
 number-like string, or one that itself starts with `json:` / `str:` / `@`).
+
+Only decimal notation counts as a number. Hex stays a string: an address or
+transaction hash such as `0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266` reaches
+the module verbatim, with no `str:` needed. So do `inf` and `nan`, which JSON
+cannot carry. `str:` remains the escape for a value that *is* decimal but must
+arrive as text: `str:42`, `str:1e6`.
 
 **Binary (`bstr`) arguments.** JSON has no native byte type, so bytes use the
 canonical tagged encoding — a JSON object `{"_bytes": "<base64url, unpadded>"}`.

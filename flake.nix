@@ -8,6 +8,18 @@
     logos-protocol.url = "github:logos-co/logos-protocol";
     logos-plugin-qt.url = "github:logos-co/logos-plugin-qt";
     logos-liblogos.url = "github:logos-co/logos-liblogos";
+    # ONE logos-protocol, and ONE logos-qt-host, in what we ship. We bundle
+    # protocolPkg's liblogos_protocol.so next to qtHost's liblogos_qt_host.so,
+    # and qt-host bakes sizeof(LogosAPIClient) into its own `operator new` while
+    # logos-protocol DEFINES that constructor. Split them and every getClient()
+    # overruns its heap block -- silently on macOS, where the undersized request
+    # rounds up into the next size class, and fatally on glibc. Without these
+    # follows an --override-input on logos-protocol moves the bundled library
+    # and leaves qt-host behind, which is exactly how it broke.
+    logos-cpp-sdk.inputs.logos-protocol.follows = "logos-protocol";
+    logos-plugin-qt.inputs.logos-protocol.follows = "logos-protocol";
+    logos-liblogos.inputs.logos-protocol.follows = "logos-protocol";
+    logos-liblogos.inputs.logos-plugin-qt.follows = "logos-plugin-qt";
 
     # ONE logos-package-manager for the whole tree. This repo stages
     # ${liblogosPortable}/lib/*.dll into ctl/bin/, which includes
@@ -34,7 +46,7 @@
     logos-capability-module.url = "github:logos-co/logos-capability-module";
     logos-modules-state-module.url = "github:logos-co/logos-modules-state-module";
     logos-package-manager-module.url = "github:logos-co/logos-package-manager-module";
-    logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module?ref=5d8531ecb508f7073675dca4529530c42ef2ad17";
+    logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module?ref=07d9d3ad54f39902be77cadd2944187038983aba";
     logos-test-modules.url = "github:logos-co/logos-test-modules";
     nix-bundle-logos-module-install.url = "github:logos-co/nix-bundle-logos-module-install";
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
