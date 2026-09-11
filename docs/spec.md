@@ -269,6 +269,12 @@ logosctl watch <module> [--event <name>]
 
 Streams events to stdout as they arrive. Without `--event`, streams all events from the module. Runs until interrupted (SIGINT / SIGTERM).
 
+Reserved protocol event names are never delivered — not by name, and not through the
+no-filter form. `__logos_call_complete__`, which carries a deferred call's return value, is
+one of them. Before logos-protocol reserved it, the no-filter form relayed it like any other
+event, so a bare `watch` also printed every method's reply; `--event <name>` was the advice
+that avoided it.
+
 ```bash
 logosctl watch chat --event chat-message
 logosctl watch chat --event chat-message >> events.log &
