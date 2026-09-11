@@ -46,7 +46,7 @@
     logos-capability-module.url = "github:logos-co/logos-capability-module";
     logos-modules-state-module.url = "github:logos-co/logos-modules-state-module";
     logos-package-manager-module.url = "github:logos-co/logos-package-manager-module";
-    logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module";
+    logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module?ref=07d9d3ad54f39902be77cadd2944187038983aba";
     logos-test-modules.url = "github:logos-co/logos-test-modules";
     nix-bundle-logos-module-install.url = "github:logos-co/nix-bundle-logos-module-install";
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
