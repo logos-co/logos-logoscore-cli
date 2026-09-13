@@ -13,13 +13,13 @@ This repo is one of two frontends for [logos-liblogos](https://github.com/logos-
 
 | | | Documentation |
 |---|---|---|
-| **`logoscore`** | The tool that exists today. Commands, flags, config format and `~/.logoscore` are **unchanged**. Keep using it. | **[docs/logoscore.md](docs/logoscore.md)** |
-| **`logosctl`** | `logoscore` + `lgpd` + `lgpm` merged into one, with package management built in. New surface, own `~/.logosctl` session directory. **Being validated; not yet the default.** | **[docs/logosctl.md](docs/logosctl.md)** |
+| **`logoscore`** | The original CLI. Commands, flags, config format and `~/.logoscore` are **unchanged**. **No longer released**; build it from `.#cli`. | **[docs/logoscore.md](docs/logoscore.md)** |
+| **`logosctl`** | `logoscore` + `lgpd` + `lgpm` merged into one, with package management built in. New surface, own `~/.logosctl` session directory. **The binary releases ship.** | **[docs/logosctl.md](docs/logosctl.md)** |
 
 They share the runtime but no state, so a `logosctl` session cannot disturb a
-`logoscore` deployment. They are built from separate flake outputs and released
-as separate artifacts. `logoscore` will be removed only once `logosctl` has been
-properly validated in real use.
+`logoscore` deployment. They are built from separate flake outputs, and releases
+publish only `logosctl`. `logoscore` will be removed only once `logosctl` has
+been properly validated in real use.
 
 Everything below applies to both. For what each tool actually *does* — commands,
 configuration, authentication, transports — follow the links above.
