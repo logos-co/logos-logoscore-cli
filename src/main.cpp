@@ -107,8 +107,9 @@ std::string quoteArg(const std::string& a)
 //                            POSIX branch does and for the same reason (early
 //                            failures must be readable before LogSink exists).
 //
-// bInheritHandles must be TRUE or STARTF_USESTDHANDLES is ignored and the
-// child silently inherits nothing usable.
+// bInheritHandles must be TRUE or STARTF_USESTDHANDLES is ignored. The handle
+// list narrows that to NUL and the startup file: without it the daemon also
+// takes every inheritable handle we hold, such as a caller's capture pipe.
 bool spawnDetached(const std::string& exePath,
                    const std::vector<std::string>& args,
                    const std::string& startupPath,
@@ -139,18 +140,38 @@ bool spawnDetached(const std::string& exePath,
                              FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
                              OPEN_EXISTING, 0, nullptr);
 
-    STARTUPINFOA si{};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdInput  = hIn;
-    si.hStdOutput = hOut;
-    si.hStdError  = hOut;
+    STARTUPINFOEXA si{};
+    si.StartupInfo.cb = sizeof(si);
+    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    si.StartupInfo.hStdInput  = hIn;
+    si.StartupInfo.hStdOutput = hOut;
+    si.StartupInfo.hStdError  = hOut;
 
-    const BOOL ok = ::CreateProcessA(exePath.c_str(), mutableCmd.data(),
-                                     nullptr, nullptr, TRUE,
-                                     DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-                                     nullptr, nullptr, &si, &pi);
+    // hStdError is hStdOutput, and a duplicate entry fails CreateProcess.
+    std::vector<HANDLE> inherit;
+    for (HANDLE h : { hIn, hOut })
+        if (h != INVALID_HANDLE_VALUE) inherit.push_back(h);
+
+    SIZE_T attrSize = 0;
+    ::InitializeProcThreadAttributeList(nullptr, 1, 0, &attrSize);
+    std::vector<BYTE> attrStorage(attrSize);
+    si.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attrStorage.data());
+    const BOOL listReady =
+        ::InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &attrSize);
+    BOOL ok = listReady;
+    if (ok && !inherit.empty())
+        ok = ::UpdateProcThreadAttribute(si.lpAttributeList, 0,
+                                         PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                         inherit.data(), inherit.size() * sizeof(HANDLE),
+                                         nullptr, nullptr);
+    if (ok)
+        ok = ::CreateProcessA(exePath.c_str(), mutableCmd.data(),
+                              nullptr, nullptr, inherit.empty() ? FALSE : TRUE,
+                              DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP |
+                                  EXTENDED_STARTUPINFO_PRESENT,
+                              nullptr, nullptr, &si.StartupInfo, &pi);
     const DWORD err = ok ? 0 : ::GetLastError();
+    if (listReady) ::DeleteProcThreadAttributeList(si.lpAttributeList);
 
     if (hIn  != INVALID_HANDLE_VALUE) ::CloseHandle(hIn);
     if (hOut != INVALID_HANDLE_VALUE) ::CloseHandle(hOut);
