@@ -4,8 +4,8 @@ The original headless CLI. Its commands, flags, config format and
 `~/.logoscore` session directory are **unchanged** — everything here worked
 the same before the repo started shipping a second binary, and still does.
 
-`logoscore` will be removed once [`logosctl`](logosctl.md) has been validated
-in real use. Until then it is the tool to use, and it is released separately.
+`logoscore` is no longer released; releases ship [`logosctl`](logosctl.md)
+instead. It will be removed once `logosctl` has been validated in real use.
 
 Build instructions, flake outputs and test targets are in the
 [main README](../README.md).
