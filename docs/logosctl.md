@@ -6,7 +6,7 @@ bundling the `package_manager` and `package_downloader` modules, so searching
 a catalog, installing with dependencies resolved, loading and calling are all
 one binary's job.
 
-**Being validated; not yet the default.** It shares the runtime with
+**This is the binary releases ship.** It shares the runtime with
 `logoscore` but no state — its session lives in `~/.logosctl`, so nothing here
 can disturb a `logoscore` deployment.
 
