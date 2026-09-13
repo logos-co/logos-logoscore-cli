@@ -110,6 +110,9 @@ std::string quoteArg(const std::string& a)
 // bInheritHandles must be TRUE or STARTF_USESTDHANDLES is ignored. The handle
 // list narrows that to NUL and the startup file: without it the daemon also
 // takes every inheritable handle we hold, such as a caller's capture pipe.
+//
+// CREATE_BREAKAWAY_FROM_JOB completes the setsid(): a kill-on-close job, like
+// an ssh session's, would otherwise take the daemon down with it.
 bool spawnDetached(const std::string& exePath,
                    const std::vector<std::string>& args,
                    const std::string& startupPath,
@@ -164,12 +167,19 @@ bool spawnDetached(const std::string& exePath,
                                          PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
                                          inherit.data(), inherit.size() * sizeof(HANDLE),
                                          nullptr, nullptr);
-    if (ok)
-        ok = ::CreateProcessA(exePath.c_str(), mutableCmd.data(),
-                              nullptr, nullptr, inherit.empty() ? FALSE : TRUE,
-                              DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP |
-                                  EXTENDED_STARTUPINFO_PRESENT,
-                              nullptr, nullptr, &si.StartupInfo, &pi);
+    auto create = [&](DWORD flags) {
+        return ::CreateProcessA(exePath.c_str(), mutableCmd.data(),
+                                nullptr, nullptr, inherit.empty() ? FALSE : TRUE,
+                                flags | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP |
+                                    EXTENDED_STARTUPINFO_PRESENT,
+                                nullptr, nullptr, &si.StartupInfo, &pi);
+    };
+    if (ok) {
+        ok = create(CREATE_BREAKAWAY_FROM_JOB);
+        // Refused where the job forbids breakaway; start inside it then.
+        if (!ok && ::GetLastError() == ERROR_ACCESS_DENIED)
+            ok = create(0);
+    }
     const DWORD err = ok ? 0 : ::GetLastError();
     if (listReady) ::DeleteProcThreadAttributeList(si.lpAttributeList);
 
