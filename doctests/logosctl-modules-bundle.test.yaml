@@ -110,18 +110,13 @@ sections:
     steps:
       - title: "Start the daemon"
         run: |
-          ./ctl/bin/logosctl{exe} --config-dir ./session -D > daemon.log 2>&1 &
-          # Capture, then test -- NOT `status --json | grep -q`. grep -q exits on
-          # its first match, the producer takes SIGPIPE (141), and under
-          # `set -o pipefail` the pipeline reports 141 rather than 0, so the
-          # `&& break` never fires and the wait runs all 60 iterations before
-          # giving up on a daemon that came up immediately.
-          for _ in $(seq 1 60); do
-            st=$(./ctl/bin/logosctl{exe} --config-dir ./session status --json 2>/dev/null || true)
-            case "$st" in *'"running"'*) break ;; esac
-            sleep 1
-          done
-        code_block: "logosctl --config-dir ./session -D &"
+          # Captured, as a script would: $(...) reads through a pipe that the
+          # detached daemon must not inherit, or this line waits for it to exit.
+          out="$(./ctl/bin/logosctl{exe} --config-dir ./session daemon start --detach)"
+          printf '%s\n' "$out"
+        code_block: "logosctl --config-dir ./session daemon start --detach"
+        expect_contains:
+          - "Daemon started"
 
       - title: "The bundled modules are discoverable"
         run: "./ctl/bin/logosctl{exe} --config-dir ./session module ls"
