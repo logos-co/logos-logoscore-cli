@@ -87,6 +87,8 @@ mkdir -p "${CERTS_DIR}"
 trap "rm -rf '${TEMP_DIR}'" EXIT
 
 WORK_DIR="${TEMP_DIR}/bundle-dir"
+# logos_host loads catalog modules we did not sign, and some of them JIT (RandomX in monerod_module).
+HOST_ENTITLEMENTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/logos_host.entitlements"
 KEYCHAIN_NAME="build.keychain"
 KEYCHAIN_DB_PATH="${HOME}/Library/Keychains/${KEYCHAIN_NAME}-db"
 
@@ -238,8 +240,13 @@ if [[ "$MODE" =~ ^(sign|both)$ ]]; then
       [[ -n "$exe" ]] || continue
       is_macho "$exe" || continue
       echo "  Signing: ${exe}"
-      codesign_with_retry "${CODESIGN_OPTS[@]}" "$exe" \
-          || { echo "ERROR: failed to sign ${exe}"; exit 1; }
+      if [[ "$(basename "$exe")" == logos_host* ]]; then
+          codesign_with_retry "${CODESIGN_OPTS[@]}" --entitlements "${HOST_ENTITLEMENTS}" "$exe" \
+              || { echo "ERROR: failed to sign ${exe}"; exit 1; }
+      else
+          codesign_with_retry "${CODESIGN_OPTS[@]}" "$exe" \
+              || { echo "ERROR: failed to sign ${exe}"; exit 1; }
+      fi
       (( SIGNED_EXE_COUNT++ )) || true
   done < <(find "${WORK_DIR}/bin" -type f 2>/dev/null | sort)
 
@@ -253,6 +260,7 @@ if [[ "$MODE" =~ ^(sign|both)$ ]]; then
   #    an ad-hoc nix signature must not pass silently)
   ###############################################################################
   echo "Verifying signatures."
+  HOST_COUNT=0
   while IFS= read -r exe; do
       [[ -n "$exe" ]] || continue
       is_macho "$exe" || continue
@@ -263,7 +271,19 @@ if [[ "$MODE" =~ ^(sign|both)$ ]]; then
           || { echo "ERROR: ${exe} is not signed by '${MACOS_CODESIGN_IDENT}'."; exit 1; }
       echo "$siginfo" | grep -qE '^CodeDirectory .*flags=.*runtime' \
           || { echo "ERROR: ${exe} does not have hardened runtime enabled."; exit 1; }
+      if [[ "$(basename "$exe")" == logos_host* ]]; then
+          host_ents=$(codesign -d --entitlements - "$exe" 2>/dev/null || true)
+          for key in com.apple.security.cs.allow-jit com.apple.security.cs.disable-library-validation; do
+              grep -qF "$key" <<<"$host_ents" || { echo "ERROR: ${exe} is missing the ${key} entitlement."; exit 1; }
+          done
+          (( HOST_COUNT++ )) || true
+      fi
   done < <(find "${WORK_DIR}/bin" -type f 2>/dev/null | sort)
+
+  if (( HOST_COUNT == 0 )); then
+      echo "ERROR: no logos_host in ${WORK_DIR}/bin -- modules could not run."
+      exit 1
+  fi
 
   echo "Signing phase complete"
 fi
