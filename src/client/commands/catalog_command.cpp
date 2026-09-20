@@ -57,6 +57,33 @@ int CatalogCommand::execute(const std::vector<std::string>& args)
             // returning zero packages from it would be baffling.
             if (!resolveError.empty())
                 output().printRaw(fmt::format("      error: {}", resolveError));
+            // Catalogs this one draws packages from. Their packages appear
+            // under THIS catalog, so without these lines a listing looks like
+            // it has entries nobody published, and an include that failed to
+            // resolve looks like it was never declared.
+            //
+            // The declared `includesUrl` prints whether or not anything
+            // resolved from it: a catalog whose includes document is
+            // unreachable contributes no rows, and must not read as one that
+            // never meant to draw from anybody.
+            const std::string includesUrl = c.value("includesUrl", std::string{});
+            if (!includesUrl.empty())
+                output().printRaw(fmt::format("      includes: {}", includesUrl));
+            for (const auto& inc : c.value("includes", LogosList::array())) {
+                std::string incName = inc.value("name", std::string{});
+                if (incName.empty()) incName = "<unresolved>";
+                output().printRaw(fmt::format("        <- {:<22} {}", incName,
+                    inc.value("allPackages", true)
+                        ? std::string("(all packages)")
+                        : fmt::format("({} package selector(s))",
+                                      inc.value("packages", LogosList::array()).size())));
+                const std::string incError = inc.value("resolveError", std::string{});
+                if (!incError.empty())
+                    output().printRaw(fmt::format("           error: {}", incError));
+            }
+            for (const auto& w : c.value("includeWarnings", LogosList::array()))
+                output().printRaw(fmt::format("      warning: {}",
+                                              w.get<std::string>()));
         }
         return 0;
     }
