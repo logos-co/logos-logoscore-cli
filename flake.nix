@@ -5,8 +5,8 @@
     logos-nix.url = "github:logos-co/logos-nix";
     nixpkgs.follows = "logos-nix/nixpkgs";
     logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk";
-    logos-protocol.url = "github:logos-co/logos-protocol";
-    logos-liblogos.url = "github:logos-co/logos-liblogos";
+    logos-protocol.url = "github:logos-co/logos-protocol/codex/qt-remote-plain";
+    logos-liblogos.url = "github:logos-co/logos-liblogos/codex/qt-remote-plain-liblogos";
     # liblogos and the CLI must share one instance of the plain protocol
     # runtime: that library owns the process-wide credential registry.
     logos-cpp-sdk.inputs.logos-protocol.follows = "logos-protocol";
@@ -147,7 +147,9 @@
           dirBundler = nix-bundle-dir.bundlers.${
             if system == "x86_64-windows" then windowsBuildSystem else system
           }.default;
-          appBundler = nix-bundle-appimage.lib.${system}.mkAppImage;
+          appBundler = if system == "aarch64-linux" || system == "x86_64-linux"
+            then nix-bundle-appimage.lib.${system}.mkAppImage
+            else null;
         });
     in
     {
@@ -857,6 +859,10 @@ ${pkgs.lib.optionalString withPkgModules ''
           cli = logoscoreCli;
           tests = tests;
           cli-bundle-dir = dirBundler binLegacyPort;
+          ctl = logosctlCli;
+          ctl-bundle-dir = dirBundler binCtlPort;
+          default = logoscoreCli;
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           cli-appimage = appBundler {
             drv = binLegacyPort;
             name = "logoscore";
@@ -864,9 +870,6 @@ ${pkgs.lib.optionalString withPkgModules ''
             desktopFile = ./assets/logoscore.desktop;
             icon = ./assets/logoscore.png;
           };
-
-          ctl = logosctlCli;
-          ctl-bundle-dir = dirBundler binCtlPort;
           ctl-appimage = appBundler {
             drv = binCtlPort;
             name = "logosctl";
@@ -874,8 +877,6 @@ ${pkgs.lib.optionalString withPkgModules ''
             desktopFile = ./assets/logosctl.desktop;
             icon = ./assets/logosctl.png;
           };
-
-          default = logoscoreCli;
         }
       );
 
