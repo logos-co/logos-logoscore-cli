@@ -37955,11 +37955,11 @@
         "process-stats": "process-stats"
       },
       "locked": {
-        "lastModified": 1790105303,
-        "narHash": "sha256-zsqj91a8ar2EGpT8waiyA41GRkE14McyWw2kc3rC1Ck=",
+        "lastModified": 1790105735,
+        "narHash": "sha256-7JeNtSWJwoZCyTZ/fCgxmdTsSSVelu6yHQA32Io0TFU=",
         "owner": "logos-co",
         "repo": "logos-liblogos",
-        "rev": "2e0d76dc245712647f5a1ca4083984483dd72b36",
+        "rev": "ea4eb3d4180c12d879b7f1b7af3a81694ae06acb",
         "type": "github"
       },
       "original": {
