@@ -1,15 +1,15 @@
-name: "Qt-free logoscore transport boundary"
+name: "Qt-free logoscore transport listeners"
 output: logoscore-transports.md
 release: ""
 
 intro: |
-  The Qt-free logoscore process uses qt_remote_plain for local RPC. It keeps
-  compatibility with current qt_remote modules while Qt stays in logos_host_qt.
-  TCP and TLS are intentionally rejected until the plain C ABI implements them.
+  The Qt-free logoscore process uses qt_remote_plain for local, TCP, and TLS
+  RPC. It keeps compatibility with current qt_remote modules while Qt stays
+  in logos_host_qt.
 
 what_you_learn:
-  - The active transport is local qt_remote_plain
-  - Old network configuration fails explicitly
+  - A local control endpoint remains available when TCP is configured
+  - The plain runtime binds and advertises a TCP listener
 
 prerequisites:
   - "Nix with flakes enabled."
@@ -22,15 +22,34 @@ sections:
         run: "nix build 'github:logos-co/logos-logoscore-cli{release}' --out-link ./logos"
         check_file: "logos/bin/logoscore"
 
-  - title: "Reject a network listener"
+  - title: "Bind a loopback TCP listener"
     step: true
     text: |
-      The parser still recognizes the old tcp name so the daemon can report a
-      useful migration error. It does not silently fall back to local IPC.
+      Port 0 lets the OS choose a free port. The daemon records the bound port
+      in its runtime state and also provides a local control endpoint.
     steps:
-      - title: "Request TCP"
-        run: "./logos/bin/logoscore --config-dir ./session -D --module-transport core_service=tcp,host=127.0.0.1,port=6000 2>&1 || true"
-        code_block: "logoscore -D --module-transport core_service=tcp,host=127.0.0.1,port=6000"
+      - title: "Start the daemon"
+        run: "sh -c './logos/bin/logoscore --config-dir ./session -D --module-transport core_service=tcp,host=127.0.0.1,port=0 > daemon.log 2>&1 &'"
+
+      - title: "Check the bound listener and local control endpoint"
+        run: |
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            ./logos/bin/logoscore --config-dir ./session status --json > status.json 2>/dev/null && break
+            sleep 1
+          done
+          ./logos/bin/logoscore --config-dir ./session status --json
+          python3 - <<'PY'
+          import json
+          with open('session/daemon/state.json') as f:
+              state = json.load(f)
+          transports = state['resolved']['modules']['core_service']['transports']
+          assert any(t['protocol'] == 'local' for t in transports), transports
+          assert any(t['protocol'] == 'tcp' and t['host'] == '127.0.0.1'
+                     and t['port'] > 0 for t in transports), transports
+          print('local control and bound TCP listener are available')
+          PY
         expect_contains:
-          - "not available in the Qt-free logoscore runtime"
-          - "use local/qt_remote_plain"
+          - "local control and bound TCP listener are available"
+
+      - title: "Stop the daemon"
+        run: "./logos/bin/logoscore --config-dir ./session stop"
