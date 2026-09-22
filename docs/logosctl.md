@@ -18,8 +18,7 @@ the public catalog ships.
 `logosctl` itself is Qt-free. Local RPC uses `qt_remote_plain`, which speaks
 the same wire protocol as current modules built with `qt_remote`; those modules
 run unchanged in the separate `logos_host_qt` compatibility process. The
-current Qt-free daemon supports local RPC only and rejects `tcp`/`tcp_ssl`
-configuration at startup.
+Qt-free runtime also supports `tcp` and `tcp_ssl` listeners and clients.
 
 ## Usage
 
@@ -179,11 +178,10 @@ modules_dirs:
   - /opt/logos/modules
 ```
 
-The Qt-free runtime currently accepts only its implicit local
-`qt_remote_plain` listeners. Network-shaped fields from older configurations
-are parsed for migration diagnostics, then rejected at daemon startup. The
-daemon writes a working local `client/config.yaml` and `client/auto.json`
-into the session on every boot.
+The Qt-free runtime accepts local `qt_remote_plain`, `tcp`, and `tcp_ssl`
+listeners. The daemon writes the local client dial spec and token into the
+session on every boot; remote clients can configure the advertised network
+endpoints separately.
 
 > The two documents are kept separate on purpose: the daemon never reads
 > `client/`, and the client never reads `daemon/`. Only the files above are

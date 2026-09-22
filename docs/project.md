@@ -175,11 +175,9 @@ plugins still run in separate `logos_host_qt` child processes. The daemon,
 core service, and client use the shared `logos_protocol_plain` runtime and do
 not load Qt.
 
-The Qt-free C ABI currently exposes the local `qt_remote_plain` transport.
-`tcp` and `tcp_ssl` configuration values are still parsed so existing files
-fail with a useful diagnostic, but startup and client connection reject them.
-Network transports can return after equivalent plain-provider and plain-client
-C ABI support exists.
+The Qt-free C ABI exposes local `qt_remote_plain` plus `tcp` and `tcp_ssl`
+providers and clients. The daemon's resolved transport set supplies listener
+addresses; the client config supplies dial addresses and TLS verification.
 
 Named tokens are persisted as SHA-256 digests by `TokenStore`. The provider's
 token-validator callback consults that store on demand, which lets tokens
@@ -303,9 +301,8 @@ module directories, and the local transport advertised for `core_service`
 and `capability_module`. `daemon/config.json` retains operator intent only
 when `--persist-config` is used.
 
-The configuration schema still accepts network transport records from the
-previous implementation, but the Qt-free daemon rejects them before starting.
-This preserves readable configuration errors without claiming runtime support.
+The configuration schema accepts local and network transport records; the
+Qt-free daemon passes them to the matching plain protocol providers.
 
 ### TokenStore
 
@@ -842,16 +839,12 @@ done
 
 ## Known Issues
 
-1. The Qt-free CLI supports local `qt_remote_plain` only. Network transports
-   need equivalent plain C ABI client/provider support.
-2. Event forwarding adds one relay hop through `core_service`.
-3. Local endpoint probing deliberately fails closed on ambiguous filesystem or
+1. Event forwarding adds one relay hop through `core_service`.
+2. Local endpoint probing deliberately fails closed on ambiguous filesystem or
    platform errors, so those cases wait for the normal RPC timeout.
 
 ## Future Improvements
 
-1. Add plain C ABI implementations for TCP and TLS transports, then re-enable
-   the network transport guides and doc-tests.
-2. Add token scopes and per-module authorization policy.
-3. Allow clients to subscribe directly when a secure transport-discovery
+1. Add token scopes and per-module authorization policy.
+2. Allow clients to subscribe directly when a secure transport-discovery
    mechanism exists, avoiding the core-service relay hop.

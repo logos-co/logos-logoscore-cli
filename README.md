@@ -12,9 +12,8 @@ the current Qt Remote Objects wire protocol. Existing modules built with
 separate `logos_host_qt` compatibility process when a Qt plugin is inspected
 or run; modules built with `qt_remote_plain` use `logos_host_plain` instead.
 
-This first Qt-free CLI release supports the local transport. Existing `tcp`
-and `tcp_ssl` configuration is rejected at startup with a clear error until
-those transports are exposed by the plain C ABI as well.
+The Qt-free protocol runtime also supports `tcp` and `tcp_ssl` for daemon
+listeners and client connections.
 
 This repo is one of two frontends for [logos-liblogos](https://github.com/logos-co/logos-liblogos):
 - **logos-logoscore-cli** (this repo) — headless CLI runtime for scripting, testing, and headless deployments
