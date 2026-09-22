@@ -16,7 +16,7 @@
 // localEndpointProvablyAbsent() is what turns "a daemon that stopped" from a
 // twenty-second wait into an immediate answer, and it is the one piece of this
 // that could refuse a LIVE daemon if it got either half wrong. So these pin
-// both halves: the path derivation (against the system temporary directory)
+// both halves: the path derivation (against Qt's temporary directory)
 // and the liveness
 // verdict for each shape the path can be in.
 
@@ -29,7 +29,7 @@ std::string uniqueId(const char* suffix)
 
 std::filesystem::path endpointPath(const std::string& instanceId)
 {
-    return std::filesystem::temp_directory_path()
+    return std::filesystem::path(logosctl::localTransportTempDirectory())
          / ("logos_core_service_" + instanceId);
 }
 
@@ -71,6 +71,42 @@ TEST(LocalEndpointTest, ReportsTheDerivedPathItChecked)
            "the check is answering a question about the wrong file";
 #endif
 }
+
+#ifdef __APPLE__
+TEST(LocalEndpointTest, UsesDarwinUserTempWhenTmpdirIsUnset)
+{
+    struct TmpdirGuard {
+        const char* previous = std::getenv("TMPDIR");
+        std::string saved = previous ? previous : "";
+        bool hadPrevious = previous != nullptr;
+        TmpdirGuard() { ::unsetenv("TMPDIR"); }
+        ~TmpdirGuard() {
+            if (hadPrevious) ::setenv("TMPDIR", saved.c_str(), 1);
+            else ::unsetenv("TMPDIR");
+        }
+    } guard;
+
+    const std::size_t required = ::confstr(_CS_DARWIN_USER_TEMP_DIR, nullptr, 0);
+    ASSERT_GT(required, 1u);
+    std::string expected(required, '\0');
+    ASSERT_GT(::confstr(_CS_DARWIN_USER_TEMP_DIR, expected.data(), required), 0u);
+    expected.resize(std::strlen(expected.c_str()));
+    while (expected.size() > 1 && expected.back() == '/') expected.pop_back();
+
+    const std::string id = uniqueId("_darwin");
+    const std::filesystem::path path = std::filesystem::path(expected) /
+        ("logos_core_service_" + id);
+    const int fd = bindListen(path);
+    ASSERT_GE(fd, 0) << "could not bind " << path.string();
+
+    std::string checked;
+    EXPECT_FALSE(logosctl::localEndpointProvablyAbsent("core_service", id, &checked));
+    EXPECT_EQ(checked, path.string());
+
+    ::close(fd);
+    ::unlink(path.string().c_str());
+}
+#endif
 
 TEST(LocalEndpointTest, NoSocketFileAtAll_IsProvablyAbsent)
 {

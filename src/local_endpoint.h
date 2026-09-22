@@ -32,8 +32,9 @@
 // (tests/CMakeLists.txt) deliberately stays free of that so the command layer
 // can be unit-tested without the SDK.
 
-#include <filesystem>
+#include <cstdlib>
 #include <string>
+#include <utility>
 
 #ifndef _WIN32
 #include <cerrno>
@@ -46,6 +47,30 @@
 #endif
 
 namespace logosctl {
+
+// Match qt_remote_plain's resolution of a relative QLocalServer name. On
+// macOS, Qt uses the per-user Darwin temp directory when TMPDIR is unset;
+// std::filesystem::temp_directory_path() instead returns /tmp.
+inline std::string localTransportTempDirectory()
+{
+    const char* configured = std::getenv("TMPDIR");
+    std::string temp = configured && *configured ? configured : "";
+#ifdef __APPLE__
+    if (temp.empty()) {
+        const std::size_t required = ::confstr(_CS_DARWIN_USER_TEMP_DIR, nullptr, 0);
+        if (required > 1) {
+            std::string buffer(required, '\0');
+            if (::confstr(_CS_DARWIN_USER_TEMP_DIR, buffer.data(), required) > 0) {
+                buffer.resize(std::strlen(buffer.c_str()));
+                temp = std::move(buffer);
+            }
+        }
+    }
+#endif
+    if (temp.empty()) temp = "/tmp";
+    while (temp.size() > 1 && temp.back() == '/') temp.pop_back();
+    return temp;
+}
 
 // True only when a local dial for `moduleName` on `instanceId` provably cannot
 // reach anyone. `pathOut`, when non-null, receives the path that was checked,
@@ -60,9 +85,9 @@ namespace logosctl {
 // The path is resolved the same way the dial resolves it, which is what makes
 // the answer sound rather than a guess: the SDK asks for the bare server name
 // `logos_<module>_<instance_id>` (LogosInstance::id), and Qt resolves a bare
-// QLocalSocket/QLocalServer name against QDir::tempPath(). Both sides read
-// $TMPDIR, so a daemon started under a different one is genuinely unreachable
-// from here -- and saying so at once is still the right answer.
+// QLocalSocket/QLocalServer name against QDir::tempPath(). The resolver above
+// also covers Qt's macOS fallback when $TMPDIR is absent. A daemon started
+// under a different temp directory is genuinely unreachable from here.
 //
 // Windows: always false. The local transport there is a named pipe, which
 // lives in the pipe namespace rather than the temp directory and stops
@@ -79,11 +104,8 @@ inline bool localEndpointProvablyAbsent(const std::string& moduleName,
     if (moduleName.empty() || instanceId.empty())
         return false;   // nothing to derive a name from
 
-    std::error_code ec;
-    const std::filesystem::path temp = std::filesystem::temp_directory_path(ec);
-    if (ec) return false;
-    const std::string path =
-        (temp / ("logos_" + moduleName + "_" + instanceId)).string();
+    const std::string path = localTransportTempDirectory() + "/logos_" +
+        moduleName + "_" + instanceId;
     if (pathOut) *pathOut = path;
 
     struct stat st{};

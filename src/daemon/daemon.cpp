@@ -16,6 +16,7 @@
 #include <logos_protocol.h>
 #include "../core_service/core_service_impl.h"
 #include "../plain_rpc.h"
+#include "../local_endpoint.h"
 
 #include <uuid.h>
 
@@ -446,14 +447,11 @@ int Daemon::start(int argc, char* argv[],
     // sharing the temp dir keeps its sockets, and a regular file that merely
     // shares the prefix (e.g. a logos_*.lgx build artefact) is never touched.
     //
-    // std::filesystem::temp_directory_path() matches the endpoint rule used by
-    // qt_remote_plain and honours $TMPDIR on Linux and macOS.
+    // Use the same Qt-compatible directory as local endpoint discovery,
+    // including macOS's per-user fallback when TMPDIR is absent.
     {
-        std::error_code tempError;
-        const std::string tempPath =
-            std::filesystem::temp_directory_path(tempError).string();
-        const std::size_t reaped = tempError
-            ? 0 : logos::reapStaleSockets(tempPath, "logos_");
+        const std::string tempPath = logosctl::localTransportTempDirectory();
+        const std::size_t reaped = logos::reapStaleSockets(tempPath, "logos_");
         if (reaped > 0 && verbose)
             fprintf(stderr, "Reaped %zu stale socket file(s) from %s\n",
                     reaped, tempPath.c_str());
