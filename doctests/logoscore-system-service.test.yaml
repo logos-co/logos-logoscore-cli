@@ -379,7 +379,7 @@ sections:
           CFG=/var/lib/logos-node/.logoscore
           INST=$(cat ./instance-id)
           cd /tmp
-          sudo -n -u mallory true || { echo "sudo cannot run as mallory"; exit 1; }
+          timeout 10s sudo -n -u mallory true || { echo "sudo cannot run as mallory within 10s"; exit 1; }
 
           # 1. The file layer: she cannot even read the dial spec.
           timeout 10s sudo -n -u mallory cat $CFG/client/config.json >/dev/null 2>&1
