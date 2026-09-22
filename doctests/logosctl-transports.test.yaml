@@ -1,15 +1,15 @@
-name: "Qt-free logosctl transport boundary"
+name: "Qt-free logosctl transport listeners"
 output: logosctl-transports.md
 release: ""
 
 intro: |
-  The Qt-free logosctl process uses qt_remote_plain for local RPC. It keeps
-  compatibility with current qt_remote modules while Qt stays in logos_host_qt.
-  TCP and TLS are intentionally rejected until the plain C ABI implements them.
+  The Qt-free logosctl process uses qt_remote_plain for local, TCP, and TLS
+  RPC. It keeps compatibility with current qt_remote modules while Qt stays
+  in logos_host_qt.
 
 what_you_learn:
-  - The active transport is local qt_remote_plain
-  - Old network configuration fails explicitly
+  - A local control endpoint remains available when TCP is configured
+  - The plain runtime binds and advertises a TCP listener
 
 prerequisites:
   - "Nix with flakes enabled."
@@ -22,13 +22,13 @@ sections:
         run: "nix build 'github:logos-co/logos-logoscore-cli{release}#ctl' --out-link ./logos"
         check_file: "logos/bin/logosctl"
 
-  - title: "Reject a network listener"
+  - title: "Bind a loopback TCP listener"
     step: true
     text: |
-      Configuration validation still accepts the old schema, then daemon
-      startup reports that the runtime cannot bind the requested listener.
+      Configuration can request TCP while retaining local control access.
+      Port 0 lets the OS choose an available port.
     steps:
-      - title: "Install an old network-shaped config"
+      - title: "Configure TCP"
         run: |
           cat > node.yaml <<'YAML'
           version: 2
@@ -36,14 +36,29 @@ sections:
             core_service:
               - protocol: tcp
                 host: 127.0.0.1
-                port: 6000
+                port: 0
           YAML
           ./logos/bin/logosctl --config-dir ./session daemon config set ./node.yaml
         check_file: "session/daemon/config.yaml"
 
       - title: "Start the daemon"
-        run: "./logos/bin/logosctl --config-dir ./session daemon start 2>&1 || true"
-        code_block: "logosctl daemon start"
+        run: "./logos/bin/logosctl --config-dir ./session daemon start --detach"
+
+      - title: "Check the bound listener and local control endpoint"
+        run: |
+          ./logos/bin/logosctl --config-dir ./session daemon status --json
+          python3 - <<'PY'
+          import json
+          with open('session/daemon/state.json') as f:
+              state = json.load(f)
+          transports = state['resolved']['modules']['core_service']['transports']
+          assert any(t['protocol'] == 'local' for t in transports), transports
+          assert any(t['protocol'] == 'tcp' and t['host'] == '127.0.0.1'
+                     and t['port'] > 0 for t in transports), transports
+          print('local control and bound TCP listener are available')
+          PY
         expect_contains:
-          - "not available in the Qt-free logoscore runtime"
-          - "use local/qt_remote_plain"
+          - "local control and bound TCP listener are available"
+
+      - title: "Stop the daemon"
+        run: "./logos/bin/logosctl --config-dir ./session daemon stop"
