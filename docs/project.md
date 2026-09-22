@@ -21,8 +21,8 @@ logos-logoscore-cli/
 │   ├── paths.cpp/h                   # Executable/bundle-relative path resolution (no Qt)
 │   │
 │   ├── daemon/                       # Daemon path (logosctl daemon start)
-│   │   ├── daemon.cpp/h              # Start core, register core_service, run event loop,
-│   │   │                             # open each --module-transport listener
+│   │   ├── daemon.cpp/h              # Start core, register core_service through the
+│   │   │                             # plain C ABI, wait for shutdown
 │   │   ├── daemon_state.cpp/h        # DaemonConfig (config.json) + DaemonRuntimeState
 │   │   │                             # (state.json) — operator preferences (writes only
 │   │   │                             # on --persist-config) + live runtime state.
@@ -30,13 +30,13 @@ logos-logoscore-cli/
 │   │   │                             # handed to logos_core_set_access_policy()
 │   │   ├── log_sink.cpp/h            # Pipe-based capture of daemon + module-host
 │   │   │                             # stdout/stderr into a rotating log file
-│   │   ├── port_allocator.cpp/h      # Reserve an ephemeral TCP port before spawning a child
+│   │   ├── port_allocator.cpp/h      # Legacy network-config validation support
 │   │   └── token_store.cpp/h         # Named-token table — TokensFile owns daemon/tokens.json
 │   │                                 # (hashed entries) + raw daemon/tokens/<name>.json
 │   │
 │   ├── client/                       # Client path (all subcommands)
 │   │   ├── client.cpp/h              # Client interface + RpcClient — connect to the
-│   │   │                             # daemon's core_service via LogosAPIClient
+│   │   │                             # daemon's core_service via PlainRpcClient
 │   │   ├── client_state.cpp/h        # Read/write <configDir>/client/config.json (dial spec)
 │   │   ├── output.cpp/h              # Output formatter (human / JSON / NDJSON)
 │   │   └── commands/                 # Subcommand implementations
@@ -59,9 +59,7 @@ logos-logoscore-cli/
 │   │       └── list_tokens_command.cpp/h    # Lists issued tokens (name + metadata, no plaintext)
 │   │
 │   └── core_service/                 # Built-in module — CLI ↔ daemon RPC gateway
-│       ├── core_service_impl.h       # Plain C++ class deriving LogosProviderObject; its
-│       │                             # public methods ARE the API (no marker macro — there
-│       │                             # used to be LOGOS_PROVIDER/LOGOS_METHOD here)
+│       ├── core_service_impl.h       # Plain C++ service implementation
 │       ├── core_service_impl.cpp     # Method implementations (delegates to liblogos C API)
 │       ├── package_ops.cpp/h         # Daemon-side plan/apply for package operations
 │       ├── metadata.json             # Plugin metadata
@@ -102,12 +100,10 @@ logos-logoscore-cli/
 
 | Dependency | Type | Purpose |
 |---|---|---|
-| **liblogos** | C library (external) | Core runtime: plugin discovery, loading, dependency resolution, event loop, process stats |
-| **logos-cpp-sdk** | C++ library (external) | Qt-free SDK surface the CLI links directly (`logos_sdk`), incl. `logos::transportSetToJsonString` |
-| **logos-protocol** | C++ library (external) | Transport + provider protocol: `LogosProviderObject`, `ModuleProxy`, `TokenManager` |
-| **logos-qt-host** (in logos-plugin-qt) | C++ library (external) | The Qt host runtime the daemon and its in-process core service are built on: `LogosAPI`, `LogosAPIClient`, `LogosAPIProvider`. Comes from `logos-plugin-qt`, not `logos-qt-sdk` |
-| **Qt6 Core** | Framework | Event loop, JSON handling, process management |
-| **Qt6 RemoteObjects** | Framework | IPC between daemon and module host processes |
+| **liblogos** | C library (external) | Core runtime: module discovery, loading, dependency resolution and process stats |
+| **logos-cpp-sdk headers** | C++ headers (external) | Qt-free JSON/result value aliases used by the command surface |
+| **logos-protocol-plain** | Shared C++ library (external) | Qt-free `lp_*` client/provider ABI and the `qt_remote_plain` transport |
+| **logos_host_qt** | Child executable supplied by liblogos | Compatibility loader and runtime for current Qt plugins; Qt stays in this separate process |
 | **CMake 3.14+** | Build system | — |
 | **Google Test** | Test framework | — |
 | **Nix** | Package manager | Reproducible builds |
@@ -126,7 +122,6 @@ The CLI uses these functions from liblogos (declared in `logos_core.h`):
 | `logos_core_init(argc, argv)` | Daemon |
 | `logos_core_add_modules_dir(path)` | Daemon |
 | `logos_core_start()` | Daemon |
-| `logos_core_exec()` | Daemon |
 | `logos_core_cleanup()` | Daemon |
 | `logos_core_load_module(name, LOGOS_LOAD_REQUIRED_AND_OPTIONAL)` | Daemon, core_service |
 | `logos_core_unload_module(name, false)` | core_service |
@@ -148,7 +143,9 @@ logosctl <subcommand>        →  Client path    (short-lived, talks to daemon)
 
 ### Detection logic (main.cpp)
 
-Before mode detection, `main()` scans argv for `-v`/`--verbose` and installs a custom Qt message handler that suppresses debug/info/warning logs unless verbose is set.
+Before mode detection, `main()` scans argv for `-v`/`--verbose`. Daemon and
+module-host logging is handled by `LogSink` and spdlog; the CLI installs no Qt
+message handler.
 
 ```
 if argv contains "-D" or "daemon"      → daemon path
@@ -161,158 +158,51 @@ else                                   → print help
 
 ```
 main.cpp
-  → Daemon::start(modulesDirs, persistencePath, transportInfos)
-    1. Generate instance ID, set LOGOS_INSTANCE_ID env var
-       Refuse to start if a live daemon already owns this config-dir: read
-       daemon/state.json and, if its pid is still alive (kill(pid,0)), exit 1.
-       A stale state.json from a crashed daemon (pid gone) is not a live
-       owner and is overwritten normally. This runs before logos_core_init so
-       a duplicate launch fails fast instead of spawning module hosts first.
-    2. logos_core_init(argc, argv)
-    3. logos_core_add_modules_dir() for each -m path
-    4. logos_core_start()                         // discover modules
-    5. Register core_service (and capability_module) in-process via
-       LogosAPI/LogosAPIProvider. For each --module-transport NAME=PROTOCOL[,k=v]
-       flag, pass the resolved TransportInfo to LogosAPIProvider so it opens
-       one listener on the named module (local + tcp + tcp_ssl can coexist).
-    6. Mint the auto token, hash it into tokens.json["tokens"], emit raw
-       value into client/auto.json, register hashes with TokenManager
-    7. Write <configDir>/daemon/state.json       // resolved listeners + instance_id
-       (Tokens already persisted to daemon/tokens.json by step 6.)
-       Write <configDir>/client/config.json      // local-default dial spec (first-boot only)
-       If --persist-config: write <configDir>/daemon/config.json (operator intent)
-    8. Print startup message to stdout
-    9. logos_core_exec()                          // Qt event loop (blocks)
-   10. On SIGINT/SIGTERM or shutdown RPC:
-       logos_core_cleanup()
-       Remove daemon/state.json (tokens.json + config.json survive)
-       exit(0)
+  → Daemon::start(...)
+    1. Claim the config directory and set LOGOS_INSTANCE_ID
+    2. Initialize liblogos, add module directories, and discover modules
+    3. Create CoreServiceImpl and publish it with lp_provider over
+       qt_remote_plain
+    4. Adopt liblogos' capability credential, install the persistent-token
+       validator, and save the boot token in the provider
+    5. Write daemon/state.json plus the local client config and token
+    6. Wait on a condition variable until SIGINT, SIGTERM, or shutdown()
+    7. Destroy the provider, clean up liblogos, and remove state.json
 ```
 
-The daemon path calls the liblogos C API directly. It owns the runtime and hosts all modules, including the built-in `core_service` module. Startup/shutdown messages go to stdout (so `> logs.txt` works); debug logs go to stderr and are suppressed unless `--verbose` is passed.
+The daemon uses liblogos only for module discovery and lifecycle. Current Qt
+plugins still run in separate `logos_host_qt` child processes. The daemon,
+core service, and client use the shared `logos_protocol_plain` runtime and do
+not load Qt.
 
-**Multi-transport.** `--module-transport` is repeatable, scoped per
-module (well-known or user-configured). When the daemon exposes a
-module over several transports at once, each one becomes an entry under
-that module's `transports` array in `daemon/state.json`, and the provider
-maintains one listener per entry.
+The Qt-free C ABI currently exposes the local `qt_remote_plain` transport.
+`tcp` and `tcp_ssl` configuration values are still parsed so existing files
+fail with a useful diagnostic, but startup and client connection reject them.
+Network transports can return after equivalent plain-provider and plain-client
+C ABI support exists.
 
-**Local is always present.** Every configured module — well-known or
-user — implicitly carries a LocalSocket listener prepended to its
-resolved set, even when the operator only passed `--module-transport
-NAME=tcp,...`. The operator's TCP / TCP+SSL flags add *additional*
-outside-facing listeners; they don't replace the same-host LocalSocket.
-This is what keeps module ↔ module traffic working on the local socket
-in every configuration: the parent's `notifyCapabilityModule` handshake,
-the SDK's auto-`requestModule` flow inside `LogosAPIClient`, and any
-cross-module `getClient(name)` calls all default to LocalSocket and
-have no plumbing to discover the operator's chosen TCP endpoint —
-forcing a LocalSocket listener alongside whatever else the operator
-named keeps those paths working without fan-out. The advertised
-`transports[]` array always lists the LocalSocket entry first,
-followed by operator-named entries in the order they were typed.
-
-**Plaintext-TCP guard.** Plaintext `tcp` listeners on a non-loopback host
-expose tokens in cleartext. The daemon refuses to bind such a listener
-unless `--insecure-tcp` was passed.
-
-**IPv6 bind targets.** Ephemeral-port allocation (used when a transport asks
-the kernel to pick a port) binds on the address family that matches the host:
-an IPv6 literal such as `::` or `::1` allocates on `AF_INET6`, IPv4 literals on
-`AF_INET`. (Previously the allocator was IPv4-only and returned 0 for any IPv6
-host, aborting daemon startup for IPv6 TCP transports.)
-
-**Strict port parsing.** A `--module-transport ...,port=<n>` value must be a
-whole valid integer — trailing garbage (`6000x`) or hex (`0x1F90`) is a hard
-error (exit 1), not a silently-wrong or auto-allocated `0` port.
-
-**Named tokens.** `TokenStore` (owned by the daemon) persists the issued-token
-table inside `<configDir>/daemon/tokens.json["tokens"]` (`{name, hash,
-issued_at, expires_at, local_only}` rows; hashes are SHA-256 hex). The auto
-token's hash lands there too at boot, with its raw value emitted to
-`client/auto.json`. Named tokens from `issue-token --name <n>` are
-additionally written to `daemon/tokens/<n>.json` for distribution to a
-specific client; once copied to the target host, the daemon-side raw file may
-be deleted because validation runs against the in-memory map seeded from the
-hashes.
+Named tokens are persisted as SHA-256 digests by `TokenStore`. The provider's
+token-validator callback consults that store on demand, which lets tokens
+issued after startup authenticate without copying Qt token-manager state.
 
 ### Client Path (`logosctl <subcommand>`)
 
 ```
 main.cpp
-  → Client::connect()
-    1. Read <configDir>/client/config.json (dial spec + instance_id + token_file)
-    2. Set LOGOS_INSTANCE_ID env var from instance_id
-       → now LogosInstance::id("core_service") returns the correct registry URL
-    3. Read the raw token from token_file (or LOGOSCTL_TOKEN env var if set)
-    4. Build LogosTransportConfig from the dial spec (endpoint/host/port/codec
-       and cert/key/ca/verify_peer for TLS) — applied per-connection only,
-       never installed as a process-wide default (the SDK's LogosAPIProvider
-       reads the global default to bind its own server socket, so flipping
-       the default would try to bind a TLS server with no cert/key and abort)
-    5. Create LogosAPIClient targeting "core_service" with that explicit
-       transport config (LogosAPI itself stays on the local-socket default)
-    6. Authenticate with token
+  → RpcClient::connect()
+    1. Read client/config.json and the referenced token file
+    2. Require the local transport and set LOGOS_INSTANCE_ID
+    3. Save the credential through lp_token_save()
+    4. Create an lp_client for core_service over qt_remote_plain
   → Command::execute(args)
-    1. Call a core_service method by name via LogosAPIClient
-    2. Format result (human / JSON)
-    3. Print to stdout, exit
+    1. Invoke a core_service method with JSON arguments
+    2. Format the JSON result and exit
 ```
 
-Client commands **never** call liblogos C API functions. They talk exclusively
-to the daemon's `core_service` module via the SDK's RPC mechanism, using
-whatever dial spec `client/config.json` provides. This means the client path
-depends only on `logos-cpp-sdk`, not on `liblogos`.
-
-**Liveness** is not a general pre-check — a PID probe is meaningless for a
-daemon in a container or across NAT, so the first RPC is what surfaces a
-connect failure, through the same timeout/error path as any other method.
-
-The one exception is the case where that story breaks down: a session
-directory whose own daemon is gone. `Command::ensureConnected()` calls
-`detectStaleSession()` first, and refuses (`NO_DAEMON`, exit 2) when
-`daemon/state.json` names **this client's** `instance_id` and a pid that
-`kill(pid, 0)` says is gone. Every RPC-opening command inherits it, because
-they all reach the wire through `ensureConnected()`.
-
-That is worth a disk read because connecting proves nothing: a LocalSocket
-client succeeds against a socket path with no listener, QtRO reports nothing
-for an absent peer, and the request is therefore neither answered nor refused
-— the command waits out `Timeout(20000)` (logos-protocol, `cpp/logos_mode.h`)
-and only then reports a failure `state.json` could have named at once.
-
-The `instance_id` gate is what keeps this local-only check safe for remote
-clients: a co-resident daemon's leftover `state.json` describes someone else's
-process, and a remote dial spec carries no `instance_id` at all, so the guard
-stays silent and the command dials normally. Same for a session with no
-`state.json`. `DaemonRuntimeStateFile::read().fileOk` still means only "file
-exists and parses" — the guard pairs it with the pid probe and the id match.
-
-**The tidier way to end up with no daemon** is a clean `daemon stop`, and the
-pid guard cannot see it: that path *removes* `daemon/state.json`, leaving
-`client/config.yaml` and the token behind with no pid to check. So
-`RpcClient::connect()` asks the socket instead, via
-`logosctl::localEndpointProvablyAbsent` (`src/local_endpoint.h`), before it
-builds a `LogosAPIClient`:
-
-1. The dial resolves to `QDir::tempPath()/logos_core_service_<instance_id>` —
-   the SDK asks for the bare name (`LogosInstance::id`) and Qt resolves a bare
-   `QLocalSocket`/`QLocalServer` name against the temp dir. Deriving it the
-   same way is what makes the answer sound rather than a guess.
-2. No file there ⇒ nobody home. A clean shutdown unlinks it.
-3. File there but `connect()` is **refused** ⇒ nobody home. The file outlives
-   the daemon: a hard kill leaves it, and a clean stop leaves a window between
-   the shutdown reply and `QLocalServer`'s destructor — which is exactly when
-   the next command gets typed. Presence alone settles nothing, which is why a
-   stat is not enough. `ECONNREFUSED` is the same signal
-   `logos::isSocketDead` uses to decide a socket is safe for the daemon's boot
-   reaper to unlink.
-
-Everything else — a socket that accepts us, any other `connect()` error, a
-path too long for `sun_path`, a non-socket inode, Windows (named pipes), a
-`tcp`/`tcp_ssl` dial, an empty `instance_id` — fails closed and dials
-normally. Refusing a reachable daemon would be far worse than the wait this
-removes.
+Client commands do not call liblogos. They use the same Qt Remote Objects wire
+format as current modules through the plain C ABI. The endpoint preflight
+detects a definitely absent local socket before the first RPC, while ambiguous
+conditions still proceed to the normal protocol timeout.
 
 ### Inline Path (removed)
 
@@ -327,185 +217,53 @@ daemon starts clean; `-m`/`--persistence-path` configure daemon startup only
 
 ## CoreService Module
 
-The `core_service` module is the RPC gateway between CLI clients and the daemon. It is a proper Logos module — it implements the same `LogosProviderObject` interface the runtime calls on every module — but it lives in the CLI codebase (not in liblogos) because it is the CLI's concern — it exists to serve CLI clients.
-
-Its business methods are **Qt-free**: they take and return `std::string` /
-`LogosMap` / `LogosList` / `StdLogosResult`, and the Qt side of
-`LogosProviderObject` is satisfied by trivial delegates in
-`core_service_dispatch.cpp`. Its plain public methods *are* its API — see
-**Definition** below for what replaced the old marker-macro spelling.
-
-### Why a module?
-
-- Uses the same SDK API as any other module — no special plumbing
-- CLI clients connect to it via `LogosAPIClient`, same as module-to-module communication
-- Auth tokens work the same way (TokenManager validates the client token)
-- Events can be forwarded using the standard event system
-- If needed in the future, it could be extracted into a standalone plugin
-
-### Definition
-
-**Files:** `src/core_service/core_service_impl.h`
+`core_service` is an ordinary C++ object owned by the daemon. It is not a Qt
+object or a plugin. An `lp_provider` callback passes each incoming JSON request
+to `CoreServiceImpl::callMethodStd()`; the metadata callback returns
+`getMethodsStd()`.
 
 ```cpp
-#include <logos_provider_object.h>
-
-class CoreServiceImpl : public LogosProviderObject
-{
+class CoreServiceImpl {
 public:
-    // Emitted events go out through this hook, installed by
-    // setEventListenerStd() (see core_service_dispatch.cpp).
-    std::function<void(const std::string& eventName,
-                       const std::string& data)> emitEvent;
-
-    // Module lifecycle
     StdLogosResult loadModule(const std::string& name);
-    // withDependents cascades the unload to dependents, leaves-first.
-    StdLogosResult unloadModule(const std::string& name, bool withDependents);
-    StdLogosResult reloadModule(const std::string& name);
-
-    // Re-scan the module directories so packages installed since boot
-    // become discoverable without restarting the daemon.
-    LogosMap refreshModules();
-
-    // Package operations, split plan/apply so the client can prompt.
-    LogosMap planPackageOperation(const std::string& op,
-                                  const LogosList& names, const LogosMap& opts);
-    LogosMap applyPackageOperation(const std::string& op,
-                                   const LogosList& names, const LogosMap& opts);
-    LogosMap downloadPackage(const std::string& name, const LogosMap& opts);
-
-    // Queries
-    LogosList listModules(const std::string& filter);
-    LogosMap  getStatus();
-    LogosMap  getModuleInfo(const std::string& name);
-    LogosList getModuleStats();
-
-    // Proxied call — delegates to target module
     StdLogosResult callModuleMethod(const std::string& module,
                                     const std::string& method,
                                     const LogosList& args);
-
-    // Event forwarding
     bool watchModuleEvents(const std::string& module,
                            const std::string& eventName);
-
-    // Daemon lifecycle
     LogosMap shutdown();
 
-    void onInit(LogosAPI* api);
-
-    // LogosProviderObject — Qt side (trivial delegates to the std bridge)
-    QVariant   callMethod(const QString& methodName, const QVariantList& args) override;
-    QJsonArray getMethods() override;
-    QString    providerName() const override;
-    QString    providerVersion() const override;
-    void       setEventListener(EventCallback callback) override;
-    bool       informModuleToken(const QString& moduleName, const QString& token) override;
-    void       init(void* apiInstance) override;
-
-    // LogosProviderObject — universal (Qt-free) dispatch
-    nlohmann::json callMethodStd(const std::string& methodName,
-                                 const nlohmann::json& args) override;
-    std::vector<LogosMethodMetadata> getMethodsStd() override;
-    void setEventListenerStd(UniversalEventCallback callback) override;
+    nlohmann::json callMethodStd(const std::string& method,
+                                 const nlohmann::json& args);
+    nlohmann::json getMethodsStd();
 
 private:
-    EventCallback m_eventCallback;
-    LogosAPI* m_api = nullptr;
+    logosctl::PlainRpcContext m_rpc{"core_service"};
 };
 ```
 
-There is no marker macro on these declarations. (There used to be a
-`LOGOS_PROVIDER(...)` line and a `LOGOS_METHOD` prefix on each callable
-method, scanned by a code generator; neither is used here any more.)
+Lifecycle and query methods call the liblogos C API. Calls to loaded modules use
+a cached `PlainRpcClient` targeting that module over `qt_remote_plain`.
+Event watches use `lp_subscribe`; an empty event name subscribes to every
+event and the core service forwards each one as `module_event`.
 
-### How each method works
+The hand-written dispatcher converts argument errors to a structured
+`INVALID_ARGS` response. Shutdown schedules `Daemon::requestShutdownAfter()`
+so the provider can serialize the reply before the daemon tears it down.
 
-| Method | What it does (daemon-side) |
-|---|---|
-| `loadModule(name)` | Calls `logos_core_load_module(name, LOGOS_LOAD_REQUIRED_AND_OPTIONAL)`. Returns `{"status":"ok","module":"...","version":"...","dependencies_loaded":[...]}` |
-| `unloadModule(name, withDependents)` | Calls `logos_core_unload_module(name, withDependents)`. With `withDependents` (the CLI default) liblogos cascades the unload to every module that depends on `name`, leaves-first, so nothing is left talking to a dead provider. Returns `{"status":"ok","module":"...","dependents_unloaded":[...]}` |
-| `refreshModules()` | Re-scans the daemon's module directories so a package installed since boot becomes loadable without a restart — this is what lets `install` be followed by `load` in one session |
-| `planPackageOperation(op, names, opts)` / `applyPackageOperation(op, names, opts)` | Daemon-side plan/apply for `install` / `remove` / `update` (see `src/core_service/package_ops.h`). The split exists so the client can show what would change and prompt; `--dry-run` stops after the plan |
-| `downloadPackage(name, opts)` | Fetches a `.lgx` without installing it. Daemon-side because the downloader drops the file in the *daemon's* `$TMPDIR`, so the move to the requested directory has to happen on that host |
-| `reloadModule(name)` | Checks if loaded/crashed → unload if needed → load. Returns result with `previous_status`. Non-destructive on failure: if the module was loaded before and the reload's load step fails, it attempts to restore the prior instance and reports `restored: true/false` plus an explanatory error rather than leaving the module down |
-| `listModules(filter)` | Calls `logos_core_get_modules_info()` (name + loaded flag + embedded metadata per module). Emits `version` from metadata + status enum. Returns JSON array |
-| `getStatus()` | Reads daemon state (PID, uptime, version) + calls `listModules("all")`. Returns `{"daemon":{...},"modules_summary":{...},"modules":[...]}` |
-| `getModuleInfo(name)` | Pulls the module's entry from `logos_core_get_modules_info()` (version from embedded metadata, dependencies, dependents) and, for loaded modules, methods/events via SDK introspection over RPC. Returns extended JSON |
-| `getModuleStats()` | Calls `logos_core_get_module_stats()`. Returns CPU/memory per module |
-| `callModuleMethod(module, method, args)` | Uses `m_api->getClient(module)->invokeRemoteMethod()` to proxy the call to the target module. Returns the result. `LogosResult` return values are unpacked into `{success, value, error}` here so that the JSON shape is identical regardless of whether the daemon-module hop went over the local socket (QRO) or the plain-C++ transport (tcp / tcp_ssl). |
-| `watchModuleEvents(module, event)` | Registers an event listener on the target module via `m_api->getClient(module)->onEvent()`. Forwards received events by calling `emitEvent()` on core_service, which the CLI client receives over its own event subscription |
-| `shutdown()` | Schedules `QCoreApplication::quit()` after a 200ms delay (to allow the RPC response to be sent), then the daemon performs its normal cleanup (unload modules, remove `daemon/state.json`, exit) |
-
-### Loader — there isn't one
-
-`core_service` is **not** discovered as a plugin, so it has no
-`Q_PLUGIN_METADATA` loader class. (This section used to document a
-`src/core_service/core_service_loader.h` holding a `CoreServiceLoader :
-QObject, PluginInterface, LogosProviderPlugin` with a `createProviderObject()`
-factory. That file no longer exists.) The daemon constructs `CoreServiceImpl`
-itself and hands it to the provider — see **Registration (daemon-side)** below.
-
-### Metadata
-
-**Files:** `src/core_service/metadata.json`
-
-Declarative identity only — nothing in the build reads it, because there is no
-plugin to attach it to. `CoreServiceImpl::name()` / `::version()` return the
-same values in code.
-
-```json
-{
-  "name": "core_service",
-  "version": "1.0.0",
-  "type": "core",
-  "category": "management",
-  "description": "RPC gateway for CLI client commands"
-}
-```
-
-### Registration (daemon-side)
-
-The daemon registers `core_service` as an in-process module during startup, before entering the event loop:
+Daemon-side registration is entirely C ABI based:
 
 ```cpp
-// In Daemon::start()
-auto* coreServiceApi = new LogosAPI("core_service", coreTransports);
-auto* coreServiceImpl = new CoreServiceImpl();
-coreServiceImpl->init(coreServiceApi);
-
-auto* provider = coreServiceApi->getProvider();
-// Accept operator-issued named tokens, not just the boot `auto` token.
-// Installed before registerObject so the proxy is validated from its
-// first published call.
-provider->setTokenValidator(...);
-provider->registerObject("core_service", static_cast<LogosProviderObject*>(coreServiceImpl));
+lp_provider* provider = lp_provider_create("core_service",
+                                           kPlainLocalTransport);
+lp_provider_set_token_validator(provider, validateToken, &tokenStore);
+lp_provider_register(provider, dispatchCall, methodMetadata,
+                     emitEvent, coreService);
+lp_provider_save_token(provider, "cli_client", autoToken.c_str());
 ```
 
-This registers the module directly into the runtime using the Qt host classes (`LogosAPI`, `LogosAPIProvider`) without directory scanning. The daemon also saves a client token via `TokenManager::instance().saveToken("cli_client", token)` so CLI clients can authenticate.
-
-### Build integration
-
-The `core_service_dispatch.cpp` file provides a hand-written `callMethodStd()` dispatch table and `getMethodsStd()` metadata for `CoreServiceImpl`, plus the trivial Qt-side delegates (`callMethod`, `getMethods`, `setEventListener`, …) that bridge to them. Dynamically loaded modules get this glue generated for them from their header; core_service is written by hand because it is statically linked into the daemon binary and never goes through a module build.
-
-The dispatch wraps argument coercion in a try/catch: a malformed RPC (e.g. a number where a string arg is expected, which makes `args[i].get<std::string>()` throw `nlohmann::json::type_error`) is converted into a structured `{status:"error", code:"INVALID_ARGS", message:...}` response instead of an uncaught exception that would propagate through the Qt event loop and terminate the whole daemon. This keeps one authenticated client from crashing the daemon with a single bad argument.
-
-```cpp
-// core_service_dispatch.cpp — maps method names to CoreServiceImpl methods
-nlohmann::json CoreServiceImpl::callMethodStd(const std::string& methodName,
-                                              const nlohmann::json& args) {
-  try {
-    if (methodName == "loadModule" && args.size() >= 1)
-        return stdLogosResultToJson(loadModule(args[0].get<std::string>()));
-    if (methodName == "shutdown") return shutdown();
-    // ... etc
-    return nullptr;
-  } catch (const std::exception& e) { /* -> INVALID_ARGS envelope */ }
-}
-```
-
----
+`src/core_service/metadata.json` remains a declarative identity document; the
+daemon does not load it as a plugin.
 
 ## Components
 
@@ -532,225 +290,63 @@ nlohmann::json CoreServiceImpl::callMethodStd(const std::string& methodName,
 
 | Method | Description |
 |--------|-------------|
-| `Daemon::start(modulesDirs) -> int` | Init liblogos, register core_service, write `daemon/state.json` + emit `client/config.json` and `client/auto.json`, run event loop |
+| `Daemon::start(modulesDirs) -> int` | Init liblogos, register core_service, write `daemon/state.json` + emit `client/config.json` and `client/auto.json`, wait for the shutdown signal |
 | `Daemon::setupSignalHandlers()` | Handle SIGINT/SIGTERM for clean shutdown |
 
 ### DaemonConfigFile + DaemonRuntimeStateFile
 
 **Files:** `src/daemon/daemon_state.cpp/h`
 
-**Purpose:** Manage the two daemon-side config-tree files. `DaemonConfigFile` reads/writes `<configDir>/daemon/config.json` (operator preferences, written only when `--persist-config` is passed). `DaemonRuntimeStateFile` writes `<configDir>/daemon/state.json` on every successful boot and removes it at shutdown. Both files are daemon-owned; the client never reads `config.json`, and only consults `state.json` for a fast same-host liveness check.
+The daemon writes `daemon/state.json` after its provider is live and removes
+it during clean shutdown. The state includes the instance id, process id,
+module directories, and the local transport advertised for `core_service`
+and `capability_module`. `daemon/config.json` retains operator intent only
+when `--persist-config` is used.
 
-**API:**
-
-| Method | Description |
-|--------|-------------|
-| `DaemonConfigFile::read() -> optional<DaemonConfig>` | Parse `daemon/config.json`. Returns `nullopt` if missing or schema-mismatched. |
-| `DaemonConfigFile::write(cfg)` | Atomic write of operator-intent values. `port: 0` stays `0` (resolved values live in `state.json`). |
-| `DaemonRuntimeStateFile::write(state)` | Atomic write of resolved live state (`instance_id`, `pid`, `started_at`, `resolved.modules` with actually-bound ports). The temp file staged before the atomic rename is per-writer-unique (`<path>.tmp.<pid>.<seq>`) so concurrent writers can't truncate/rename the same temp and corrupt the result. |
-| `DaemonRuntimeStateFile::read() -> DaemonRuntimeState` | Parse `state.json`. `fileOk` is true iff the file exists with a non-empty `instance_id` — says nothing about liveness; pair with `kill(pid, 0)` for that. |
-| `DaemonRuntimeStateFile::remove()` | Remove `state.json`. Called from clean shutdown / `aboutToQuit` hook. |
-
-**`state.json` format** (lifecycle: created at boot, removed at shutdown):
-
-```json
-{
-  "version": 2,
-  "instance_id": "a3f1c8d20b4e",
-  "pid": 12345,
-  "started_at": "2026-03-23T14:00:00Z",
-  "config_source": "cli",
-  "resolved": {
-    "modules_dirs": ["/path/to/modules"],
-    "persistence_path": "/var/lib/logosctl",
-    "modules": {
-      "core_service": {
-        "transports": [
-          { "protocol": "local" },
-          { "protocol": "tcp",     "host": "0.0.0.0", "port": 6000, "codec": "json" },
-          { "protocol": "tcp_ssl", "host": "0.0.0.0", "port": 6443,
-            "codec": "cbor", "ca_file": "/etc/logosctl/ca.pem",
-            "verify_peer": true }
-        ]
-      },
-      "capability_module": {
-        "transports": [
-          { "protocol": "local" },
-          { "protocol": "tcp", "host": "127.0.0.1", "port": 6001, "codec": "json" }
-        ]
-      }
-    },
-    "ssl": { "cert": "", "key": "", "ca": "" },
-    "insecure_tcp": false
-  }
-}
-```
-
-**`config.json` format** (lifecycle: written only on `--persist-config`): same as `state.json`'s `resolved` block + `version`. Reflects operator intent (`port: 0` stays `0`).
-
-**`tokens.json` format** (lifecycle: independent — survives daemon restarts):
-
-```json
-{
-  "version": 2,
-  "tokens": [
-    { "name": "auto",  "hash": "<sha256-hex>", "issued_at": "...", "expires_at": null, "local_only": true },
-    { "name": "alice", "hash": "<sha256-hex>", "issued_at": "...", "expires_at": "...", "local_only": false }
-  ]
-}
-```
+The configuration schema still accepts network transport records from the
+previous implementation, but the Qt-free daemon rejects them before starting.
+This preserves readable configuration errors without claiming runtime support.
 
 ### TokenStore
 
 **Files:** `src/daemon/token_store.cpp/h`
 
-**Purpose:** In-memory map of issued client tokens, persisted into the daemon state file. Plaintext tokens are never stored on the daemon side — only SHA-256 hashes in `tokens.json["tokens"]`. The raw value of each named token lives only in `daemon/tokens/<name>.json` at the moment of issuance, for the operator to copy off.
-
-**API:**
-
-| Method | Description |
-|--------|-------------|
-| `TokenStore()` | Default-constructed; paths come from `Config::*` (the process-global config dir). Seeds itself from `tokens.json["tokens"]`. Tests isolate state via `LOGOSCTL_CONFIG_DIR` / `Config::setConfigDir`. |
-| `issueToken(name, expires, localOnly, replace) -> IssueResult { status, token }` | Mint a new token. `status` is one of `Ok` / `InvalidName` / `AlreadyExists` / `IoError`; `token` is set only on `Ok`. The CLI keys exit-code distinct error categories off this status so operators don't see "name collision" for permission failures. **Fails closed** rather than corrupting state: a CSPRNG failure (empty raw token) returns `IoError` and persists nothing; an on-disk `tokens.json` whose schema version this build doesn't support returns `IoError` and is left byte-for-byte intact (instead of being rewritten at the current version, wiping operator tokens). On `--replace` the new raw token is staged to `daemon/tokens/<name>.json.new` and promoted only after `tokens.json` commits, so a failed write never destroys the still-valid prior raw token. |
-| `revokeToken(name) -> RevokeStatus` | Remove the `name` entry from `tokens.json["tokens"]` and delete `daemon/tokens/<name>.json`. Returns `Ok` / `InvalidName` / `NotFound` / `IoError`. Like `issueToken`, refuses (`IoError`) to rewrite an unsupported-schema-version `tokens.json`. |
-| `listTokens() -> vector<IssuedToken>` | Enumerate `{name, issued_at, expires_at, local_only}` — never plaintext, never the digest. |
-| `lookupByToken(token) -> optional<Entry>` | Daemon-side: validate an incoming token against the in-memory digest map (also enforces `expires_at` and `local_only`). Fails closed on an empty token — `hashToken("")` is a fixed digest, so an empty credential is rejected before consulting the store and can never match a corrupt empty-hash entry. |
-
-The on-disk digest is a SHA-256 hex string — collision-resistant by design so
-two distinct tokens can never validate to the same name. The only place the
-raw token ever lives is in `daemon/tokens/<name>.json` at the moment of
-issuance; treat that file like a private key. After the operator copies it
-to the client host (typically into the client's `<configDir>/client/`), the
-daemon-side raw file may be deleted — validation keeps working because the
-hash is what the daemon checks. The state file and per-token files are
-written with mode 0600.
-
-**How the client finds the daemon:**
-
-The logos-cpp-sdk uses `LogosInstance::id(moduleName)` to build registry URLs in the format `local:logos_{moduleName}_{instanceId}`. The instance ID is a 12-char UUID prefix shared by all processes in the same daemon tree (via the `LOGOS_INSTANCE_ID` env var). Child processes (like `logos_host`) inherit it automatically.
-
-The CLI client is **not** a child process of the daemon — it's a separate invocation. So it cannot inherit the env var. Instead:
-
-1. Daemon starts → `LogosInstance::id()` generates `a3f1c8d20b4e` → sets `LOGOS_INSTANCE_ID`
-2. core_service registers at `local:logos_core_service_a3f1c8d20b4e`
-3. Daemon writes `instance_id` into both `daemon/state.json` and the auto-emitted `client/config.json`
-4. Client reads `instance_id` from `client/config.json` → sets `LOGOS_INSTANCE_ID=a3f1c8d20b4e` in its own process → now `LogosInstance::id("core_service")` returns the matching URL
-5. Client connects via `LogosAPIClient` → reaches the correct daemon
-
-The client/config.json carries `instance_id` rather than a hardcoded registry URL so the client can reconstruct URLs using the same `LogosInstance::id()` function the SDK uses internally.
-
-The token is generated on daemon startup, hashed into `tokens.json["tokens"]`, and emitted raw to `client/auto.json` for the local-default client to pick up. Client commands read it automatically via `client/config.json`'s `token_file` pointer. For remote/CI usage, the token can also be passed via `LOGOSCTL_TOKEN` env var.
+`TokenStore` persists issued token names, SHA-256 digests, issue times,
+expiry, and local-only policy. Raw named tokens are written separately with
+mode 0600 for distribution. The provider validator calls
+`lookupByToken()` for every credential that is not already in its in-memory
+boot-token table, so issue and revoke operations take effect immediately.
 
 ### ClientStateFile
 
 **Files:** `src/client/client_state.cpp/h`
 
-**Purpose:** Read/write `<configDir>/client/config.json` — the client's
-dial spec. This is the only daemon-tree file a client command ever opens
-during normal RPC (it never touches `daemon/state.json`,
-`daemon/config.json`, or `daemon/tokens.json`). The daemon auto-emits one
-for the local-default client at boot; remote clients hand-write it (or
-generate it via the `--client-*` flags + `--persist-config`).
+The local client file identifies the daemon instance, names the token file, and
+contains a `core_service` transport entry:
 
-**`client/config.json` format** (`version` must equal `kClientStateSchemaVersion`, currently `2`):
-
-```jsonc
+```json
 {
   "version": 2,
-  "token_file": "dario.json",     // filename inside <configDir>/client/ holding
-                                  // the raw token ({"token":"<raw>",...}); read by
-                                  // readTokenFile(), which extracts the "token" field
-  "instance_id": "a3f1c8d20b4e",  // optional; required ONLY for the LocalSocket dial
-                                  // path (registry name local:logos_<module>_<id>).
-                                  // Omitted for remote tcp / tcp_ssl clients.
-  "daemon": {                     // per-module dial spec; map key = module name
-    "core_service": {             // mandatory — RpcClient::connect fails without it
-      "transport": "tcp",         // "local" | "tcp" | "tcp_ssl" (strict allowlist)
-      "host": "192.168.1.20",     // tcp / tcp_ssl
-      "port": 8645,               // tcp / tcp_ssl (0..65535)
-      "codec": "json"             // "json" (default) | "cbor"
-    },
-    "capability_module": {        // required for any remote client: the client's own
-      "transport": "tcp",         // LogosAPIClient does a requestModule handshake
-      "host": "192.168.1.20",     // against capability_module before reaching
-      "port": 8646                // core_service (client.cpp wires this via
-    }                             // LogosAPI::setCapabilityModuleTransport)
+  "token_file": "auto.json",
+  "instance_id": "a3f1c8d20b4e",
+  "daemon": {
+    "core_service": { "transport": "local" },
+    "capability_module": { "transport": "local" }
   }
 }
 ```
 
-For `tcp_ssl`, each module entry also accepts `"ca": "<path>"` and
-`"verify_peer": true|false`.
-
-**Parsing contract** (`ClientStateFile::read`):
-- The per-module field is **`transport`**, not `protocol`. An unknown value
-  (typo) makes `transportFromJson` return `nullopt`, which fails the *whole*
-  parse (`ClientState{}`, `fileOk=false`) rather than silently dropping the
-  entry — otherwise a missing `core_service`/`capability_module` would
-  surface as an obscure connect error later.
-- A `version` other than `2` is rejected with a "relaunch the daemon to
-  regenerate, or hand-edit" message and `fileOk=false`.
-- `codec` is validated up front when supplied via `--client-codec`: anything
-  other than `json` or `cbor` is a hard error (exit 1) at flag-merge time,
-  rather than being stored verbatim and silently coerced to JSON at dial time
-  (which would defeat the "connect fails on codec mismatch" guarantee).
-- `fileOk` (the "usable for dialing" bit `RpcClient::connect` checks) is true
-  iff at least one `daemon` entry parsed **and** `token_file` is non-empty.
-- `core_service` and `capability_module` may target different ports — they're
-  independent daemon listeners. The `--client-*` CLI flags apply one transport
-  shape to *both* modules, so divergent ports require hand-editing this file.
-
-**API:**
-
-| Method | Description |
-|--------|-------------|
-| `ClientStateFile::read() -> ClientState` | Parse `client/config.json` (or return the in-process override set by `setOverride`). `fileOk=false` on missing file, bad version, or invalid transport entry. |
-| `ClientStateFile::write(state) -> bool` | Serialize a `ClientState` back to `client/config.json` (used by the `--persist-config` path). Writes `transport`/`host`/`port`/`codec` (+ `ca`/`verify_peer` for tcp_ssl), and `instance_id` only when non-empty. |
-| `ClientStateFile::setOverride(opt)` | Inject a CLI-flag-merged `ClientState` that `read()` returns verbatim — lets `--client-*` flags affect a run without writing to disk. |
-| `ClientStateFile::readTokenFile(filename) -> string` | Read `<configDir>/client/<filename>` and return its `"token"` field. Empty string if missing/malformed. When `--token-file` is passed explicitly, `main` now validates the content with this up front: a file that exists but yields an empty token (missing/empty `token` field, or unparseable JSON) is a hard error (exit 1) pointing at the bad file, instead of being accepted and surfacing later as "No authentication token" at connect time. |
+The parser keeps the prior strict schema checks. `RpcClient::connect()`
+currently requires both active entries to be `local`.
 
 ### Client
 
 **Files:** `src/client/client.cpp/h`
 
-**Purpose:** Connect to the daemon's `core_service` module via `LogosAPIClient` and invoke its methods by name.
-
-`Client` is an abstract interface (so tests can substitute a mock);
-`RpcClient` is the real implementation and is a thin wrapper around
-`LogosAPIClient`. Its surface is **Qt-free** — `std::string` in, `LogosMap` /
-`LogosList` out — and each method maps 1:1 to a `core_service` method:
-
-**API:**
-
-| Method | core_service method called |
-|--------|---------------------------|
-| `Client::connect() -> bool` | Read `<configDir>/client/config.json`, set `LOGOS_INSTANCE_ID` from `instance_id`, build `LogosTransportConfig` from the dial spec, load token from `token_file` (or `LOGOSCTL_TOKEN` env), create `LogosAPIClient` targeting `"core_service"`, authenticate |
-| `Client::isConnected() -> bool` | — |
-| `Client::lastError() -> std::string` | — (last connect/RPC failure reason) |
-| `Client::loadModule(name) -> LogosMap` | `core_service.loadModule(name)` |
-| `Client::unloadModule(name, withDependents) -> LogosMap` | `core_service.unloadModule(name, withDependents)` |
-| `Client::reloadModule(name) -> LogosMap` | `core_service.reloadModule(name)` |
-| `Client::refreshModules() -> LogosMap` | `core_service.refreshModules()` |
-| `Client::planPackageOperation(op, names, opts) -> LogosMap` | `core_service.planPackageOperation(...)` |
-| `Client::applyPackageOperation(op, names, opts) -> LogosMap` | `core_service.applyPackageOperation(...)` |
-| `Client::downloadPackage(name, opts) -> LogosMap` | `core_service.downloadPackage(name, opts)` |
-| `Client::listModules(filter) -> LogosList` | `core_service.listModules(filter)` |
-| `Client::getStatus() -> LogosMap` | `core_service.getStatus()` |
-| `Client::getModuleInfo(name) -> LogosMap` | `core_service.getModuleInfo(name)` |
-| `Client::getModuleStats() -> LogosList` | `core_service.getModuleStats()` |
-| `Client::callModuleMethod(module, method, args) -> LogosMap` | `core_service.callModuleMethod(module, method, args)` |
-| `Client::shutdown() -> LogosMap` | `core_service.shutdown()` |
-| `Client::watchModuleEvents(module, event, callback) -> bool` | `core_service.watchModuleEvents(module, event)` + event subscription |
-
-**Implementation pattern:**
-
-```cpp
-LogosMap RpcClient::loadModule(const std::string& name) {
-    nlohmann::json ret = d->invoke("loadModule", nlohmann::json::array({name}));
-    if (ret.is_object()) return ret;
-    return LogosMap{{"status","error"},{"code","RPC_FAILED"}, /* ... */};
-}
-```
+`Client` is the mockable command interface. `RpcClient` implements it with
+`PlainRpcClient`, which owns an `lp_client`, invokes JSON methods, and keeps
+event subscription callbacks alive. It links `logos_protocol_plain`; the Qt
+client classes are absent from its source and link closure.
 
 ### Output
 
@@ -779,9 +375,9 @@ LogosMap RpcClient::loadModule(const std::string& name) {
 
 | Method | Description |
 |--------|-------------|
-| `Config::getToken() -> QString` | Token resolution: only `LOGOSCTL_TOKEN` env var. Filesystem fallback (`client/<token_file>`) lives in `ClientStateFile::readTokenFile` since it requires parsing the client config. |
-| `Config::configDir() -> QString` | Resolve config dir: explicit setter (`--config-dir`) → `LOGOSCTL_CONFIG_DIR` env → `~/.logosctl` |
-| `Config::setConfigDir(QString)` | Process-wide override set from `main` when `--config-dir` is passed |
+| `Config::getToken() -> std::string` | Token resolution: only `LOGOSCTL_TOKEN` env var. Filesystem fallback (`client/<token_file>`) lives in `ClientStateFile::readTokenFile` since it requires parsing the client config. |
+| `Config::configDir() -> std::string` | Resolve config dir: explicit setter (`--config-dir`) → `LOGOSCTL_CONFIG_DIR` env → `~/.logosctl` |
+| `Config::setConfigDir(std::string)` | Process-wide override set from `main` when `--config-dir` is passed |
 | `Config::daemonConfigPath() / daemonStatePath() / daemonTokensPath() / daemonTokensDir()` | Daemon-side path helpers under `<configDir>/daemon/` |
 | `Config::clientConfigPath() / clientDir() / clientTokenPath(filename)` | Client-side path helpers under `<configDir>/client/`. `clientTokenPath` rejects any `filename` that isn't a plain name (contains `/`, `\`, or `..`) and resolves it to an in-`client/` sentinel, so an operator-influenced `token_file` value can't escape the dir to read an arbitrary file as a credential. |
 
@@ -824,7 +420,7 @@ The companion check lives one layer down, in `RpcClient::connect()`:
 
 ## CLI Commands
 
-All client-path commands connect to the daemon's `core_service` module via `LogosAPIClient` and call its methods by name. They never call liblogos C API functions directly.
+All client-path commands connect to the daemon's `core_service` module through the plain protocol client and call its methods by name. They never call liblogos C API functions directly.
 
 ### logosctl daemon
 
@@ -836,11 +432,11 @@ logosctl daemon [--modules-dir <path>]...
 ```
 
 **Behavior:**
-1. `logos_core_init(argc, argv)`, add module directories, `logos_core_start()`
-2. Register `core_service` in-process via `LogosAPIProvider::registerObject()` (not `logos_core_register_module()`, which only maps a plugin *name* to a file path for on-disk discovery)
-3. Write `~/.logosctl/daemon/state.json` (listeners + hashed-token table) and emit `~/.logosctl/client/config.json` + `~/.logosctl/client/auto.json` for the local client
-4. `logos_core_exec()` (Qt event loop — blocks)
-5. On SIGINT/SIGTERM: `logos_core_cleanup()`, remove `daemon/state.json`, exit
+1. Initialize liblogos, add module directories, and call `logos_core_start()`
+2. Publish `core_service` with `lp_provider_register()`
+3. Write `daemon/state.json` and the local client config/token
+4. Wait for a signal or the `shutdown` RPC
+5. Destroy the provider, clean up liblogos, remove `state.json`, and exit
 
 **Exit codes:** 0 on clean shutdown, 1 on error.
 
@@ -909,7 +505,7 @@ logosctl daemon status
 **Behavior:**
 1. Reads `<configDir>/client/config.json` to learn how to dial. If missing or unparseable, prints "not running" and exits with code 1 (no point trying to connect).
 2. Runs the same `detectStaleSession()` guard `ensureConnected()` does, one step earlier: a session whose own daemon's pid is gone reports `not_running` with the pid and the reason, exit 1. Earlier and separately because "no daemon" is an *answer* to `status`, not an error — the shared guard's `NO_DAEMON` / exit 2 would be the wrong shape.
-3. Otherwise tries to connect and call `core_service.getStatus()`. The RPC call IS the liveness check — there's no separate cheap probe, because no cheap probe is correct across every transport (local Unix socket vs remote TCP across NAT is a meaningless question for PID-based liveness).
+3. Otherwise tries to connect and call `core_service.getStatus()`. The RPC call IS the liveness check — the endpoint preflight only reports absence when the local socket is definitely gone.
 4. On RPC timeout / connect refused: reports "not running" with the error reason, exits with code 1.
 5. On success: displays daemon info (PID, uptime, version, instance ID) and all module statuses with summary counts.
 
@@ -970,7 +566,7 @@ logosctl module <name> method <method> [args...]
 1. Connects to daemon via `Client`
 2. Resolves `@file` arguments to file contents
 3. Type-coerces arguments: numeric strings → int/double, `"true"`/`"false"` → bool, rest → string
-4. Calls `core_service.callModuleMethod(module, method, args)` — core_service proxies the call to the target module via `LogosAPIClient`
+4. Calls `core_service.callModuleMethod(module, method, args)` — core_service proxies the call to the target module through the plain protocol client
 5. In human mode: prints scalar results as plain values, structured results as indented JSON, null produces no output. In JSON mode: prints the full result envelope.
 
 **Exit codes:** 0 on success, 2 if no daemon, 3 if module not loaded, 4 if method not found or call failed.
@@ -986,7 +582,7 @@ logosctl watch <module> [--event <name>]
 **Behavior:**
 1. Connects to daemon via `Client`
 2. Calls `core_service.watchModuleEvents(module, event)` — core_service registers an event listener on the target module and forwards events through its own event system
-3. Client subscribes to core_service events via `LogosAPIClient::onEvent()`
+3. Client subscribes to core_service events via `lp_subscribe()`
 4. On each event: prints formatted line (human) or NDJSON line (JSON mode)
 5. Runs until SIGINT/SIGTERM
 
@@ -1024,7 +620,7 @@ logosctl daemon stop
 2. Connects to daemon via `Client`
 3. Reads `daemon/state.json` for the daemon's pid **before** issuing the call — a clean shutdown deletes that file, so afterwards it is unreadable
 4. Calls `core_service.shutdown()` (5s deadline; the daemon answers before doing any work, so a slower reply is a lost one)
-5. core_service posts a main-thread timer, `LOGOSCTL_SHUTDOWN_GRACE_MS` (default 200ms) later, that drains the event loop and then calls `QCoreApplication::quit()`
+5. core_service schedules a delayed shutdown request, `LOGOSCTL_SHUTDOWN_GRACE_MS` (default 200ms) later, that lets the provider queue the reply and then wakes the daemon
 6. If the RPC response arrives: prints success and exits
 7. If it does not, the client asks whether the daemon actually died, for up to 15s: by watching the pid from step 3, or — for a remote daemon, where there is no local pid — by re-probing `getStatus`. Gone ⇒ success, with `confirmed_by` naming the evidence. Still there ⇒ `RPC_FAILED`
 
@@ -1046,54 +642,28 @@ logosctl module show <module>
 
 ## Call Chain: CLI → core_service → liblogos
 
-Client commands never call liblogos functions directly. The full call chain is:
-
 ```
-CLI client                    core_service (daemon-side)              liblogos C API
-─────────                     ─────────────────────────               ──────────────
-logosctl module load waku
-  → Client::loadModule("waku")
-    → LogosAPIClient::invokeRemoteMethod(
-        "core_service", "loadModule", "waku")
-      ───── IPC (Qt Remote Objects) ─────→
-                                          CoreServiceImpl::loadModule("waku")
-                                            → logos_core_load_module("waku", LOGOS_LOAD_REQUIRED_AND_OPTIONAL)
-                                            → build result JSON
-      ←──── IPC (return value) ──────────
-    → Output::printSuccess(result)
-    → exit(0)
+logosctl command
+  → RpcClient / PlainRpcClient
+    → lp_client_invoke(core_service, method, JSON args)
+      → qt_remote_plain wire
+        → lp_provider callback
+          → CoreServiceImpl::callMethodStd()
+            → liblogos C API, or
+            → PlainRpcClient for a target module
 ```
 
-### Daemon path — liblogos usage
+The last hop interoperates with current Qt module hosts because
+`qt_remote_plain` reproduces the Qt Remote Objects framing, registry,
+authentication, method metadata, calls, replies, and events without linking
+Qt.
 
-Only the daemon path calls liblogos C API functions directly:
-
-| Daemon operation | liblogos functions |
-|---|---|
-| Start core | `logos_core_init`, `logos_core_add_modules_dir`, `logos_core_start` |
-| Register core_service | `LogosAPI`, `LogosAPIProvider::registerObject` (Qt host runtime, `logos-qt-host`) |
-| Run event loop | `logos_core_exec` |
-| Shutdown | `logos_core_cleanup` |
-
-### Client path — core_service method mapping
-
-Client commands call core_service methods, which delegate to liblogos internally:
-
-| CLI command | core_service method | liblogos function called internally |
+| CLI operation | core_service method | implementation |
 |---|---|---|
-| `load-module` | `loadModule(name)` | `logos_core_load_module(name, LOGOS_LOAD_REQUIRED_AND_OPTIONAL)` |
-| `unload-module` | `unloadModule(name, withDependents)` | `logos_core_unload_module(name, withDependents)` — liblogos does the leaves-first cascade |
-| `reload-module` | `reloadModule(name)` | `logos_core_unload_module(name, false)` + `logos_core_load_module(name, LOGOS_LOAD_REQUIRED_AND_OPTIONAL)` |
-| `list-modules` | `listModules(filter)` | `logos_core_get_known_modules`, `logos_core_get_loaded_modules` |
-| `status` | `getStatus()` | reads daemon state + `listModules` |
-| `module-info` | `getModuleInfo(name)` | plugin metadata + methods introspection |
-| `call` | `callModuleMethod(module, method, args)` | `LogosAPIClient::invokeRemoteMethod` (proxied to target module) |
-| `watch` | `watchModuleEvents(module, event)` | `LogosAPIClient::onEvent` (forwarded) |
-| `stats` | `getModuleStats()` | `logos_core_get_module_stats` |
-| `stop` | `shutdown()` | `QTimer::singleShot(200, ..., &QCoreApplication::quit)` |
-| `info` | alias for `module-info` | — |
-
----
+| load/unload/reload/list/status/stats | matching method | liblogos C API |
+| call | `callModuleMethod` | `lp_client_invoke` to the target module |
+| watch | `watchModuleEvents` | `lp_subscribe`, forwarded as `module_event` |
+| stop | `shutdown` | delayed condition-variable wakeup and cleanup |
 
 ## Build
 
@@ -1211,15 +781,15 @@ export LOGOSCTL_TOKEN=xyz123
 # Or inline per-command
 LOGOSCTL_TOKEN=xyz123 logosctl module load waku
 
-# Or via the client/ tree (point client/config.json's token_file at a JSON
-# file the daemon emitted — useful for remote clients). The file is a
+# Or via another local client/ tree (point client/config.json's token_file at a
+# JSON file the daemon emitted). The file is a
 # {"version":1,"name":"alice","token":"<raw>","issued_at":"<iso>"}
 # object that `issue-token --name alice` writes to
-# <daemon-host>/.logosctl/daemon/tokens/alice.json. Copy it across
-# (scp / ansible / cloud-secret-fetch) and reference it from
+# <session>/.logosctl/daemon/tokens/alice.json. Copy it into the other
+# local session and reference it from
 # client/config.json's token_file:
 mkdir -p ~/.logosctl/client
-scp daemon-host:~/.logosctl/daemon/tokens/alice.json ~/.logosctl/client/
+cp ~/.logosctl/daemon/tokens/alice.json /path/to/session/client/
 # then ensure ~/.logosctl/client/config.json's token_file = "alice.json"
 logosctl module load waku
 ```
@@ -1272,21 +842,16 @@ done
 
 ## Known Issues
 
-1. **Event forwarding** — The `watch` command requires `core_service` to forward events from target modules to CLI clients. The approach is: `core_service.watchModuleEvents()` registers a listener on the target module via `LogosAPIClient::onEvent()`, then re-emits received events through `CoreServiceImpl::emitEvent` — the `std::function` hook the runtime installs via `setEventListenerStd()`, emitted under the name `module_event`. The CLI client subscribes to `core_service` events. This creates a relay chain (target module → core_service → CLI client) which adds latency. An alternative would be having the CLI client connect directly to the target module, but that bypasses the core_service gateway pattern.
-
-2. **Stale state file** — If the daemon crashes without removing `<configDir>/daemon/state.json` (and the auto-emitted `client/` tree), the files stay on disk. Clients no longer pre-probe PID liveness (that only works for local daemons); instead the first RPC fails with a connect error and the `status` command turns that into a "not running" report. The only cost of a stale file is that the first attempt after a crash wastes one RPC timeout; in practice that's fine.
-
-3. **Crash tracking** — The daemon needs to track module crash metadata (exit code, signal, timestamp, restart count, last log line) so that `listModules` and `getModuleInfo` on core_service can report it. This may require extending liblogos to expose crash info, or core_service could track it independently by monitoring `QProcess` signals.
-
-4. **callModuleMethod proxy** — When `core_service` proxies calls to target modules via `LogosAPIClient`, it needs the target module's auth token. The daemon's TokenManager has all tokens, but core_service must obtain them. This may require core_service to have a privileged token or to be pre-authorized for all modules.
+1. The Qt-free CLI supports local `qt_remote_plain` only. Network transports
+   need equivalent plain C ABI client/provider support.
+2. Event forwarding adds one relay hop through `core_service`.
+3. Local endpoint probing deliberately fails closed on ambiguous filesystem or
+   platform errors, so those cases wait for the normal RPC timeout.
 
 ## Future Improvements
 
-1. **Tab completion** — Shell completion scripts for bash/zsh/fish.
-2. **TUI mode** — Interactive terminal UI with autocomplete (like Obsidian CLI).
-3. **Batch mode** — Execute multiple commands from a file (`logosctl batch commands.txt`).
-4. **`module-logs` command** — Stream or tail module process logs (`logosctl module-logs chat --tail 50`). Referenced by error messages but not yet specified.
-5. **Extract core_service** — If core_service grows, it could be extracted into a standalone plugin loaded from disk rather than statically linked. It already implements the plain `LogosProviderObject` interface, so the extraction is mostly adding a plugin entry point and a module build.
-6. **Capability-scoped tokens** — Today all tokens are admin-equivalent. Named tokens (`issue-token --name …`) create separate identities but each one is still fully authorised against the daemon. A scope/capability system would let e.g. a read-only token call `list-modules` / `status` but reject `load-module` / `stop`.
-7. **Client-cert TLS** — The `tcp_ssl` transport today authenticates the daemon to the client (server cert); mutual TLS + client-cert auth would be a natural extension once we have scoped tokens, and subsumes the token-file distribution problem for many deployments.
-
+1. Add plain C ABI implementations for TCP and TLS transports, then re-enable
+   the network transport guides and doc-tests.
+2. Add token scopes and per-module authorization policy.
+3. Allow clients to subscribe directly when a secure transport-discovery
+   mechanism exists, avoiding the core-service relay hop.

@@ -10,31 +10,30 @@
 #include "../paths.h"
 #include "logos_core.h"
 
-#include <logos_api.h>
-#include <logos_api_client.h>
-#include <logos_call_error.h>
-#include <logos_api_provider.h>
 #include <logos_socket_paths.h>
 #include <logos_transport_config.h>
 #include <logos_transport_config_json.h>
-#include <token_manager.h>
+#include <logos_protocol.h>
 #include "../core_service/core_service_impl.h"
-
-#include <QCoreApplication>
-#include <QDir>
-#include <QSocketNotifier>
+#include "../plain_rpc.h"
 
 #include <uuid.h>
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstdint>
+#include <cstring>
 #include <map>
+#include <mutex>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <optional>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 #include "../platform_compat.h"
 #include "../process_util.h"
@@ -47,40 +46,13 @@
 #endif
 
 static volatile sig_atomic_t g_shutdownRequested = 0;
+static std::mutex g_shutdownMutex;
+static std::condition_variable g_shutdownChanged;
 
-#ifndef _WIN32
-// Self-pipe: the handler write()s one byte (async-signal-safe), and a
-// QSocketNotifier on the read end calls QCoreApplication::quit() in normal
-// context — quit() itself is not async-signal-safe to call from a handler.
-static int g_signalPipe[2] = {-1, -1};
-#endif
-
-// Ask the event loop to leave exec(), from wherever we are.
-//
-// On POSIX this runs in a signal handler and must stay async-signal-safe,
-// which is what the self-pipe is for. On Windows there is no self-pipe here,
-// and the reason is not stylistic: QEventDispatcherWin32 implements
-// QSocketNotifier with WSAAsyncSelect, which requires a real SOCKET. Handing
-// it a CRT pipe fd fails with WSAENOTSOCK, the dispatcher DISCARDS the return
-// value, and the notifier simply never fires — a daemon that ignores Ctrl-C
-// with no diagnostic at all. What Windows does instead is run the console
-// control routine on a dedicated thread the OS spawns for it, so the
-// constraint there is threading, not signal safety: post to the main thread.
 void Daemon::signalHandler(int signal)
 {
     (void)signal;
     g_shutdownRequested = 1;
-#ifdef _WIN32
-    if (QCoreApplication::instance())
-        QMetaObject::invokeMethod(QCoreApplication::instance(), "quit",
-                                  Qt::QueuedConnection);
-#else
-    if (g_signalPipe[1] != -1) {
-        const char byte = 1;
-        ssize_t n = ::write(g_signalPipe[1], &byte, 1);
-        (void)n;
-    }
-#endif
 }
 
 #ifdef _WIN32
@@ -88,7 +60,7 @@ namespace {
 // Ctrl-C, Ctrl-Break and the console-window/logoff/shutdown events all arrive
 // here. Returning TRUE means "handled", which for CTRL_C_EVENT stops the
 // default terminate-the-process behaviour and lets the shutdown below unwind
-// normally (unlinking state.json, closing the QtRO pipes).
+// normally (unlinking state.json and closing the local pipes).
 //
 // For CTRL_CLOSE/LOGOFF/SHUTDOWN Windows grants a bounded grace period and
 // then kills the process regardless — that is the OS contract, not something
@@ -109,8 +81,22 @@ BOOL WINAPI consoleCtrlHandler(DWORD type)
 }
 }  // namespace
 
-void Daemon::requestShutdown() { signalHandler(SIGTERM); }
 #endif
+
+void Daemon::requestShutdown()
+{
+    g_shutdownRequested = 1;
+    g_shutdownChanged.notify_all();
+}
+
+void Daemon::requestShutdownAfter(int delayMs)
+{
+    std::thread([delayMs] {
+        if (delayMs > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+        Daemon::requestShutdown();
+    }).detach();
+}
 
 void Daemon::setupSignalHandlers()
 {
@@ -127,20 +113,6 @@ void Daemon::setupSignalHandlers()
     std::signal(SIGINT, &Daemon::signalHandler);
     std::signal(SIGTERM, &Daemon::signalHandler);
 #else
-    // Create the self-pipe and wire its read end to a QSocketNotifier that
-    // performs the actual (non-async-signal-safe) quit() in normal context.
-    if (::pipe(g_signalPipe) == 0) {
-        auto* notifier = new QSocketNotifier(g_signalPipe[0],
-                                             QSocketNotifier::Read,
-                                             QCoreApplication::instance());
-        QObject::connect(notifier, &QSocketNotifier::activated, []() {
-            char buf[16];
-            ssize_t n = ::read(g_signalPipe[0], buf, sizeof(buf));
-            (void)n;  // just draining; one wake is enough
-            QCoreApplication::quit();
-        });
-    }
-
     struct sigaction sa;
     sa.sa_handler = signalHandler;
     sigemptyset(&sa.sa_mask);
@@ -153,7 +125,7 @@ void Daemon::setupSignalHandlers()
 namespace {
 
 // Materialize a per-module TransportInfo list into a LogosTransportSet
-// that the SDK can hand to LogosAPI. For non-LocalSocket entries with
+// used by the runtime's child host. For non-LocalSocket entries with
 // `port == 0`, pre-allocate a fresh ephemeral port via PortAllocator
 // (ask the kernel for a free TCP port, close the probe socket, hand
 // the number to the listener). Without the pre-allocation the listener
@@ -188,9 +160,14 @@ std::optional<LogosTransportSet> buildTransportSet(
         }
 
         LogosTransportConfig c;
-        if      (eff.protocol == "tcp")     c.protocol = LogosProtocol::Tcp;
-        else if (eff.protocol == "tcp_ssl") c.protocol = LogosProtocol::TcpSsl;
-        else                                c.protocol = LogosProtocol::LocalSocket;
+        if (eff.protocol != "local") {
+            fprintf(stderr,
+                    "[%s] Transport '%s' is not available in the Qt-free "
+                    "logoscore runtime; use local/qt_remote_plain.\n",
+                    moduleName.c_str(), eff.protocol.c_str());
+            return std::nullopt;
+        }
+        c.protocol = LogosProtocol::QtRemotePlain;
         c.host       = eff.host;
         c.port       = eff.port;
         c.caFile     = eff.caFile;
@@ -216,6 +193,7 @@ std::vector<TransportInfo> toAdvertised(const LogosTransportSet& set)
         switch (c.protocol) {
         case LogosProtocol::Tcp:         t.protocol = "tcp"; break;
         case LogosProtocol::TcpSsl:      t.protocol = "tcp_ssl"; break;
+        case LogosProtocol::QtRemotePlain: t.protocol = "local"; break;
         case LogosProtocol::LocalSocket:
         default:                         t.protocol = "local"; break;
         }
@@ -238,8 +216,8 @@ std::vector<TransportInfo> toAdvertised(const LogosTransportSet& set)
 //
 // The sequencing — which failure skips what — lives in package_bootstrap so it
 // can be tested without a running core. This function is only the wiring from
-// those hooks to logos_core and the live LogosAPI.
-void bootstrapPackageModules(LogosAPI* api,
+// those hooks to logos_core and the live plain provider.
+void bootstrapPackageModules(logosctl::PlainRpcContext* api,
                              const std::string& bundledDir,
                              const std::string& signaturePolicy,
                              bool verbose)
@@ -267,16 +245,11 @@ void bootstrapPackageModules(LogosAPI* api,
     // that distinction is what the signature-policy fail-closed rests on.
     hooks.configure = [api](const std::string& method,
                             const std::vector<std::string>& args) {
-        LogosAPIClient* pm =
-            api ? api->getClient(package_bootstrap::kPackageManager) : nullptr;
+        logosctl::PlainRpcClient* pm =
+            api ? api->client(package_bootstrap::kPackageManager) : nullptr;
         if (!pm) return false;
-        QVariantList qargs;
-        for (const auto& a : args)
-            qargs.push_back(QString::fromStdString(a));
-        logos::CallError err;
-        pm->invokeRemoteMethod(QString::fromLatin1(package_bootstrap::kPackageManager),
-                               QString::fromStdString(method),
-                               qargs, Timeout(), &err);
+        logosctl::PlainRpcError err;
+        pm->invoke(method, args, 0, &err);
         return err.ok();
     };
 
@@ -294,6 +267,42 @@ void bootstrapPackageModules(LogosAPI* api,
     package_bootstrap::run(hooks, dirs, signaturePolicy);
 }
 
+char* copyForProtocol(const std::string& value)
+{
+    auto* result = static_cast<char*>(std::malloc(value.size() + 1));
+    if (!result) return nullptr;
+    std::memcpy(result, value.c_str(), value.size() + 1);
+    return result;
+}
+
+char* dispatchCoreService(const char* method, const char* argsJson, void* userData)
+{
+    auto* service = static_cast<CoreServiceImpl*>(userData);
+    const nlohmann::json args = nlohmann::json::parse(
+        argsJson && *argsJson ? argsJson : "[]", nullptr, false);
+    if (args.is_discarded() || !args.is_array()) return nullptr;
+    return copyForProtocol(service->callMethodStd(method ? method : "", args).dump());
+}
+
+char* coreServiceMethods(void* userData)
+{
+    return copyForProtocol(
+        static_cast<CoreServiceImpl*>(userData)->getMethodsStd().dump());
+}
+
+int acceptCoreServiceToken(const char* module, const char* token, void*)
+{
+    return lp_token_save_inbound(module, token);
+}
+
+int validateCoreServiceToken(const char* token, const char* transport, void*)
+{
+    if (!token || !transport) return LP_ERR_INVALID_ARG;
+    TokenStore tokenStore;
+    return tokenStore.lookupByToken(token, transport).has_value()
+        ? LP_OK : LP_ERR_UNAVAILABLE;
+}
+
 } // namespace
 
 int Daemon::start(int argc, char* argv[],
@@ -302,6 +311,7 @@ int Daemon::start(int argc, char* argv[],
                   bool persistConfig,
                   bool verbose)
 {
+    g_shutdownRequested = 0;
     const auto& modulesDirs      = cfg.modulesDirs;
 
     // Apply the session-directory redirects before anything asks Config for a
@@ -419,10 +429,9 @@ int Daemon::start(int argc, char* argv[],
         }
     }
 
-    // Reap the socket files left behind by a previous node that died without
-    // running its destructors. A graceful stop unlinks its own sockets (Qt's
-    // QLocalServer destructor does it once QCoreApplication::exec() returns —
-    // which is what the SIGTERM handler above enables), so this is purely for
+    // Reap socket files left behind by a previous node that died without
+    // running its destructors. A graceful stop unlinks its own sockets during
+    // provider teardown, so this is purely for
     // the paths that cannot unwind: SIGKILL, a module crash, and the
     // PR_SET_PDEATHSIG kill that reaps orphaned logos_host children. Without
     // it those files accumulate in the temp dir forever, one per module per
@@ -436,15 +445,17 @@ int Daemon::start(int argc, char* argv[],
     // sharing the temp dir keeps its sockets, and a regular file that merely
     // shares the prefix (e.g. a logos_*.lgx build artefact) is never touched.
     //
-    // QDir::tempPath() is the authoritative directory: QLocalServer resolves a
-    // bare server name against it, so it is exactly where the sockets land, and
-    // it honours $TMPDIR on both Linux and macOS.
+    // std::filesystem::temp_directory_path() matches the endpoint rule used by
+    // qt_remote_plain and honours $TMPDIR on Linux and macOS.
     {
-        const std::size_t reaped =
-            logos::reapStaleSockets(QDir::tempPath().toStdString(), "logos_");
+        std::error_code tempError;
+        const std::string tempPath =
+            std::filesystem::temp_directory_path(tempError).string();
+        const std::size_t reaped = tempError
+            ? 0 : logos::reapStaleSockets(tempPath, "logos_");
         if (reaped > 0 && verbose)
             fprintf(stderr, "Reaped %zu stale socket file(s) from %s\n",
-                    reaped, QDir::tempPath().toStdString().c_str());
+                    reaped, tempPath.c_str());
     }
 
     // 2. Initialize logos core
@@ -540,9 +551,8 @@ int Daemon::start(int argc, char* argv[],
 
     // Register capability_module's transports with the runtime BEFORE
     // logos_core_start launches the child subprocess. The child reads
-    // the JSON via --transport-set in its argv and uses the explicit-
-    // transport LogosAPI constructor so its provider binds every
-    // listener.
+    // the JSON via --transport-set in its argv and binds the requested child
+    // provider listeners.
     {
         std::string capJson = logos::transportSetToJsonString(capabilityTransports);
         logos_core_set_module_transports("capability_module", capJson.c_str());
@@ -553,14 +563,13 @@ int Daemon::start(int argc, char* argv[],
     //    registered.
     logos_core_start();
 
-    // -v has to reach spdlog, not just Qt -- and it has to be set HERE.
+    // -v has to reach spdlog, and it has to be set HERE.
     //
     // Module subprocesses do not share our stdio. The container gives each one
     // its own pipes, reads them line by line, and re-emits each line through
     // spdlog, picking the level from the line's prefix ("Debug:" -> debug).
     // spdlog's default is `info`, so a module's debug output was read, parsed,
-    // classified -- and dropped at the last step. `-v` only ever gated OUR Qt
-    // handler, so no flag made those lines appear.
+    // classified -- and dropped at the last step.
     //
     // Ordering matters and cost a wrong fix: setting the level before
     // logos_core_start() is silently undone, because liblogos installs its own
@@ -568,15 +577,25 @@ int Daemon::start(int argc, char* argv[],
     // and it sticks.
     spdlog::set_level(verbose ? spdlog::level::debug : spdlog::level::info);
 
-    // 7. Register core_service as an in-process module via the C++ SDK.
-    //    core_service can publish on multiple transports simultaneously:
-    //    a local QLocalSocket (back-compat) + any TCP / TCP+SSL listeners
-    //    specified via --transport.
-    auto* coreServiceApi = new LogosAPI("core_service", coreTransports);
+    // 7. Publish core_service through the Qt-free protocol C ABI.
     auto* coreServiceImpl = new CoreServiceImpl();
+    const std::string coreTransportJson =
+        logos::transportSetToJsonString(coreTransports);
+    lp_provider* provider = lp_provider_create(
+        "core_service", coreTransportJson.c_str());
+    if (!provider) {
+        fprintf(stderr, "Failed to create the core_service provider.\n");
+        delete coreServiceImpl;
+        logos_core_cleanup();
+        return 1;
+    }
 
-    coreServiceImpl->init(coreServiceApi);
-    auto* provider = coreServiceApi->getProvider();
+    // Capability delivers module tokens over a channel authenticated by the
+    // host credential liblogos minted while loading capability_module.
+    if (char* credential = logos_core_get_token("capability_module")) {
+        lp_provider_save_token(provider, "core", credential);
+        delete[] credential;
+    }
 
     // Make operator-issued tokens (`logosctl token issue --name alice`) actually
     // authorize core_service calls. The built-in ModuleProxy scan only knows the
@@ -587,15 +606,19 @@ int Daemon::start(int argc, char* argv[],
     // (revoke-token) and expiry take effect immediately, without a restart.
     // Installed before registerObject so the proxy is validated from its first
     // published call.
-    provider->setTokenValidator(
-        [](const QString& token, const QString& transportProtocol) {
-            TokenStore tokenStore;
-            return tokenStore
-                .lookupByToken(token.toStdString(), transportProtocol.toStdString())
-                .has_value();
-        });
-
-    provider->registerObject("core_service", static_cast<LogosProviderObject*>(coreServiceImpl));
+    lp_provider_set_token_validator(provider, validateCoreServiceToken, nullptr);
+    if (lp_provider_register(provider, dispatchCoreService, coreServiceMethods,
+                             acceptCoreServiceToken, coreServiceImpl) != LP_OK) {
+        fprintf(stderr, "Failed to publish the core_service provider.\n");
+        lp_provider_destroy(provider);
+        delete coreServiceImpl;
+        logos_core_cleanup();
+        return 1;
+    }
+    coreServiceImpl->emitEvent = [provider](const std::string& event,
+                                            const std::string& data) {
+        lp_provider_emit_event(provider, event.c_str(), data.c_str());
+    };
 
     // 8. Auto-issue a fresh `auto` token for this boot.
     //
@@ -604,12 +627,10 @@ int Daemon::start(int argc, char* argv[],
     // tokens validate via TokenStore::lookupByToken on demand. The `auto`
     // token is special: the daemon (re-)generates it every boot,
     // overwrites both the hash entry in tokens.json and the raw files at
-    // daemon/tokens/auto.json + client/auto.json, and registers the raw
-    // version with the in-process TokenManager so the hot path stays
-    // fast (no per-RPC hash + DB lookup). `local_only=true` keeps a
-    // leaked client/auto.json from being usable over TCP from a remote
-    // host. Operator-issued tokens take effect only on the next daemon
-    // restart (or future SIGHUP-driven reload).
+    // daemon/tokens/auto.json + client/auto.json, and saves the raw value in
+    // the provider's inbound token table. Operator-issued tokens are checked
+    // by the validator above, so issue, revoke, and expiry take effect without
+    // restarting the daemon.
     TokenStore tokenStore;
     const auto autoTokenOutcome = tokenStore.issueToken("auto",
                                                         /*expiresAt=*/{},
@@ -621,6 +642,8 @@ int Daemon::start(int argc, char* argv[],
         // logos_core_start() already launched the module subprocesses; leaving
         // without cleanup strands them. Every other exit from this function
         // runs logos_core_cleanup() below.
+        lp_provider_destroy(provider);
+        delete coreServiceImpl;
         logos_core_cleanup();
         return 1;
     }
@@ -631,7 +654,7 @@ int Daemon::start(int argc, char* argv[],
     // present to it. The store is direction-split, so the outbound `saveToken`
     // files this under "when the daemon calls cli_client, send autoTokenRaw",
     // and the inbound check that authenticates the client's RPCs finds nothing.
-    TokenManager::instance().saveInboundToken("cli_client", autoTokenRaw);
+    lp_provider_save_token(provider, "cli_client", autoTokenRaw.c_str());
 
     // 8b. Bring up the bundled package modules and point them at this
     //     session's directories.
@@ -653,9 +676,11 @@ int Daemon::start(int argc, char* argv[],
     //     packages is still a perfectly good daemon for loading and calling
     //     modules, and refusing to boot would turn a missing optional module
     //     into total unavailability.
-    if (modern)
-        bootstrapPackageModules(coreServiceApi, paths::bundledPackageModulesDir(),
+    if (modern) {
+        logosctl::PlainRpcContext bootstrapRpc("core_service");
+        bootstrapPackageModules(&bootstrapRpc, paths::bundledPackageModulesDir(),
                                 cfg.signaturePolicy, verbose);
+    }
 
     // 9. Write the live-instance state file. Carries the resolved
     //    transport endpoints (post-bind, with real ports), instanceId/
@@ -684,6 +709,8 @@ int Daemon::start(int argc, char* argv[],
         // logos_core_start() already launched the module subprocesses; leaving
         // without cleanup strands them. Every other exit from this function
         // runs logos_core_cleanup() below.
+        lp_provider_destroy(provider);
+        delete coreServiceImpl;
         logos_core_cleanup();
         return 1;
     }
@@ -704,9 +731,8 @@ int Daemon::start(int argc, char* argv[],
     // 10. Generate the local-client convenience artifacts (client/config.json
     //     + client/auto.json). The config.json write is gated inside
     //     writeLocalClientArtifacts on the file not already existing —
-    //     remote clients are expected to write their own, and an
-    //     operator-authored remote config must not be clobbered just
-    //     because a daemon happened to start in the same config dir.
+    //     operator-authored client config must not be clobbered just because a
+    //     daemon happened to start in the same config dir.
     //     The one exception: an existing config.json whose instance_id
     //     no longer matches this daemon is a stale copy of our own
     //     artifact (persisted config dir, replaced daemon) and is
@@ -730,34 +756,31 @@ int Daemon::start(int argc, char* argv[],
             Config::clientConfigPath().c_str());
     fflush(stdout);
 
-    // 8. Set up signal handlers for clean shutdown. SIGINT / SIGTERM
-    //    fire `QCoreApplication::quit()`, which makes `exec()` return
-    //    and the explicit cleanup below runs. We also subscribe to
-    //    `aboutToQuit` as a defense-in-depth: any future code path
-    //    that calls `quit()` without going through the explicit
-    //    cleanup (e.g. an exception caught by the event loop) still
-    //    unlinks state.json so a co-resident client can detect
-    //    "no live daemon".
+    // 8. The protocol runtime owns its I/O workers. The main thread only waits
+    //    for a signal or the core_service shutdown RPC.
     setupSignalHandlers();
-    QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
-                     []() { DaemonRuntimeStateFile::remove(); });
-
-    // 9. Run Qt event loop (blocks)
-    int result = QCoreApplication::exec();
+    {
+        std::unique_lock<std::mutex> lock(g_shutdownMutex);
+        while (!g_shutdownRequested) {
+            // A POSIX signal handler may only set sig_atomic_t; the bounded
+            // wait observes it without making condition_variable calls from
+            // signal context.
+            g_shutdownChanged.wait_for(lock, std::chrono::milliseconds(100));
+        }
+    }
 
     // 10. Cleanup
     fprintf(stdout, "Shutting down logosctl daemon...\n");
     fflush(stdout);
 
+    DaemonRuntimeStateFile::remove();
+    lp_provider_destroy(provider);
+    delete coreServiceImpl;
     logos_core_cleanup();
     LogSink::instance().stop();
-    DaemonRuntimeStateFile::remove();
-
-    delete coreServiceImpl;
-    delete coreServiceApi;
 
     fprintf(stdout, "Logosctl daemon stopped.\n");
     fflush(stdout);
 
-    return result;
+    return 0;
 }

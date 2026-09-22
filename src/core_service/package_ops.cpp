@@ -2,11 +2,7 @@
 #include "config.h"
 #include "logos_core.h"
 #include "rpc_deadlines.h"
-
-#include <logos_api.h>
-#include <logos_api_client.h>
-#include <logos_call_error.h>
-#include <logos_json_convert.h>
+#include "../plain_rpc.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -32,26 +28,25 @@ LogosMap err(const std::string& code, const std::string& message)
 // failure; `why` receives the transport's reason. The deadline is per method
 // (rpc_deadlines.h): the package modules do the whole download or archive walk
 // inside the call, and the transport default is 20 s.
-nlohmann::json call(LogosAPI* api, const char* module, const std::string& method,
+nlohmann::json call(logosctl::PlainRpcContext* api, const char* module,
+                    const std::string& method,
                     const LogosList& args = LogosList::array(),
                     std::string* why = nullptr)
 {
     if (!api) return nullptr;
-    LogosAPIClient* client = api->getClient(module);
+    logosctl::PlainRpcClient* client = api->client(module);
     if (!client) {
         if (why) *why = std::string(module) + " is not reachable";
         return nullptr;
     }
-    logos::CallError err;
-    const QVariant ret = client->invokeRemoteMethod(
-        QString::fromStdString(module), QString::fromStdString(method),
-        logos::nlohmannArgsToQVariantList(args),
-        rpc_deadlines::forPackageCall(method), &err);
+    logosctl::PlainRpcError err;
+    const nlohmann::json ret = client->invoke(
+        method, args, rpc_deadlines::forPackageCall(method), &err);
     if (!err.ok()) {
         if (why) *why = err.message;
         return nullptr;
     }
-    return logos::qvariantToNlohmann(ret);
+    return ret;
 }
 
 std::string withReason(const std::string& base, const std::string& why)
@@ -88,7 +83,7 @@ std::vector<std::string> loadedModules()
     return out;
 }
 
-LogosList installedPackages(LogosAPI* api)
+LogosList installedPackages(logosctl::PlainRpcContext* api)
 {
     nlohmann::json r = call(api, kPm, "getInstalledPackages");
     return r.is_array() ? r : LogosList::array();
@@ -176,7 +171,7 @@ std::vector<std::string> affectedLoaded(const std::vector<std::string>& affected
 
 // Resolve the install/upgrade closure. Returns the resolver's array, or a
 // null json on failure.
-nlohmann::json resolveClosure(LogosAPI* api,
+nlohmann::json resolveClosure(logosctl::PlainRpcContext* api,
                               const std::vector<std::string>& names,
                               const Options& opts,
                               const LogosList& installed,
@@ -202,7 +197,8 @@ nlohmann::json resolveClosure(LogosAPI* api,
 
 // The cascade set for a removal: the package plus everything that depends on
 // it, dependents first so nothing is removed while something still needs it.
-std::vector<std::string> removalSet(LogosAPI* api, const std::string& name,
+std::vector<std::string> removalSet(logosctl::PlainRpcContext* api,
+                                    const std::string& name,
                                     bool withDependents, std::string* errorOut)
 {
     if (!withDependents) return {name};
@@ -229,7 +225,7 @@ std::vector<std::string> removalSet(LogosAPI* api, const std::string& name,
 // plan
 // ---------------------------------------------------------------------------
 
-LogosMap plan(LogosAPI* api, Op op,
+LogosMap plan(logosctl::PlainRpcContext* api, Op op,
               const std::vector<std::string>& names,
               const Options& opts)
 {
@@ -345,7 +341,7 @@ namespace {
 // ack timer inside requestX and cancels the whole operation if nothing
 // acknowledges; in-process that window is never at risk, but the ack is still
 // required — confirmX refuses an un-acked pending action.
-bool openGate(LogosAPI* api, Op op, const std::string& name,
+bool openGate(logosctl::PlainRpcContext* api, Op op, const std::string& name,
               const std::string& depChangesJson, std::string* errorOut)
 {
     nlohmann::json r;
@@ -369,7 +365,7 @@ bool openGate(LogosAPI* api, Op op, const std::string& name,
     return true;
 }
 
-void closeGate(LogosAPI* api, Op op, const std::string& name)
+void closeGate(logosctl::PlainRpcContext* api, Op op, const std::string& name)
 {
     switch (op) {
     case Op::Install: call(api, kPm, "cancelInstall",   LogosList{name}); break;
@@ -380,7 +376,7 @@ void closeGate(LogosAPI* api, Op op, const std::string& name)
 
 } // namespace
 
-LogosMap apply(LogosAPI* api, Op op,
+LogosMap apply(logosctl::PlainRpcContext* api, Op op,
                const std::vector<std::string>& names,
                const Options& opts)
 {
@@ -544,7 +540,7 @@ LogosMap apply(LogosAPI* api, Op op,
     return result;
 }
 
-LogosMap download(LogosAPI* api, const std::string& name,
+LogosMap download(logosctl::PlainRpcContext* api, const std::string& name,
                   const Options& opts, const std::string& destDir)
 {
     std::string why;

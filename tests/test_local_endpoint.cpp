@@ -2,9 +2,8 @@
 
 #include "local_endpoint.h"
 
-#include <QDir>
-
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 
@@ -17,8 +16,8 @@
 // localEndpointProvablyAbsent() is what turns "a daemon that stopped" from a
 // twenty-second wait into an immediate answer, and it is the one piece of this
 // that could refuse a LIVE daemon if it got either half wrong. So these pin
-// both halves: the path derivation (against QDir::tempPath(), which is what Qt
-// resolves a bare QLocalSocket/QLocalServer name against) and the liveness
+// both halves: the path derivation (against the system temporary directory)
+// and the liveness
 // verdict for each shape the path can be in.
 
 namespace {
@@ -28,20 +27,19 @@ std::string uniqueId(const char* suffix)
     return "ut" + std::to_string(::getpid()) + suffix;
 }
 
-QString endpointPath(const std::string& instanceId)
+std::filesystem::path endpointPath(const std::string& instanceId)
 {
-    return QDir::tempPath()
-         + QStringLiteral("/logos_core_service_")
-         + QString::fromStdString(instanceId);
+    return std::filesystem::temp_directory_path()
+         / ("logos_core_service_" + instanceId);
 }
 
 #ifndef _WIN32
 // Bind and listen at `path`. Returns the fd, or -1. Closing the fd without
 // unlinking leaves exactly what a hard-killed daemon leaves: a socket inode
 // with nobody behind it.
-int bindListen(const QString& path)
+int bindListen(const std::filesystem::path& path)
 {
-    const std::string p = path.toStdString();
+    const std::string p = path.string();
     sockaddr_un addr{};
     if (p.size() >= sizeof(addr.sun_path)) return -1;
     addr.sun_family = AF_UNIX;
@@ -68,7 +66,7 @@ TEST(LocalEndpointTest, ReportsTheDerivedPathItChecked)
 #else
     std::string path;
     logosctl::localEndpointProvablyAbsent("core_service", "abc123", &path);
-    EXPECT_EQ(path, endpointPath("abc123").toStdString())
+    EXPECT_EQ(path, endpointPath("abc123").string())
         << "the path must be the one a bare QLocalSocket name resolves to, or "
            "the check is answering a question about the wrong file";
 #endif
@@ -78,7 +76,7 @@ TEST(LocalEndpointTest, NoSocketFileAtAll_IsProvablyAbsent)
 {
     // What a clean `daemon stop` leaves: QLocalServer's destructor unlinks it.
     const std::string id = uniqueId("_gone");
-    QDir().remove(endpointPath(id));
+    std::filesystem::remove(endpointPath(id));
 
 #ifdef _WIN32
     EXPECT_FALSE(logosctl::localEndpointProvablyAbsent("core_service", id));
@@ -95,17 +93,17 @@ TEST(LocalEndpointTest, SocketFileWithNoListener_IsProvablyAbsent)
     // leaves a window between the shutdown reply and the destructor running --
     // which is exactly when someone types the next command.
     const std::string id = uniqueId("_dead");
-    const QString path = endpointPath(id);
+    const std::filesystem::path path = endpointPath(id);
 
     const int fd = bindListen(path);
-    ASSERT_GE(fd, 0) << "could not bind " << path.toStdString();
+    ASSERT_GE(fd, 0) << "could not bind " << path.string();
     ::close(fd);                       // listener gone, inode stays
-    ASSERT_TRUE(QDir().exists(path)) << "the socket file should have survived";
+    ASSERT_TRUE(std::filesystem::exists(path)) << "the socket file should have survived";
 
     EXPECT_TRUE(logosctl::localEndpointProvablyAbsent("core_service", id))
         << "a socket file nobody is listening on is not a reachable daemon";
 
-    ::unlink(path.toStdString().c_str());
+    ::unlink(path.string().c_str());
 }
 
 TEST(LocalEndpointTest, LiveListener_IsNeverCalledAbsent)
@@ -113,15 +111,15 @@ TEST(LocalEndpointTest, LiveListener_IsNeverCalledAbsent)
     // The control, and the one that matters most: refusing a reachable daemon
     // is far worse than the wait this avoids.
     const std::string id = uniqueId("_live");
-    const QString path = endpointPath(id);
+    const std::filesystem::path path = endpointPath(id);
 
     const int fd = bindListen(path);
-    ASSERT_GE(fd, 0) << "could not bind " << path.toStdString();
+    ASSERT_GE(fd, 0) << "could not bind " << path.string();
 
     EXPECT_FALSE(logosctl::localEndpointProvablyAbsent("core_service", id));
 
     ::close(fd);
-    ::unlink(path.toStdString().c_str());
+    ::unlink(path.string().c_str());
 }
 #endif
 
@@ -130,13 +128,13 @@ TEST(LocalEndpointTest, SomeOtherFileWearingTheName_IsNotEvidence)
     // Only S_ISSOCK inodes get an opinion. A regular file that happens to
     // match the name says nothing about any daemon.
     const std::string id = uniqueId("_plain");
-    const QString path = endpointPath(id);
-    { std::ofstream ofs(path.toStdString(), std::ios::trunc); ofs << "x"; }
-    ASSERT_TRUE(QDir().exists(path));
+    const std::filesystem::path path = endpointPath(id);
+    { std::ofstream ofs(path, std::ios::trunc); ofs << "x"; }
+    ASSERT_TRUE(std::filesystem::exists(path));
 
     EXPECT_FALSE(logosctl::localEndpointProvablyAbsent("core_service", id));
 
-    QDir().remove(path);
+    std::filesystem::remove(path);
 }
 
 TEST(LocalEndpointTest, NothingToDeriveANameFromIsNotEvidence)

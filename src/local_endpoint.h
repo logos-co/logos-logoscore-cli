@@ -32,8 +32,7 @@
 // (tests/CMakeLists.txt) deliberately stays free of that so the command layer
 // can be unit-tested without the SDK.
 
-#include <QDir>
-
+#include <filesystem>
 #include <string>
 
 #ifndef _WIN32
@@ -80,11 +79,11 @@ inline bool localEndpointProvablyAbsent(const std::string& moduleName,
     if (moduleName.empty() || instanceId.empty())
         return false;   // nothing to derive a name from
 
+    std::error_code ec;
+    const std::filesystem::path temp = std::filesystem::temp_directory_path(ec);
+    if (ec) return false;
     const std::string path =
-        (QDir::tempPath() + QStringLiteral("/logos_%1_%2")
-             .arg(QString::fromStdString(moduleName),
-                  QString::fromStdString(instanceId)))
-            .toStdString();
+        (temp / ("logos_" + moduleName + "_" + instanceId)).string();
     if (pathOut) *pathOut = path;
 
     struct stat st{};

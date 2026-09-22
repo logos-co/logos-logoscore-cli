@@ -6,20 +6,11 @@
     nixpkgs.follows = "logos-nix/nixpkgs";
     logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk";
     logos-protocol.url = "github:logos-co/logos-protocol";
-    logos-plugin-qt.url = "github:logos-co/logos-plugin-qt";
     logos-liblogos.url = "github:logos-co/logos-liblogos";
-    # ONE logos-protocol, and ONE logos-qt-host, in what we ship. We bundle
-    # protocolPkg's liblogos_protocol.so next to qtHost's liblogos_qt_host.so,
-    # and qt-host bakes sizeof(LogosAPIClient) into its own `operator new` while
-    # logos-protocol DEFINES that constructor. Split them and every getClient()
-    # overruns its heap block -- silently on macOS, where the undersized request
-    # rounds up into the next size class, and fatally on glibc. Without these
-    # follows an --override-input on logos-protocol moves the bundled library
-    # and leaves qt-host behind, which is exactly how it broke.
+    # liblogos and the CLI must share one instance of the plain protocol
+    # runtime: that library owns the process-wide credential registry.
     logos-cpp-sdk.inputs.logos-protocol.follows = "logos-protocol";
-    logos-plugin-qt.inputs.logos-protocol.follows = "logos-protocol";
     logos-liblogos.inputs.logos-protocol.follows = "logos-protocol";
-    logos-liblogos.inputs.logos-plugin-qt.follows = "logos-plugin-qt";
 
     # ONE logos-package-manager for the whole tree. This repo stages
     # ${liblogosPortable}/lib/*.dll into ctl/bin/, which includes
@@ -53,7 +44,7 @@
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-plugin-qt, logos-liblogos, logos-package-manager, logos-capability-module, logos-modules-state-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
+  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-liblogos, logos-package-manager, logos-capability-module, logos-modules-state-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       # Build info baked into the logosctl binary so `--version` reports the
@@ -74,7 +65,6 @@
           { name = "logos-liblogos"; commit = revOf logos-liblogos; }
           { name = "logos-cpp-sdk"; commit = revOf logos-cpp-sdk; }
           { name = "logos-protocol"; commit = revOf logos-protocol; }
-          { name = "logos-plugin-qt"; commit = revOf logos-plugin-qt; }
           { name = "logos-capability-module"; commit = revOf logos-capability-module; }
           { name = "logos-modules-state-module"; commit = revOf logos-modules-state-module; }
           { name = "logos-package-manager-module"; commit = revOf logos-package-manager-module; }
@@ -84,9 +74,8 @@
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f {
         inherit system;
         pkgs = import nixpkgs { inherit system; };
-        cppSdk = logos-cpp-sdk.packages.${system}.default;
-        protocolPkg = logos-protocol.packages.${system}.default;
-        qtHost = logos-plugin-qt.packages.${system}.logos-qt-host;
+        cppSdk = logos-cpp-sdk.packages.${system}.logos-cpp-include;
+        protocolPkg = logos-protocol.packages.${system}.logos-protocol-plain;
         liblogos = logos-liblogos.packages.${system}.logos-liblogos;
         liblogosLib = logos-liblogos.packages.${system}.logos-liblogos-lib;
         liblogosPortable = logos-liblogos.packages.${system}.portable;
@@ -97,12 +86,7 @@
         packageDownloaderModuleLib = logos-package-downloader-module.packages.${system}.lib;
         installDev = nix-bundle-logos-module-install.bundlers.${system}.dev;
         installPortable = nix-bundle-logos-module-install.bundlers.${system}.portable;
-        # Both binaries here are headless: they link Qt for its object system
-        # and IPC, never for a GUI. qtCliApp bundles identically to qtApp but
-        # leaves bin/ as plain binaries -- no environment launcher, no hidden
-        # companion ELF -- because with no platform plugin there is nothing
-        # that needs XKB_CONFIG_ROOT or the portal theme.
-        dirBundler = nix-bundle-dir.bundlers.${system}.qtCliApp;
+        dirBundler = nix-bundle-dir.bundlers.${system}.default;
         appBundler = nix-bundle-appimage.lib.${system}.mkAppImage;
       });
 
@@ -134,9 +118,8 @@
             if system == "x86_64-windows"
             then logos-nix.lib.mkWindowsPkgs { buildSystem = windowsBuildSystem; }
             else import nixpkgs { inherit system; };
-          cppSdk = logos-cpp-sdk.packages.${system}.default;
-          protocolPkg = logos-protocol.packages.${system}.default;
-          qtHost = logos-plugin-qt.packages.${system}.logos-qt-host;
+          cppSdk = logos-cpp-sdk.packages.${system}.logos-cpp-include;
+          protocolPkg = logos-protocol.packages.${system}.logos-protocol-plain;
           liblogos = logos-liblogos.packages.${system}.logos-liblogos;
           liblogosLib = logos-liblogos.packages.${system}.logos-liblogos-lib;
           liblogosPortable = logos-liblogos.packages.${system}.portable;
@@ -163,12 +146,12 @@
           # hide until something forced it.
           dirBundler = nix-bundle-dir.bundlers.${
             if system == "x86_64-windows" then windowsBuildSystem else system
-          }.qtCliApp;
+          }.default;
           appBundler = nix-bundle-appimage.lib.${system}.mkAppImage;
         });
     in
     {
-      packages = forAllTargets ({ pkgs, system, cppSdk, protocolPkg, qtHost, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, modulesStateModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, installDev, installPortable, dirBundler, appBundler }:
+      packages = forAllTargets ({ pkgs, system, cppSdk, protocolPkg, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, modulesStateModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, installDev, installPortable, dirBundler, appBundler }:
         let
           pname = "logos-logoscore-cli";
           # VERSION is only present on release branches; dev branches use a placeholder.
@@ -240,8 +223,6 @@
           build = pkgs.stdenv.mkDerivation {
             inherit pname version src meta;
 
-            dontWrapQtApps = true;
-
             # Stage the generated build-info header next to src/version_info.h.
             preConfigure = ''
               cp ${buildInfoHeader} src/logos_build_info.h
@@ -252,31 +233,13 @@
               pkgs.cmake
               pkgs.ninja
               pkgs.pkg-config
-            ]
-            # The Qt wrapper hooks cannot even evaluate for a mingw host, and
-            # would skip a PE anyway. Both halves of the guard are needed: drop
-            # only the hook and qtbase's setup hook errors with "depends on
-            # qtbase, but no wrapping behavior was specified"; dontWrapQtApps
-            # above supplies the other half.
-            ++ pkgs.lib.optional (!isWindows) pkgs.qt6.wrapQtAppsNoGuiHook;
+            ];
 
             buildInputs = [
-              # cppSdk propagates Boost, OpenSSL, and nlohmann_json
-              # through `propagatedBuildInputs` on its symlinkJoin, so
-              # we don't list them explicitly here. Qt is intentionally
-              # NOT propagated by the SDK (qtbase's setup-hook fires
-              # `qtPreHook` which errors unless `wrapQtAppsHook` was
-              # sourced first, and that ordering can't be guaranteed
-              # through propagation), so we list it explicitly. CMake's
-              # `find_package(logos-cpp-sdk)` then re-runs
-              # `find_dependency(...)` against the propagated non-Qt
-              # entries + the Qt entries at configure time and stitches
-              # them into the imported target.
-              pkgs.qt6.qtbase
-              pkgs.qt6.qtremoteobjects
               cppSdk
               protocolPkg
-              qtHost
+              pkgs.nlohmann_json
+              pkgs.openssl
               pkgs.stduuid
               pkgs.cli11
               pkgs.fmt
@@ -288,24 +251,11 @@
             # cost, not a free one.
             ++ pkgs.lib.optional (!isWindows) pkgs.gtest;
 
-            # logosQtCrossCmakeFlags points CMake at the BUILD platform's Qt
-            # host tools (moc, repc, ...) while headers and libraries stay on
-            # the target's. Getting it backwards still succeeds and links the
-            # wrong architecture. Empty on native, hence `or [ ]`.
-            #
-            # Misleading symptom when it is missing: CMake names
-            # Qt6RemoteObjects, but Qt6RemoteObjectsTools is what it cannot find.
-            cmakeFlags = (pkgs.logosQtCrossCmakeFlags or [ ]) ++ [
+            cmakeFlags = [
               "-GNinja"
               "-DLOGOS_LIBLOGOS_ROOT=${liblogos}"
-              # Direct path to the SDK: CMake's find_package(logos-cpp-sdk)
-              # picks up the imported target so logosctl can link
-              # logos_sdk explicitly (needed for symbols like
-              # logos::transportSetToJsonString which liblogos doesn't
-              # itself reference and would otherwise be dead-stripped).
               "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
               "-DLOGOS_PROTOCOL_ROOT=${protocolPkg}"
-              "-DLOGOS_QT_HOST_ROOT=${qtHost}"
             ];
           };
 
@@ -322,10 +272,12 @@
             inherit version meta;
 
             dontUnpack = true;
+            # Qt is present only for the copied logos_host_qt child. Wrapping
+            # logoscore/logosctl would put Qt setup back on the front-end path.
+            dontWrapQtApps = true;
 
             nativeBuildInputs =
-              [ pkgs.qt6.wrapQtAppsNoGuiHook ]
-              ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.cctools ]
+              pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.cctools ]
               ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.autoPatchelfHook ];
 
             buildInputs = [
@@ -339,11 +291,8 @@
               # patchelf.
               pkgs.yaml-cpp
               pkgs.spdlog
-            ];
-
-            qtWrapperArgs = [
-              "--unset LD_LIBRARY_PATH"
-              "--set LOGOS_HOST_PATH ${liblogos}/bin/logos_host"
+              protocolPkg
+              liblogosLib
             ];
 
             installPhase = ''
@@ -352,6 +301,10 @@
               mkdir -p $out/bin $out/lib $out/modules
 
               cp ${build}/bin/${binName} $out/bin/
+              for host in ${liblogos}/bin/logos_host*; do
+                [ -f "$host" ] || continue
+                cp -L "$host" $out/bin/
+              done
               chmod -R +w $out/bin
 
               # Copy liblogos_core so logosctl can link at runtime
@@ -432,17 +385,8 @@
             # build says so instead of shipping an .exe that will not start.
             passthru = {
               extraDirs = [ "modules" ] ++ pkgs.lib.optional withPkgModules "modules-pkg";
-              # qtbase + qtremoteobjects are what the CLI itself links.  The
-              # other two come from Qt PLUGINS that qtCliApp stages anyway:
-              # `guiApp = false` suppresses the LAUNCHER, not the plugin scan,
-              # so imageformats/qjpeg.dll and sqldrivers/qsqlite.dll are in the
-              # tree and their imports have to resolve.  Nothing puts libjpeg
-              # or sqlite into closureInfo on its own -- a PE embeds no store
-              # path, so Nix records no reference -- and the bundler therefore
-              # failed the build naming both.  It was right to.
-              #
-              # `.bin` rather than the default output: that is where the DLLs
-              # actually are, checked rather than assumed.
+              # Qt is needed only by logos_host_qt, which remains the
+              # compatibility process for today's Qt plugins.
               extraClosurePaths = [
                 pkgs.qt6.qtbase pkgs.qt6.qtremoteobjects
                 pkgs.libjpeg.bin pkgs.sqlite.bin
@@ -459,7 +403,6 @@
               pkgs.qt6.qtremoteobjects
               cppSdk
               protocolPkg
-              qtHost
               liblogosLib
               pkgs.yaml-cpp
               pkgs.spdlog
@@ -596,20 +539,16 @@ ${pkgs.lib.optionalString withPkgModules ''
             pname = "${pname}-tests";
             inherit version src meta;
 
-            dontWrapQtApps = true;
-
             nativeBuildInputs = [
               pkgs.cmake
               pkgs.ninja
               pkgs.pkg-config
-              pkgs.qt6.wrapQtAppsNoGuiHook
             ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.cctools ]
               ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.autoPatchelfHook ];
 
             buildInputs = [
-              pkgs.qt6.qtbase
-              pkgs.qt6.qtremoteobjects
               pkgs.nlohmann_json
+              pkgs.openssl
               pkgs.stduuid
               pkgs.cli11
               pkgs.gtest
@@ -617,12 +556,8 @@ ${pkgs.lib.optionalString withPkgModules ''
               pkgs.yaml-cpp
               pkgs.spdlog
               liblogosLib
-              # cppSdk propagates Boost, OpenSSL, nlohmann_json (but
-              # not Qt) via its symlinkJoin's propagatedBuildInputs —
-              # see the `build` derivation above for the rationale.
               cppSdk
               protocolPkg
-              qtHost
             ];
 
             cmakeFlags = [
@@ -630,7 +565,6 @@ ${pkgs.lib.optionalString withPkgModules ''
               "-DLOGOS_LIBLOGOS_ROOT=${liblogos}"
               "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
               "-DLOGOS_PROTOCOL_ROOT=${protocolPkg}"
-              "-DLOGOS_QT_HOST_ROOT=${qtHost}"
             ];
 
             installPhase = ''
@@ -703,8 +637,6 @@ ${pkgs.lib.optionalString withPkgModules ''
             pname = "${pname}-portable";
             inherit version src meta;
 
-            dontWrapQtApps = true;
-
             # Stage the generated build-info header next to src/version_info.h.
             preConfigure = ''
               cp ${buildInfoHeader} src/logos_build_info.h
@@ -715,22 +647,13 @@ ${pkgs.lib.optionalString withPkgModules ''
               pkgs.cmake
               pkgs.ninja
               pkgs.pkg-config
-            ]
-            # Same two-part guard as `build`: the Qt wrapper hooks cannot even
-            # evaluate for a mingw host and would skip a PE anyway, and dropping
-            # the hook alone makes qtbase's setup hook error with "depends on
-            # qtbase, but no wrapping behavior was specified".
-            ++ pkgs.lib.optional (!isWindows) pkgs.qt6.wrapQtAppsNoGuiHook;
+            ];
 
             buildInputs = [
-              # cppSdk propagates Boost, OpenSSL, nlohmann_json (but
-              # not Qt) via its symlinkJoin's propagatedBuildInputs —
-              # see the `build` derivation above for the rationale.
-              pkgs.qt6.qtbase
-              pkgs.qt6.qtremoteobjects
               cppSdk
               protocolPkg
-              qtHost
+              pkgs.nlohmann_json
+              pkgs.openssl
               pkgs.gtest
               pkgs.stduuid
               pkgs.cli11
@@ -739,12 +662,11 @@ ${pkgs.lib.optionalString withPkgModules ''
               pkgs.spdlog
             ];
 
-            cmakeFlags = (pkgs.logosQtCrossCmakeFlags or [ ]) ++ [
+            cmakeFlags = [
               "-GNinja"
               "-DLOGOS_LIBLOGOS_ROOT=${liblogosPortable}"
               "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
               "-DLOGOS_PROTOCOL_ROOT=${protocolPkg}"
-              "-DLOGOS_QT_HOST_ROOT=${qtHost}"
             ];
           };
 
@@ -754,10 +676,10 @@ ${pkgs.lib.optionalString withPkgModules ''
             inherit version meta;
 
             dontUnpack = true;
+            dontWrapQtApps = true;
 
             nativeBuildInputs =
-              [ pkgs.qt6.wrapQtAppsNoGuiHook ]
-              ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.cctools ]
+              pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.cctools ]
               ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.autoPatchelfHook ];
 
             buildInputs = [
@@ -771,15 +693,13 @@ ${pkgs.lib.optionalString withPkgModules ''
               # patchelf.
               pkgs.yaml-cpp
               pkgs.spdlog
+              protocolPkg
+              liblogosLib
             ];
 
             passthru = {
               extraDirs = [ "modules" ] ++ pkgs.lib.optional withPkgModules "modules-pkg";
             };
-
-            qtWrapperArgs = [
-              "--unset LD_LIBRARY_PATH"
-            ];
 
             installPhase = ''
               runHook preInstall
@@ -788,7 +708,10 @@ ${pkgs.lib.optionalString withPkgModules ''
 
               # The one binary this package ships, from the portable build
               cp ${buildPortable}/bin/${binName} $out/bin/
-              cp -L ${liblogosPortable}/bin/logos_host $out/bin/ 2>/dev/null || true
+              for host in ${liblogosPortable}/bin/logos_host*; do
+                [ -f "$host" ] || continue
+                cp -L "$host" $out/bin/
+              done
 
               # Libraries — nix-bundle-dir will resolve and bundle all dependencies
               cp -L ${liblogosPortable}/lib/*.dylib $out/lib/ 2>/dev/null || true
@@ -987,13 +910,8 @@ ${pkgs.lib.optionalString withPkgModules ''
           # either should surface in the same run, and neither should wait on
           # the other.
           tests-logosctl = pkgs.runCommand "logos-logoscore-cli-tests-logosctl" {
-            nativeBuildInputs = [ testsPkg ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.qt6.qtbase ];
+            nativeBuildInputs = [ testsPkg ];
           } ''
-            export QT_QPA_PLATFORM=offscreen
-            export QT_FORCE_STDERR_LOGGING=1
-            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-              export QT_PLUGIN_PATH="${pkgs.qt6.qtbase}/${pkgs.qt6.qtbase.qtPluginPrefix}"
-            ''}
             export LOGOSCTL_BINARY=${testsPkg}/bin/logosctl
             # Daemon-backed integration tests read these. Absent ⇒ those tests
             # GTEST_SKIP, so the rest still runs where test modules are absent.
@@ -1011,13 +929,8 @@ ${pkgs.lib.optionalString withPkgModules ''
           # logoscore's copy of the suites, pinning the surface people actually
           # use. Deleted along with the tool.
           tests-logoscore = pkgs.runCommand "logos-logoscore-cli-tests-logoscore" {
-            nativeBuildInputs = [ testsPkg ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.qt6.qtbase ];
+            nativeBuildInputs = [ testsPkg ];
           } ''
-            export QT_QPA_PLATFORM=offscreen
-            export QT_FORCE_STDERR_LOGGING=1
-            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-              export QT_PLUGIN_PATH="${pkgs.qt6.qtbase}/${pkgs.qt6.qtbase.qtPluginPrefix}"
-            ''}
             export LOGOSCORE_BINARY=${testsPkg}/bin/logoscore
             export LOGOSCORE_TEST_MODULES_DIR=${testModulesInstall}/modules
             export LOGOS_HOST_PATH=${liblogos}/bin/logos_host
@@ -1028,15 +941,9 @@ ${pkgs.lib.optionalString withPkgModules ''
             ${testsPkg}/bin/integration_tests_logoscore --gtest_output=xml:$out/integration-test-results.xml
           '';
 
-          # One-runtime symbol gate. Asserts the logos C++ runtime (TokenManager,
-          # StoreRegistry, LogosAPI, LogosAPIClient) is DEFINED exactly once
-          # across the images that share one process. The assertion is
-          # exactly-one and deliberately names no owner: liblogos_core stopped
-          # being the provider when the runtime became real shared libraries,
-          # and liblogos_protocol / liblogos_qt_host define these types now. This repo saw the LOUD version of a duplicate on
-          # Windows (the link fails with "multiple definition of
-          # `TokenManager::instance()'") and the QUIET version everywhere else,
-          # where it links fine and surfaces at runtime as refused calls.
+          # Front-end boundary gate. It asserts one shared lp_* runtime, no
+          # private lp_* copies in consumers, and no Qt/full-protocol dynamic
+          # dependency in logoscore, logosctl, or liblogos_core.
           # Build: nix build .#checks.<sys>.symbol-gate
           symbol-gate = import ./nix/symbol-gate.nix {
             inherit pkgs;
@@ -1071,9 +978,8 @@ ${pkgs.lib.optionalString withPkgModules ''
             pkgs.pkg-config
           ];
           buildInputs = [
-            pkgs.qt6.qtbase
-            pkgs.qt6.qtremoteobjects
             pkgs.nlohmann_json
+            pkgs.openssl
             pkgs.stduuid
             pkgs.cli11
             pkgs.gtest

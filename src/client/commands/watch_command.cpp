@@ -1,8 +1,9 @@
 #include "watch_command.h"
 #include <CLI/CLI.hpp>
 #include <fmt/format.h>
-#include <QCoreApplication>
+#include <condition_variable>
 #include <iostream>
+#include <mutex>
 
 int WatchCommand::execute(const std::vector<std::string>& args)
 {
@@ -38,6 +39,11 @@ int WatchCommand::execute(const std::vector<std::string>& args)
     if (!output().isJsonMode())
         std::cerr << fmt::format("Watching events from '{}'... (Ctrl+C to stop)\n", module);
 
-    QCoreApplication::exec();
+    // Event delivery is owned by the protocol worker. Keep the command alive
+    // until the operating system handles Ctrl+C (the historical behavior).
+    std::mutex mutex;
+    std::condition_variable wake;
+    std::unique_lock<std::mutex> lock(mutex);
+    wake.wait(lock);
     return 0;
 }

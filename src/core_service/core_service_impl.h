@@ -1,14 +1,14 @@
 #ifndef CORE_SERVICE_IMPL_H
 #define CORE_SERVICE_IMPL_H
 
-#include <logos_provider_object.h>
+#include "../plain_rpc.h"
 #include <functional>
 #include <string>
 #include <vector>
 #include <logos_json.h>
 #include <logos_result.h>
 
-class CoreServiceImpl : public LogosProviderObject
+class CoreServiceImpl
 {
 public:
     std::function<void(const std::string& eventName, const std::string& data)> emitEvent;
@@ -65,25 +65,12 @@ public:
     std::string name() const { return "core_service"; }
     std::string version() const { return "1.0.0"; }
 
-    void onInit(LogosAPI* api);
-
-    // LogosProviderObject Qt interface (delegates to std bridge)
-    QVariant callMethod(const QString& methodName, const QVariantList& args) override;
-    QJsonArray getMethods() override;
-    QString providerName() const override;
-    QString providerVersion() const override;
-    void setEventListener(EventCallback callback) override;
-    bool informModuleToken(const QString& moduleName, const QString& token) override;
-    void init(void* apiInstance) override;
-
-    // LogosProviderObject universal interface (Qt-free dispatch)
-    nlohmann::json callMethodStd(const std::string& methodName, const nlohmann::json& args) override;
-    std::vector<LogosMethodMetadata> getMethodsStd() override;
-    void setEventListenerStd(UniversalEventCallback callback) override;
+    nlohmann::json callMethodStd(const std::string& methodName,
+                                 const nlohmann::json& args);
+    nlohmann::json getMethodsStd();
 
 private:
-    EventCallback m_eventCallback;
-    LogosAPI* m_api = nullptr;
+    logosctl::PlainRpcContext m_rpc{"core_service"};
 
     // Helpers
     std::vector<std::string> getKnownModuleNames();

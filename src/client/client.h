@@ -8,7 +8,7 @@
 #include <vector>
 
 // Abstract client interface for communicating with daemon's core_service.
-// The real implementation (RpcClient) uses LogosAPIClient from logos-cpp-sdk.
+// The real implementation (RpcClient) uses the Qt-free logos-protocol C ABI.
 // Tests can provide mock implementations.
 class Client {
 public:
@@ -71,8 +71,8 @@ public:
                                    std::function<void(const LogosMap&)> callback) = 0;
 };
 
-// Real RPC client implementation that connects to the daemon.
-// Depends on logos-cpp-sdk (LogosAPIClient).
+// Real RPC client implementation that connects to the daemon through
+// qt_remote_plain. It does not link Qt or the SDK's Qt client classes.
 class RpcClient : public Client {
 public:
     RpcClient();

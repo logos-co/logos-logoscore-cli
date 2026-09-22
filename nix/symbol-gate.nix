@@ -1,34 +1,17 @@
-# The one-runtime symbol gate.
+# The Qt-free front-end boundary gate.
 #
-# INVARIANT: across the images that share ONE process, each runtime type is
-# DEFINED by exactly ONE image.
-#
-# EXACTLY-ONE, deliberately, rather than "liblogos_core is the provider". It was
-# the latter while liblogos_core absorbed both static archives and re-exported
-# them. It is not any more: liblogos_protocol owns TokenManager/LogosAPIClient
-# and liblogos_qt_host owns LogosAPI, and liblogos_core imports both like every
-# other consumer. Naming an owner here would need editing every time ownership
-# moves -- and the first time it moved, that check failed while every real
-# assertion still passed. A second
-# definition is a second TokenManager, and the split-brain that follows is
-# invisible to the build. Ownership is declared in
-# logos-protocol/cpp/logos_shared_api.h. (This used to also point at
-# cmake/LogosSharedFromDll.cmake -- the single-provider shim, deleted once the
-# runtime became real shared libraries. There is nothing to follow there.)
-#
-# This repo learned that the loud way and then the quiet way. On Windows a
-# duplicate fails the LINK outright ("multiple definition of
-# `TokenManager::instance()'"), and that loudness is exactly what hid the other
-# platforms: off Windows the duplicate links cleanly, the image binds its own
-# copy, and it surfaces at runtime as refused calls. Nothing measured it until
-# this check existed.
+# INVARIANTS:
+#   * lp_client_create has exactly one definer in the process: the shared
+#     liblogos_protocol_plain runtime.
+#   * front-end consumers do not contain private lp_* implementations.
+#   * Qt host APIs and Qt/full-protocol dynamic dependencies stay out of the
+#     logoscore/logosctl process. The child logos_host_qt process is excluded.
 #
 # THE IN-PROCESS IMAGE SET — this scoping IS the correctness of the gate:
 #   IN   bin/logosctl, bin/logoscore   the front-ends
-#   IN   lib/liblogos_core.*           the single provider
+#   IN   lib/liblogos_core.*           a plain-runtime consumer
 #   IN   lib/*.dylib|so                anything else loaded into the front-end
-#   OUT  bin/logos_host, bin/ui-host   SEPARATE PROCESSES; they correctly keep
-#                                      their own statics
+#   OUT  bin/logos_host* and ui-host   separate processes that may load Qt
 #   OUT  modules/**                    loaded by logos_host, out-of-process, so
 #                                      a module's own copy is the CORRECT
 #                                      per-process singleton
@@ -59,6 +42,8 @@ let
   totalCmd   = if isDarwin then "${tp}nm -a"
                else if isWindows then "${tp}nm"
                else "${tp}nm -D";
+  depsCmd = if isDarwin then "${pkgs.darwin.cctools}/bin/otool -L"
+            else "${tp}objdump -p";
 in
 pkgs.runCommand "logos-logoscore-cli-symbol-gate${pkgs.lib.optionalString negativeControl "-negative"}" {
   nativeBuildInputs = [ pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.gnused pkgs.stdenv.cc.bintools ];
@@ -66,10 +51,9 @@ pkgs.runCommand "logos-logoscore-cli-symbol-gate${pkgs.lib.optionalString negati
   set -uo pipefail
   export LC_ALL=C   # comm(1) in names() requires a byte-order sort
 
-  # TIER 1 — the split-brain itself. No allowance, ever.
-  TIER1_RE='^(TokenManager|StoreRegistry)::|^(vtable|typeinfo|typeinfo name|guard variable) for (TokenManager|StoreRegistry)\b'
-  # TIER 2 — LogosAPI/LogosAPIClient. Zero since the single-provider shim was
-  # extended to every platform. Never raise this.
+  # TIER 1 — no consumer may contain a private copy of the lp_* runtime.
+  TIER1_RE='^_?lp_'
+  # TIER 2 — the Qt host API must stay out of this process entirely.
   TIER2_RE='^(LogosAPI|LogosAPIClient)::|^(vtable|typeinfo|typeinfo name|guard variable) for (LogosAPI|LogosAPIClient)\b'
   TIER2_ALLOW=0
 
@@ -134,16 +118,13 @@ pkgs.runCommand "logos-logoscore-cli-symbol-gate${pkgs.lib.optionalString negati
 
   ${pkgs.lib.optionalString negativeControl ''
     mkdir -p "$ROOT/lib"
-    # Plants liblogos_protocol, NOT liblogos_core. liblogos_core was a genuine
-    # second copy of the runtime while it absorbed both archives; since it began
-    # IMPORTING instead it defines zero runtime symbols, so planting it plants
-    # NOTHING and this control silently stops testing anything. A negative
-    # control has to duplicate a DEFINER.
+    # Plant the actual Qt-free runtime owner. A negative control has to
+    # duplicate a DEFINER rather than another consumer.
     _definer=""
-    for c in "$ROOT/lib/liblogos_protocol.dylib" "$ROOT/lib/liblogos_protocol.so" "$ROOT/bin/liblogos_protocol.dll"; do
+    for c in "$ROOT/lib/liblogos_protocol_plain.dylib" "$ROOT/lib/liblogos_protocol_plain.so" "$ROOT/bin/liblogos_protocol_plain.dll"; do
       [ -e "$c" ] && _definer="$c" && break
     done
-    [ -n "$_definer" ] || { echo "NEGATIVE CONTROL: no liblogos_protocol to plant"; exit 1; }
+    [ -n "$_definer" ] || { echo "NEGATIVE CONTROL: no liblogos_protocol_plain to plant"; exit 1; }
     cp "$_definer" "$ROOT/lib/libnegative_control.''${_definer##*.}"
     echo "NEGATIVE CONTROL: planted a duplicate definer; the gate MUST reject this tree."
   ''}
@@ -158,24 +139,18 @@ pkgs.runCommand "logos-logoscore-cli-symbol-gate${pkgs.lib.optionalString negati
   for e in "$ROOT"/bin/*; do
     [ -f "$e" ] || continue
     case "$(basename "$e")" in
-      logos_host|ui-host|logos_host_qt|*.dll) continue ;;   # separate processes
+      logos_host*|ui-host|*.dll) continue ;;                 # separate processes
       .*) continue ;;                                       # reached via resolve_image
     esac
     CONSUMERS+=("$(resolve_image "$e")")
   done
-  # The runtime OWNERS are not consumers. liblogos_protocol owns TokenManager
-  # and LogosAPIClient; liblogos_qt_host owns LogosAPI. They must DEFINE those,
-  # so scanning them under "no consumer defines the runtime" reports the correct
-  # answer to the wrong question -- measured here as a 35-symbol SPLIT-BRAIN
-  # against liblogos_protocol, which is simply the library doing its job.
-  #
-  # They are counted in ALL below, where exactly-one-definer is asserted, and
-  # excluded here, where the assertion is that nothing ELSE defines it.
+  # The shared plain runtime is the owner, so exclude it from the consumer scan
+  # and include it in the exactly-one-definer scan below.
   OWNERS=()
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     case "$(basename "$p")" in
-      liblogos_protocol.*|liblogos_qt_host.*) OWNERS+=("$p") ;;
+      liblogos_protocol_plain.*) OWNERS+=("$p") ;;
       *) CONSUMERS+=("$p") ;;
     esac
   # bin/ is searched too, and .dll matched: on Windows every liblogos_* shared
@@ -195,24 +170,14 @@ pkgs.runCommand "logos-logoscore-cli-symbol-gate${pkgs.lib.optionalString negati
   # being asserted, so nothing may be exempt from the count.
   ALL=("$PROVIDER" "''${CONSUMERS[@]}" "''${OWNERS[@]}")
 
-  # StoreRegistry is deliberately absent below. token_manager.cpp defines
-  # `static StoreRegistry r;` inside registry(), so it has a LOCAL symbol and no
-  # external one, and is reachable only through TokenManager's accessors.
-  # Requiring exactly one DEFINER of something never exported would fail
-  # forever. It stays in the TIER 1 scan, where "no consumer defines it" is
-  # meaningful precisely because it should never become external.
-  #
-  # This also doubles as the demangler validity control: a broken c++filt makes
-  # every family report ZERO definers and fail, rather than every consumer
-  # reporting a reassuring zero.
   echo
-  echo "== each runtime type is defined by EXACTLY ONE image =="
+  echo "== the plain C ABI is defined by EXACTLY ONE image =="
   valid "$PROVIDER" || exit 1
-  for fam in TokenManager LogosAPI LogosAPIClient; do
+  for fam in lp_client_create; do
     _n=0; _owners=""
     for img in "''${ALL[@]}"; do
       [ -e "$img" ] || continue
-      c=$(names "$img" | grep -cE "^''${fam}::|^(vtable|typeinfo|typeinfo name|guard variable) for ''${fam}\b" || true)
+      c=$(names "$img" | grep -cE "^_?''${fam}$" || true)
       if [ "$c" -gt 0 ]; then _n=$((_n + 1)); _owners="$_owners $(basename "$img")($c)"; fi
     done
     if [ "$_n" -eq 1 ]; then note "$fam" "1 definer:$_owners  OK"
@@ -220,7 +185,7 @@ pkgs.runCommand "logos-logoscore-cli-symbol-gate${pkgs.lib.optionalString negati
   done
 
   echo
-  echo "== TIER 1: no in-process consumer defines TokenManager/StoreRegistry (expect 0) =="
+  echo "== TIER 1: no in-process consumer defines lp_* (expect 0) =="
   for img in "''${CONSUMERS[@]}"; do
     valid "$img" || continue
     n=$(names "$img" | grep -Ec "$TIER1_RE" || true)
@@ -229,13 +194,25 @@ pkgs.runCommand "logos-logoscore-cli-symbol-gate${pkgs.lib.optionalString negati
   done
 
   echo
-  echo "== TIER 2: LogosAPI/LogosAPIClient duplication (expect <=$TIER2_ALLOW) =="
+  echo "== TIER 2: no Qt host API in the front-end process (expect <=$TIER2_ALLOW) =="
   T2=0
   for img in "''${CONSUMERS[@]}"; do
     n=$(names "$img" | grep -Ec "$TIER2_RE" || true); T2=$((T2 + n)); note "$(basename "$img")" "$n"
   done
   if [ "$T2" -le "$TIER2_ALLOW" ]; then note "tier-2 total" "$T2  OK"
   else bad "tier-2 total" "$T2  > $TIER2_ALLOW  REGRESSION"; fi
+
+  echo
+  echo "== no Qt/full protocol dependency in front-end images =="
+  for img in "''${CONSUMERS[@]}"; do
+    deps=$(${depsCmd} "$img" 2>/dev/null || true)
+    if printf '%s\n' "$deps" \
+        | grep -Eiq 'Qt[0-9]?(Core|RemoteObjects)|logos_qt_host|liblogos_protocol\.(dylib|so|dll)'; then
+      bad "$(basename "$img")" "imports Qt or the full Qt protocol"
+    else
+      note "$(basename "$img")" "Qt-free  OK"
+    fi
+  done
 
   echo
   ${if negativeControl then ''
