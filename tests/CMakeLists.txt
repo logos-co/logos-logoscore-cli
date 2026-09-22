@@ -45,8 +45,6 @@ target_include_directories(logosctl_testlib PUBLIC
 )
 target_link_libraries(logosctl_testlib PUBLIC
     CLI11::CLI11
-    Qt${QT_VERSION_MAJOR}::Core
-    Qt${QT_VERSION_MAJOR}::RemoteObjects
     nlohmann_json::nlohmann_json
     OpenSSL::Crypto
     fmt::fmt
@@ -82,7 +80,6 @@ target_include_directories(unit_tests PRIVATE
 target_link_libraries(unit_tests PRIVATE
     logosctl_testlib
     GTest::gtest_main
-    Qt${QT_VERSION_MAJOR}::Core
 )
 
 gtest_discover_tests(unit_tests)
@@ -95,7 +92,6 @@ add_executable(cli_tests
 
 target_link_libraries(cli_tests PRIVATE
     GTest::gtest_main
-    Qt${QT_VERSION_MAJOR}::Core
 )
 
 target_include_directories(cli_tests PRIVATE
@@ -112,7 +108,6 @@ add_executable(cli_tests_logoscore
 
 target_link_libraries(cli_tests_logoscore PRIVATE
     GTest::gtest_main
-    Qt${QT_VERSION_MAJOR}::Core
 )
 
 target_include_directories(cli_tests_logoscore PRIVATE
@@ -136,7 +131,6 @@ add_executable(integration_tests
 
 target_link_libraries(integration_tests PRIVATE
     GTest::gtest_main
-    Qt${QT_VERSION_MAJOR}::Core
 )
 
 target_include_directories(integration_tests PRIVATE
@@ -150,7 +144,6 @@ add_executable(integration_tests_logoscore
 
 target_link_libraries(integration_tests_logoscore PRIVATE
     GTest::gtest_main
-    Qt${QT_VERSION_MAJOR}::Core
 )
 
 target_include_directories(integration_tests_logoscore PRIVATE

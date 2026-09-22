@@ -355,8 +355,8 @@ sections:
           sudo -u logos logoscore --config-dir /var/lib/logos-node/.logoscore \
               revoke-token alice
         post_text: |
-          `issue-token` also accepts `--expires 30d` and `--local-only` (refuse
-          the token over `tcp` / `tcp_ssl`, accept it only on the local socket).
+          `issue-token` also accepts `--expires 30d` and `--local-only` (accept
+          the token only on the local socket).
           `list-tokens` shows what is outstanding.
 
   - title: "A non-member is refused"

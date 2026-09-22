@@ -4,27 +4,18 @@
 #include "../local_endpoint.h"
 #include "../platform_compat.h"
 #include "../process_util.h"
+#include "../plain_rpc.h"
 #include "../rpc_deadlines.h"
+#include "../version_info.h"
 #include "client_state.h"
-
-#include <logos_api.h>
-#include <logos_api_client.h>
-#include <logos_instance.h>
-#include <logos_json_convert.h>
-#include <logos_subscription_state.h>
-#include <logos_transport_config.h>
-#include <token_manager.h>
-
-#include <QCoreApplication>
-#include <QEventLoop>
-#include <QPointer>
-#include <QTimer>
 
 #include <fmt/format.h>
 #include <chrono>
 #include <cstdlib>
 #include <ctime>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <thread>
 
@@ -33,8 +24,7 @@
 // ---------------------------------------------------------------------------
 
 struct RpcClient::Impl {
-    LogosAPI* api = nullptr;
-    LogosAPIClient* coreService = nullptr;
+    std::unique_ptr<logosctl::PlainRpcClient> coreService;
     std::string instanceId;
     std::string token;
     ClientState clientState;
@@ -49,11 +39,7 @@ struct RpcClient::Impl {
     nlohmann::json invoke(const std::string& method,
                           const nlohmann::json& args = nlohmann::json::array(),
                           int timeoutMs = 0) {
-        if (timeoutMs > 0) {
-            return coreService->invokeRemoteMethod("core_service", method, args,
-                                                   Timeout(timeoutMs));
-        }
-        return coreService->invokeRemoteMethod("core_service", method, args);
+        return coreService->invoke(method, args, timeoutMs);
     }
 };
 
@@ -80,6 +66,9 @@ constexpr int kShutdownConfirmMs = 45 * 1000;
 // Per-probe budget when the daemon is remote and there is no pid to watch.
 constexpr int kShutdownProbeMs   = 1500;
 constexpr int kShutdownProbeGapMs = 200;
+// How long watch waits for its subscription to arm: the transport's default
+// call deadline.
+constexpr int kWatchArmMs = 20 * 1000;
 
 } // namespace
 
@@ -90,7 +79,6 @@ RpcClient::RpcClient()
 
 RpcClient::~RpcClient()
 {
-    delete d->api;
     delete d;
 }
 
@@ -119,33 +107,17 @@ bool RpcClient::connect()
         return false;
     }
 
-    // For LocalSocket dialing, the SDK derives the registry name from
+    // For local qt_remote_plain dialing, the protocol derives the endpoint from
     // `local:logos_<module>_<instance_id>`, so we need the daemon's
     // instance id. The daemon's auto-emitted client/config.json carries it;
-    // remote clients (TCP / TCP-SSL) don't need it.
+    // A future remote transport would not need it.
     if (!d->clientState.instanceId.empty()) {
         d->instanceId = d->clientState.instanceId;
         logosctl::setEnvVar("LOGOS_INSTANCE_ID", d->instanceId.c_str());
     }
 
-    // Keep the legacy self-identity entry (the CLI's LogosAPI is named
-    // "cli_client", so some code paths look it up by that name).
-    TokenManager::instance().saveToken("cli_client", d->token);
-    TokenManager::instance().saveToken("core_service", d->token);
-
-    // Translate ClientModuleTransport (client-side) into LogosTransportConfig
-    auto toCfg = [](const ClientModuleTransport& t) {
-        LogosTransportConfig cfg;
-        if      (t.protocol == "tcp")     cfg.protocol = LogosProtocol::Tcp;
-        else if (t.protocol == "tcp_ssl") cfg.protocol = LogosProtocol::TcpSsl;
-        else                              cfg.protocol = LogosProtocol::LocalSocket;
-        cfg.host       = t.host;
-        cfg.port       = t.port;
-        cfg.caFile     = t.caFile;
-        cfg.verifyPeer = t.verifyPeer;
-        cfg.codec = (t.codec == "cbor") ? LogosWireCodec::Cbor : LogosWireCodec::Json;
-        return cfg;
-    };
+    lp_token_save("cli_client", d->token.c_str());
+    lp_token_save("core_service", d->token.c_str());
 
     // core_service is mandatory.
     auto coreIt = d->clientState.daemon.find("core_service");
@@ -153,24 +125,27 @@ bool RpcClient::connect()
         m_lastError = ClientStateFile::filePath() + ": 'daemon.core_service' is required.";
         return false;
     }
-    const LogosTransportConfig coreServiceCfg = toCfg(coreIt->second);
+    if (coreIt->second.protocol != "local") {
+        m_lastError = "The Qt-free logoscore runtime currently accepts only "
+                      "the local qt_remote_plain transport.";
+        return false;
+    }
 
     // A local dial with nothing at the other end fails HERE, rather than
     // twenty seconds into the first RPC.
     //
     // Everything above this line is a parse; none of it can tell whether the
-    // daemon is there, and neither can the LogosAPIClient built below --
-    // getClient() hands back a handle whether or not anyone is listening. So
+    // daemon is there, and neither can the C ABI client built below: creating
+    // a handle succeeds whether or not anyone is listening. So
     // ask the socket itself: is it missing, or does it refuse us? That catches
     // the session a daemon left behind when it stopped CLEANLY, which the pid
     // check in Command::ensureConnected() cannot see -- that path removes
     // daemon/state.json, so there is no pid left to find dead.
     //
-    // Only for LocalSocket, and only when the answer is a definite no. A tcp /
-    // tcp_ssl dial has no socket to look at, and localEndpointProvablyAbsent()
-    // fails closed on everything short of proof, so a reachable daemon is
-    // never refused on a guess. See src/local_endpoint.h.
-    if (coreServiceCfg.protocol == LogosProtocol::LocalSocket) {
+    // Only for the local transport, and only when the answer is a definite no.
+    // localEndpointProvablyAbsent() fails closed on everything short of proof,
+    // so a reachable daemon is never refused on a guess. See local_endpoint.h.
+    {
         std::string endpoint;
         if (logosctl::localEndpointProvablyAbsent("core_service", d->instanceId,
                                                   &endpoint)) {
@@ -182,16 +157,20 @@ bool RpcClient::connect()
         }
     }
 
-    d->api = new LogosAPI("cli_client");
-
-    // Wire up capability_module's per-module transport.
+    std::string capabilityTransport = logosctl::kPlainLocalTransport;
     if (auto capIt = d->clientState.daemon.find("capability_module");
         capIt != d->clientState.daemon.end()) {
-        d->api->setCapabilityModuleTransport(toCfg(capIt->second));
+        if (capIt->second.protocol != "local") {
+            m_lastError = "The Qt-free logoscore runtime requires "
+                          "capability_module to use local qt_remote_plain.";
+            return false;
+        }
     }
 
-    d->coreService = d->api->getClient("core_service", coreServiceCfg);
-    if (!d->coreService) {
+    d->coreService = std::make_unique<logosctl::PlainRpcClient>(
+        "core_service", "cli_client", logosctl::kPlainLocalTransport,
+        capabilityTransport);
+    if (!d->coreService->valid()) {
         m_lastError = "Failed to get core_service client handle.";
         return false;
     }
@@ -306,7 +285,7 @@ LogosMap RpcClient::getStatus()
     nlohmann::json ret = d->invoke("getStatus");
     if (ret.is_object()) return ret;
 
-    std::string version = QCoreApplication::applicationVersion().toStdString();
+    std::string version = logosctl_version::version();
     LogosMap daemon{{"status","not_running"},{"version", version}};
     if (!d->instanceId.empty())
         daemon["instance_id"] = d->instanceId;
@@ -357,12 +336,12 @@ LogosMap RpcClient::shutdown()
     // "it exited" apart from "it was never there".
     //
     // Only if it is *this* daemon's state file. A session directory can hold
-    // a co-resident daemon's state while the client dials a remote one (or a
+    // a co-resident daemon's state beside a hand-written client config (or a
     // stale file from a daemon that crashed), and watching an unrelated --
     // possibly long-dead -- pid would turn "gone" into a foregone conclusion.
     // The instance id is written into daemon/state.json and client/config.yaml
-    // by the same boot, so equality means one daemon; a hand-written remote
-    // dial spec carries no instance id and never matches.
+    // by the same boot, so equality means one daemon; a hand-written dial spec
+    // can omit the instance id and will not match.
     //
     // And only if it is alive right now: a pid that was already dead before we
     // said anything proves nothing about what our request did, so it must not
@@ -439,8 +418,8 @@ bool RpcClient::confirmDaemonStopped(long long pid, std::string& how)
         return false;
     }
 
-    // Remote daemon, or a session whose state file we cannot see: no pid to
-    // watch, so put the question to the endpoint instead. A daemon that still
+    // A session whose state file we cannot use has no pid to watch, so put the
+    // question to the endpoint instead. A daemon that still
     // serves getStatus plainly did not stop; one that has stopped answering is
     // gone as far as this client is concerned, which is the only sense in
     // which "gone" means anything across a network.
@@ -478,26 +457,32 @@ bool RpcClient::watchModuleEvents(const std::string& module,
 
     // The daemon holds this watch, so a restarted one would not resume it:
     // hold rather than re-arm, and report the loss once.
-    const QString core = QStringLiteral("core_service");
-    d->coreService->setSubscriptionRestartPolicy(core, LogosRestartPolicy::Manual);
-    auto lost = std::make_shared<bool>(false);
-    d->coreService->setSubscriptionStatusCallback(core,
-        [lost, onDaemonLost](LogosSubscriptionEvent ev, quint64, const QString& reason) {
-            if (ev == LogosSubscriptionEvent::Armed || *lost)
-                return;
-            *lost = true;
-            if (onDaemonLost)
-                onDaemonLost(reason.toStdString());
+    d->coreService->setSubscriptionOptions({{"restart", "manual"}});
+    struct Arming {
+        std::mutex mutex;
+        std::condition_variable wake;
+        std::optional<bool> armed;   // the first status edge decides it
+        bool lost = false;
+    };
+    auto arming = std::make_shared<Arming>();
+    d->coreService->setSubscriptionStatusCallback(
+        [arming, onDaemonLost](int state, const std::string& reason) {
+            bool report = false;
+            {
+                std::lock_guard<std::mutex> lock(arming->mutex);
+                if (!arming->armed)
+                    arming->armed = state == LP_SUB_ARMED;
+                else if (*arming->armed && state != LP_SUB_ARMED && !arming->lost)
+                    report = arming->lost = true;
+            }
+            arming->wake.notify_all();
+            if (report && onDaemonLost)
+                onDaemonLost(reason);
         });
 
     // Return only once armed, so an event fired after "Watching..." is delivered.
-    auto armed = std::make_shared<std::optional<bool>>();
-    QEventLoop waitArmed;
-    const quint64 id = d->coreService->onEventWhenAvailable(core, QStringLiteral("module_event"),
-        [module, callback](const QString& /*event*/, const QVariantList& args) {
-            nlohmann::json data = nlohmann::json::array();
-            for (const QVariant& v : args)
-                data.push_back(logos::qvariantToNlohmann(v));
+    const bool subscribedOk = d->coreService->subscribe("module_event",
+        [module, callback](const std::string& /*event*/, const nlohmann::json& data) {
             if (!data.is_array() || data.size() < 2)
                 return;
             if (!data[0].is_string() || data[0].get<std::string>() != module)
@@ -521,20 +506,16 @@ bool RpcClient::watchModuleEvents(const std::string& module,
                 eventData["arg" + std::to_string(i - 2)] = data[i];
             eventObj["data"] = eventData;
             callback(eventObj);
-        },
-        [armed, loop = QPointer<QEventLoop>(&waitArmed)](bool ok) {
-            *armed = ok;
-            if (loop)
-                loop->quit();
         });
-    if (id == 0)
-        return false;
-    if (!armed->has_value()) {
-        QTimer::singleShot(Timeout().ms, &waitArmed, &QEventLoop::quit);
-        waitArmed.exec();
-    }
-    if (!armed->value_or(false)) {
-        d->coreService->cancelEventSubscription(id);
+    std::unique_lock<std::mutex> lock(arming->mutex);
+    const bool armed = subscribedOk
+        && arming->wake.wait_for(lock, std::chrono::milliseconds(kWatchArmMs),
+                                 [&] { return arming->armed.has_value(); })
+        && *arming->armed;
+    lock.unlock();
+    if (!armed) {
+        d->coreService->unsubscribeAll();
+        d->coreService->setSubscriptionStatusCallback(nullptr);
         return false;
     }
     return true;

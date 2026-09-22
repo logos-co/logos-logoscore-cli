@@ -21,9 +21,6 @@
 #include "config.h"
 #include "daemon/daemon_state.h"
 
-#include <QCoreApplication>
-#include <QTimer>
-
 // Mock client for testing commands without a real daemon
 class MockClient : public Client {
 public:
@@ -87,6 +84,11 @@ public:
     bool watchShouldSucceed = false;
     // Non-empty: a successful watch then reports the daemon lost with this reason.
     std::string watchLostReason;
+    std::thread watchLossThread;
+
+    ~MockClient() override {
+        if (watchLossThread.joinable()) watchLossThread.join();
+    }
 
     bool connect() override {
         ++connectAttempts;
@@ -192,8 +194,11 @@ public:
         lastWatchModule    = module;
         lastWatchEventName = eventName;
         const bool ok = m_connected && watchShouldSucceed;
+        // The loss arrives on another thread, as the protocol worker reports it.
         if (ok && !watchLostReason.empty())
-            QTimer::singleShot(0, [onDaemonLost, reason = watchLostReason] { onDaemonLost(reason); });
+            watchLossThread = std::thread([onDaemonLost, reason = watchLostReason] {
+                onDaemonLost(reason);
+            });
         return ok;
     }
 
@@ -1087,10 +1092,6 @@ TEST_F(CommandTest, Watch_ModuleNotLoaded_ReturnsExit3)
 // The daemon going away ends the watch with NO_DAEMON, exit 2, instead of leaving it running.
 TEST_F(CommandTest, Watch_DaemonGoesAway_ExitsWithNoDaemon)
 {
-    static int argc = 0;
-    static QCoreApplication* app = QCoreApplication::instance()
-        ? QCoreApplication::instance() : new QCoreApplication(argc, nullptr);
-    (void)app;
     mockClient.watchShouldSucceed = true;
     mockClient.watchLostReason = "provider_unavailable";
     auto cmd = createCommand("watch", mockClient, output);

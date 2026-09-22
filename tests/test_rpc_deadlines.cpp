@@ -15,21 +15,21 @@ using rpc_deadlines::forPackageCall;
 TEST(RpcDeadlines, TransferCallsGetTheTransferBudget) {
     for (const char* m : {"downloadResolvedDependencies", "downloadPinned",
                           "inspectPackage", "installPlugin"})
-        EXPECT_EQ(forPackageCall(m).ms, rpc_deadlines::kTransferMs) << m;
+        EXPECT_EQ(forPackageCall(m), rpc_deadlines::kTransferMs) << m;
 }
 
 TEST(RpcDeadlines, CatalogResolutionGetsTheCatalogBudget) {
-    EXPECT_EQ(forPackageCall("resolveDependencies").ms, rpc_deadlines::kCatalogMs);
+    EXPECT_EQ(forPackageCall("resolveDependencies"), rpc_deadlines::kCatalogMs);
 }
 
 TEST(RpcDeadlines, LocalCallsKeepTheTransportDefault) {
     for (const char* m : {"getInstalledPackages", "requestInstall", "ackPendingAction",
                           "confirmInstall", "resolveFlatDependents", "notAPackageMethod"})
-        EXPECT_EQ(forPackageCall(m).ms, Timeout().ms) << m;
+        EXPECT_EQ(forPackageCall(m), 0) << m;
 }
 
 // The budgets only mean something if they exceed the default they replace.
 TEST(RpcDeadlines, BudgetsExceedTheTransportDefault) {
-    EXPECT_GT(rpc_deadlines::kCatalogMs, Timeout().ms);
+    EXPECT_GT(rpc_deadlines::kCatalogMs, 20 * 1000);
     EXPECT_GT(rpc_deadlines::kTransferMs, rpc_deadlines::kCatalogMs);
 }

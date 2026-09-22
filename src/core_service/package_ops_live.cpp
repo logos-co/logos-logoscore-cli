@@ -1,40 +1,34 @@
-// Wires package_ops to the daemon: package modules over LogosAPI, and the
+// Wires package_ops to the daemon: package modules over plain RPC, and the
 // module runtime through logos_core. The logic is in package_ops.cpp.
 #include "package_ops.h"
 #include "logos_core.h"
 #include "rpc_deadlines.h"
-
-#include <logos_api.h>
-#include <logos_api_client.h>
-#include <logos_call_error.h>
-#include <logos_json_convert.h>
+#include "../plain_rpc.h"
 
 namespace package_ops {
 namespace {
 
 // The deadline is per method (rpc_deadlines.h): the package modules do the
 // whole download or archive walk inside the call, and the transport default is 20 s.
-Backend liveBackend(LogosAPI* api)
+Backend liveBackend(logosctl::PlainRpcContext* api)
 {
     Backend b;
     b.call = [api](const char* module, const std::string& method,
                    const LogosList& args, std::string* why) -> nlohmann::json {
         if (!api) return nullptr;
-        LogosAPIClient* client = api->getClient(module);
+        logosctl::PlainRpcClient* client = api->client(module);
         if (!client) {
             if (why) *why = std::string(module) + " is not reachable";
             return nullptr;
         }
-        logos::CallError err;
-        const QVariant ret = client->invokeRemoteMethod(
-            QString::fromStdString(module), QString::fromStdString(method),
-            logos::nlohmannArgsToQVariantList(args),
-            rpc_deadlines::forPackageCall(method), &err);
+        logosctl::PlainRpcError err;
+        const nlohmann::json ret = client->invoke(
+            method, args, rpc_deadlines::forPackageCall(method), &err);
         if (!err.ok()) {
             if (why) *why = err.message;
             return nullptr;
         }
-        return logos::qvariantToNlohmann(ret);
+        return ret;
     };
     b.loadedModules = [] {
         std::vector<std::string> out;
@@ -70,19 +64,19 @@ Backend liveBackend(LogosAPI* api)
 
 } // namespace
 
-LogosMap plan(LogosAPI* api, Op op, const std::vector<std::string>& names, const Options& opts)
+LogosMap plan(logosctl::PlainRpcContext* api, Op op, const std::vector<std::string>& names, const Options& opts)
 {
     Backend b = liveBackend(api);
     return plan(b, op, names, opts);
 }
 
-LogosMap apply(LogosAPI* api, Op op, const std::vector<std::string>& names, const Options& opts)
+LogosMap apply(logosctl::PlainRpcContext* api, Op op, const std::vector<std::string>& names, const Options& opts)
 {
     Backend b = liveBackend(api);
     return apply(b, op, names, opts);
 }
 
-LogosMap download(LogosAPI* api, const std::string& name, const Options& opts,
+LogosMap download(logosctl::PlainRpcContext* api, const std::string& name, const Options& opts,
                   const std::string& destDir)
 {
     Backend b = liveBackend(api);
