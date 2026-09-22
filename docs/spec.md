@@ -80,10 +80,9 @@ The daemon and client use local `qt_remote_plain`. This Qt-free transport is
 wire-compatible with `qt_remote` in current Qt modules. Those modules remain
 inside `logos_host_qt`; the CLI process does not load Qt.
 
-The configuration parser recognizes the previous `tcp` and `tcp_ssl`
-values so existing files receive a direct migration error. The runtime rejects
-them until the plain C ABI supplies equivalent network client and provider
-implementations.
+The same Qt-free C ABI also supports `tcp` and `tcp_ssl` listeners and
+clients. The daemon emits the local client dial spec by default; remote
+clients can configure a network endpoint and TLS verification separately.
 
 The daemon emits the local client dial spec and boot token automatically.
 Client commands need no manual transport setup.

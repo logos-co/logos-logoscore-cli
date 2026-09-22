@@ -70,6 +70,22 @@ constexpr int kShutdownProbeGapMs = 200;
 // call deadline.
 constexpr int kWatchArmMs = 20 * 1000;
 
+std::string plainTransportJson(const ClientModuleTransport& transport)
+{
+    if (transport.protocol == "local") return logosctl::kPlainLocalTransport;
+    nlohmann::json spec = {
+        {"protocol", transport.protocol},
+        {"host", transport.host},
+        {"port", transport.port},
+        {"codec", transport.codec},
+    };
+    if (transport.protocol == "tcp_ssl") {
+        if (!transport.caFile.empty()) spec["ca_file"] = transport.caFile;
+        spec["verify_peer"] = transport.verifyPeer;
+    }
+    return spec.dump();
+}
+
 } // namespace
 
 RpcClient::RpcClient()
@@ -110,7 +126,7 @@ bool RpcClient::connect()
     // For local qt_remote_plain dialing, the protocol derives the endpoint from
     // `local:logos_<module>_<instance_id>`, so we need the daemon's
     // instance id. The daemon's auto-emitted client/config.json carries it;
-    // A future remote transport would not need it.
+    // Remote TCP/TLS transports do not need it.
     if (!d->clientState.instanceId.empty()) {
         d->instanceId = d->clientState.instanceId;
         logosctl::setEnvVar("LOGOS_INSTANCE_ID", d->instanceId.c_str());
@@ -125,12 +141,6 @@ bool RpcClient::connect()
         m_lastError = ClientStateFile::filePath() + ": 'daemon.core_service' is required.";
         return false;
     }
-    if (coreIt->second.protocol != "local") {
-        m_lastError = "The Qt-free logoscore runtime currently accepts only "
-                      "the local qt_remote_plain transport.";
-        return false;
-    }
-
     // A local dial with nothing at the other end fails HERE, rather than
     // twenty seconds into the first RPC.
     //
@@ -145,7 +155,7 @@ bool RpcClient::connect()
     // Only for the local transport, and only when the answer is a definite no.
     // localEndpointProvablyAbsent() fails closed on everything short of proof,
     // so a reachable daemon is never refused on a guess. See local_endpoint.h.
-    {
+    if (coreIt->second.protocol == "local") {
         std::string endpoint;
         if (logosctl::localEndpointProvablyAbsent("core_service", d->instanceId,
                                                   &endpoint)) {
@@ -160,15 +170,11 @@ bool RpcClient::connect()
     std::string capabilityTransport = logosctl::kPlainLocalTransport;
     if (auto capIt = d->clientState.daemon.find("capability_module");
         capIt != d->clientState.daemon.end()) {
-        if (capIt->second.protocol != "local") {
-            m_lastError = "The Qt-free logoscore runtime requires "
-                          "capability_module to use local qt_remote_plain.";
-            return false;
-        }
+        capabilityTransport = plainTransportJson(capIt->second);
     }
 
     d->coreService = std::make_unique<logosctl::PlainRpcClient>(
-        "core_service", "cli_client", logosctl::kPlainLocalTransport,
+        "core_service", "cli_client", plainTransportJson(coreIt->second),
         capabilityTransport);
     if (!d->coreService->valid()) {
         m_lastError = "Failed to get core_service client handle.";

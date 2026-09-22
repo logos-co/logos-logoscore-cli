@@ -13,8 +13,7 @@ Build instructions, flake outputs and test targets are in the
 `logoscore` itself is Qt-free. Local RPC uses `qt_remote_plain`, which speaks
 the same wire protocol as current modules built with `qt_remote`; those modules
 run unchanged in the separate `logos_host_qt` compatibility process. The
-current Qt-free daemon supports local RPC only and rejects `tcp`/`tcp_ssl`
-configuration at startup.
+Qt-free runtime also supports `tcp` and `tcp_ssl` listeners and clients.
 
 ## Usage
 
@@ -218,10 +217,10 @@ the hash in `daemon/tokens.json`.)
 
 ##### Network transports
 
-This Qt-free release does not expose TCP or TLS through the plain C ABI.
-Supplying `tcp` or `tcp_ssl` is rejected at startup. The parser retains
-those names so an older configuration fails explicitly instead of silently
-falling back to local IPC.
+The Qt-free plain C ABI supports TCP and TLS (`tcp` and `tcp_ssl`) for
+providers and clients. Configure a certificate and private key for a TLS
+listener; clients can supply a CA file or disable peer verification for a
+self-signed test endpoint.
 
 #### Parallel Daemons (`--config-dir`)
 
