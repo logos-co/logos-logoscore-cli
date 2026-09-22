@@ -47,13 +47,14 @@
     logos-modules-state-module.url = "github:logos-co/logos-modules-state-module";
     logos-package-manager-module.url = "github:logos-co/logos-package-manager-module";
     logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module";
-    logos-test-modules.url = "github:logos-co/logos-test-modules";
+    # No logos-test-modules input: it takes this flake back, and the cycle unrolled
+    # this lock to 15k nodes. The suites needing its plugins run over there.
     nix-bundle-logos-module-install.url = "github:logos-co/nix-bundle-logos-module-install";
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-plugin-qt, logos-liblogos, logos-package-manager, logos-capability-module, logos-modules-state-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
+  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-plugin-qt, logos-liblogos, logos-package-manager, logos-capability-module, logos-modules-state-module, logos-package-manager-module, logos-package-downloader-module, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       # Build info baked into the logosctl binary so `--version` reports the
@@ -956,31 +957,9 @@ ${pkgs.lib.optionalString withPkgModules ''
         }
       );
 
-      checks = forAllSystems ({ pkgs, system, liblogos, capabilityModuleLib, installDev, ... }:
+      checks = forAllSystems ({ pkgs, system, liblogos, ... }:
         let
           testsPkg = self.packages.${system}.tests;
-          # Modules the integration daemon scans. The daemon auto-loads
-          # capability_module at boot for auth — without it every
-          # load-module/call blocks ~20s on capability negotiation then
-          # fails (status/list-modules don't need it, so they'd still
-          # pass, masking the problem). The `tests` package ships only
-          # the binary, so bundle the built-in capability_module next to
-          # the real test_basic_module plugin here. `.install` /
-          # installDev both expose a top-level `modules/` tree;
-          # symlinkJoin (lndir) merges them into one scan dir.
-          testModulesInstall = pkgs.symlinkJoin {
-            name = "logos-logoscore-cli-it-modules";
-            paths = [
-              (installDev capabilityModuleLib)
-              logos-test-modules.modules.${system}.test_basic_module.install
-              # The access-policy tests need a declared and an undeclared
-              # (caller, target) pair from real module metadata:
-              #   test_ipc_new_api_module   declares [test_basic_module, test_extlib_module]
-              #   test_basic_module declares []  → basic -> extlib is undeclared
-              logos-test-modules.modules.${system}.test_extlib_module.install
-              logos-test-modules.modules.${system}.test_ipc_new_api_module.install
-            ];
-          };
         in rec {
           # One runner, two flavours. They are separate derivations so nix
           # builds them in parallel: while both binaries ship, a regression in
@@ -995,17 +974,12 @@ ${pkgs.lib.optionalString withPkgModules ''
               export QT_PLUGIN_PATH="${pkgs.qt6.qtbase}/${pkgs.qt6.qtbase.qtPluginPrefix}"
             ''}
             export LOGOSCTL_BINARY=${testsPkg}/bin/logosctl
-            # Daemon-backed integration tests read these. Absent ⇒ those tests
-            # GTEST_SKIP, so the rest still runs where test modules are absent.
-            export LOGOSCTL_TEST_MODULES_DIR=${testModulesInstall}/modules
             export LOGOS_HOST_PATH=${liblogos}/bin/logos_host
             mkdir -p $out
             echo "unit tests (shared code)..."
             ${testsPkg}/bin/unit_tests --gtest_output=xml:$out/unit-test-results.xml
             echo "logosctl CLI tests..."
             ${testsPkg}/bin/cli_tests --gtest_output=xml:$out/cli-test-results.xml
-            echo "logosctl integration tests..."
-            ${testsPkg}/bin/integration_tests --gtest_output=xml:$out/integration-test-results.xml
           '';
 
           # logoscore's copy of the suites, pinning the surface people actually
@@ -1019,13 +993,10 @@ ${pkgs.lib.optionalString withPkgModules ''
               export QT_PLUGIN_PATH="${pkgs.qt6.qtbase}/${pkgs.qt6.qtbase.qtPluginPrefix}"
             ''}
             export LOGOSCORE_BINARY=${testsPkg}/bin/logoscore
-            export LOGOSCORE_TEST_MODULES_DIR=${testModulesInstall}/modules
             export LOGOS_HOST_PATH=${liblogos}/bin/logos_host
             mkdir -p $out
             echo "logoscore CLI tests..."
             ${testsPkg}/bin/cli_tests_logoscore --gtest_output=xml:$out/cli-test-results.xml
-            echo "logoscore integration tests..."
-            ${testsPkg}/bin/integration_tests_logoscore --gtest_output=xml:$out/integration-test-results.xml
           '';
 
           # One-runtime symbol gate. Asserts the logos C++ runtime (TokenManager,

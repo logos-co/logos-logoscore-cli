@@ -1268,6 +1268,9 @@ done
 | `test_integration.cpp` | Daemon-backed integration: a real `logosctl` daemon against a real module directory, driven through the client subcommands — error paths, the full `test_basic_module` API surface, event subscription via `watch`, and many simultaneous clients on one daemon. |
 | `test_cli_logoscore.cpp` / `test_integration_logoscore.cpp` | The same two suites frozen against `logoscore`'s surface, so shared-runtime changes can't regress the tool people actually use. They get deleted with the binary. |
 
+`checks.<sys>.tests` runs the unit and CLI suites. Both `integration_tests` suites need real
+module plugins, so they run in logos-test-modules as `checks.<sys>.logoscore-cli-integration-*`.
+
 ---
 
 ## Known Issues

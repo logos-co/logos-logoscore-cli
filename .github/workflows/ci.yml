@@ -35,6 +35,8 @@ jobs:
     - name: Build
       run: nix build --print-build-logs
 
+    # Unit + CLI suites. The daemon-backed integration suites run in
+    # logos-test-modules (logoscore-cli-integration), which owns their plugins.
     - name: Run tests
       run: nix build '.#checks.${{ matrix.arch }}.tests' --print-build-logs
 
