@@ -30,10 +30,9 @@ intro: |
   > that group; they are not isolation from it. Put only trusted operators in
   > the group.
 
-  > This walkthrough needs Linux, systemd and passwordless `sudo`, so every step
-  > below **skips itself** on macOS and anywhere those are missing. On such a
-  > host you will see `SKIP:` lines instead of output — that is the spec
-  > reporting honestly, not a silent pass of the real assertions.
+  > This walkthrough needs Linux, systemd and passwordless `sudo`. The doctest
+  > runner skips every section on macOS; on Linux without systemd or passwordless
+  > sudo, the commands print `SKIP:`. Neither path runs the service assertions.
 
 what_you_learn:
   - Why a second user can run `status` but nothing else, and which of the three causes is biting you
@@ -48,8 +47,8 @@ what_you_learn:
 prerequisites:
   - |
     **Linux with systemd**, and passwordless `sudo`. The steps create OS users
-    and install a unit file, so they cannot run unprivileged. Every step
-    self-skips where these are unavailable.
+    and install a unit file, so they cannot run unprivileged. The runner skips
+    these sections on non-Linux hosts; each command checks for systemd and sudo.
 
     Verify: `test -d /run/systemd/system && sudo -n true && echo "ready"`
   - |
@@ -64,6 +63,7 @@ prerequisites:
 
 sections:
   - title: "Build the node and stage it where a service can reach it"
+    platform: linux
     step: true
     text: |
       A systemd unit runs with a minimal environment and no access to your
@@ -110,6 +110,7 @@ sections:
           cp -RL ./result-module/modules/. ./modules/
 
   - title: "Create the service user, the shared group, and two humans"
+    platform: linux
     step: true
     text: |
       Four identities make the point:
@@ -157,6 +158,7 @@ sections:
           sudo cp -RL ./modules /var/lib/logos-node/modules
 
   - title: "Install and start the systemd unit"
+    platform: linux
     step: true
     text: |
       The unit runs the daemon as `logos:logos` with an explicit `--config-dir`
@@ -272,6 +274,7 @@ sections:
           #    ^^ group write == connectable by the group
 
   - title: "Drive the node from another user account"
+    platform: linux
     step: true
     text: |
       This is the part that fails without `--access-group`. `alice` has no
@@ -309,6 +312,7 @@ sections:
           logoscore call test_basic_module addInts 2 3
 
   - title: "Give alice a token of her own"
+    platform: linux
     step: true
     text: |
       Reading the daemon's directory means alice is using the node's own boot
@@ -360,6 +364,7 @@ sections:
           `list-tokens` shows what is outstanding.
 
   - title: "A non-member is refused"
+    platform: linux
     step: true
     text: |
       `mallory` differs from `alice` in exactly one way, and is stopped twice
@@ -374,28 +379,38 @@ sections:
           CFG=/var/lib/logos-node/.logoscore
           INST=$(cat ./instance-id)
           cd /tmp
+          sudo -n -u mallory true || { echo "sudo cannot run as mallory"; exit 1; }
 
           # 1. The file layer: she cannot even read the dial spec.
-          if sudo -u mallory cat $CFG/client/config.json >/dev/null 2>&1; then
+          timeout 10s sudo -n -u mallory cat $CFG/client/config.json >/dev/null 2>&1
+          RC=$?
+          if [ "$RC" -eq 124 ]; then echo "mallory config check timed out"; exit 1; fi
+          if [ "$RC" -eq 0 ]; then
             echo "mallory should not be able to read the client config"; exit 1
           fi
           echo "config.json: unreadable by mallory (as intended)"
 
           # 2. The socket layer: no write permission means no connect().
-          if sudo -u mallory test -w /tmp/logos_core_service_"$INST"; then
+          timeout 10s sudo -n -u mallory test -w /tmp/logos_core_service_"$INST"
+          RC=$?
+          if [ "$RC" -eq 124 ]; then echo "mallory socket check timed out"; exit 1; fi
+          if [ "$RC" -eq 0 ]; then
             echo "mallory should not have write access to the socket"; exit 1
           fi
           echo "socket:      not writable by mallory (connect would be EACCES)"
 
           # 3. End to end: the command must not succeed in listing modules.
-          OUT=$(sudo -u mallory env HOME=/home/mallory LOGOSCORE_CONFIG_DIR=$CFG "$LS" list-modules --json 2>&1 || true)
+          OUT=$(timeout 15s sudo -n -u mallory env HOME=/home/mallory LOGOSCORE_CONFIG_DIR=$CFG "$LS" list-modules --json 2>&1)
+          RC=$?
           echo "mallory list-modules: $OUT"
-          case "$OUT" in *test_basic_module*) echo "mallory reached the node"; exit 1 ;; *) : ;; esac
+          if [ "$RC" -eq 124 ]; then echo "mallory client timed out"; exit 1; fi
+          if [ "$RC" -eq 0 ]; then echo "mallory reached the node"; exit 1; fi
           echo "mallory is refused"
         code_block: |
           sudo -u mallory logoscore list-modules   # refused: not in the group
 
   - title: "Stop the service and confirm nothing is left behind"
+    platform: linux
     step: true
     text: |
       A node that leaks its socket files accumulates one per module per boot,
