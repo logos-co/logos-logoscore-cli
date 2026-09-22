@@ -160,14 +160,15 @@ std::optional<LogosTransportSet> buildTransportSet(
         }
 
         LogosTransportConfig c;
-        if (eff.protocol != "local") {
+        if (eff.protocol == "local") c.protocol = LogosProtocol::QtRemotePlain;
+        else if (eff.protocol == "tcp") c.protocol = LogosProtocol::Tcp;
+        else if (eff.protocol == "tcp_ssl") c.protocol = LogosProtocol::TcpSsl;
+        else {
             fprintf(stderr,
-                    "[%s] Transport '%s' is not available in the Qt-free "
-                    "logoscore runtime; use local/qt_remote_plain.\n",
+                    "[%s] Unknown transport '%s'.\n",
                     moduleName.c_str(), eff.protocol.c_str());
             return std::nullopt;
         }
-        c.protocol = LogosProtocol::QtRemotePlain;
         c.host       = eff.host;
         c.port       = eff.port;
         c.caFile     = eff.caFile;

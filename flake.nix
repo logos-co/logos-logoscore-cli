@@ -86,7 +86,7 @@
         packageDownloaderModuleLib = logos-package-downloader-module.packages.${system}.lib;
         installDev = nix-bundle-logos-module-install.bundlers.${system}.dev;
         installPortable = nix-bundle-logos-module-install.bundlers.${system}.portable;
-        dirBundler = nix-bundle-dir.bundlers.${system}.default;
+        dirBundler = nix-bundle-dir.bundlers.${system}.qtCliApp;
         appBundler = nix-bundle-appimage.lib.${system}.mkAppImage;
       });
 
@@ -146,7 +146,7 @@
           # hide until something forced it.
           dirBundler = nix-bundle-dir.bundlers.${
             if system == "x86_64-windows" then windowsBuildSystem else system
-          }.default;
+          }.qtCliApp;
           appBundler = if system == "aarch64-linux" || system == "x86_64-linux"
             then nix-bundle-appimage.lib.${system}.mkAppImage
             else null;
