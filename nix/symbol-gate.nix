@@ -98,7 +98,8 @@ pkgs.runCommand "logos-logoscore-cli-symbol-gate${pkgs.lib.optionalString negati
     rm -rf "$t"
   }
   '' else ''
-  names() { ${definedCmd} "$1" 2>/dev/null | ${tp}c++filt 2>/dev/null | sed -E 's/^[0-9a-fA-F]+ [A-Za-z] //'; }
+  # An ELF symbol version (lp_client_create@@LOGOS_PROTOCOL_PLAIN) is not part of the name.
+  names() { ${definedCmd} "$1" 2>/dev/null | ${tp}c++filt 2>/dev/null | sed -E 's/^[0-9a-fA-F]+ [A-Za-z] //; s/@.*$//'; }
   ''}
   valid() {
     local t; t=$(${totalCmd} "$1" 2>/dev/null | wc -l | tr -d ' ')
