@@ -1,10 +1,15 @@
 #include "watch_command.h"
 #include <CLI/CLI.hpp>
 #include <fmt/format.h>
-#include <condition_variable>
 #include <iostream>
 #include <memory>
-#include <mutex>
+
+void waitForStop(std::mutex& mutex, std::condition_variable& wake,
+                 const std::function<bool()>& stopped)
+{
+    std::unique_lock<std::mutex> lock(mutex);
+    wake.wait(lock, stopped);
+}
 
 int WatchCommand::execute(const std::vector<std::string>& args)
 {
@@ -59,7 +64,6 @@ int WatchCommand::execute(const std::vector<std::string>& args)
 
     // Event delivery is owned by the protocol worker. Keep the command alive
     // until the daemon goes away, or the operating system handles Ctrl+C.
-    std::unique_lock<std::mutex> lock(lost->mutex);
-    lost->wake.wait(lock, [&] { return lost->gone; });
+    waitForStop(lost->mutex, lost->wake, [&] { return lost->gone; });
     return 2;
 }
