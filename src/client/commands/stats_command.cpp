@@ -21,6 +21,10 @@ int StatsCommand::execute(const std::vector<std::string>& args)
     // Same reasoning as `module ls`: no reply is not "no modules to report
     // on". See Client::getModuleStats.
     if (!stats) {
+        if (client().tokenRefused()) {
+            output().printError("UNAUTHORIZED", kTokenRefusedMessage);
+            return 2;
+        }
         output().printError("DAEMON_UNREACHABLE",
                             "The daemon did not answer, so module stats are "
                             "unknown (this is not an empty list).");

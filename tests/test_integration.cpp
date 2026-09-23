@@ -663,6 +663,64 @@ TEST_F(ErrorPathTest, FailedCallReportsTheErrorChannelNotTheValue) {
     EXPECT_FALSE(diag.value("message", std::string{}).empty()) << out;
 }
 
+// Detector: a tcp client holding the boot token -- the setup the docs used to
+// describe, copying client/auto.json -- was refused by the daemon and reported
+// that as "not_running", sending the operator after a daemon that was running.
+class RemoteClientTest : public ::testing::Test {
+protected:
+    LogosctlDaemon d;
+
+    void SetUp() override {
+        std::string why;
+        if (!d.envReady(why)) GTEST_SKIP() << why;
+        d.extraConfig = "insecure_tcp: true\n"
+                        "modules:\n"
+                        "  core_service:\n"
+                        "    transports:\n"
+                        "      - protocol: local\n"
+                        "      - protocol: tcp\n"
+                        "        host: 127.0.0.1\n"
+                        "        port: 0\n";
+        d.start(::testing::UnitTest::GetInstance()->current_test_info()->name());
+        ASSERT_TRUE(d.waitReady())
+            << "daemon did not become reachable.\n--- daemon log ---\n"
+            << slurp(d.daemonLog);
+    }
+    void TearDown() override { d.shutdown(); }
+};
+
+TEST_F(RemoteClientTest, TheBootTokenOverTcpIsReportedAsRefused) {
+    std::ifstream stateFile(d.configDir / "daemon" / "state.json");
+    const nlohmann::json state = nlohmann::json::parse(stateFile, nullptr, false);
+    int port = 0;
+    for (const auto& t : state["resolved"]["modules"]["core_service"]["transports"])
+        if (t.value("protocol", std::string{}) == "tcp") port = t.value("port", 0);
+    ASSERT_GT(port, 0) << state.dump();
+
+    const fs::path remote = d.base / "remote";
+    fs::create_directories(remote / "client");
+    fs::copy_file(d.configDir / "client" / "auto.json", remote / "client" / "auto.json");
+    std::ofstream(remote / "client" / "config.yaml") << nlohmann::json{
+        {"version", 2}, {"token_file", "auto.json"},
+        {"daemon", {{"core_service",
+                     {{"transport", "tcp"}, {"host", "127.0.0.1"}, {"port", port}}}}}}.dump();
+
+    const std::string cmd = "LOGOSCTL_CONFIG_DIR='" + remote.string() + "' HOME='"
+        + d.homeDir.string() + "' timeout 40 '" + d.binary.string()
+        + "' status --json 2>&1";
+    FILE* pipe = popen(cmd.c_str(), "r");
+    ASSERT_NE(pipe, nullptr);
+    std::string out;
+    char buf[256];
+    while (fgets(buf, sizeof(buf), pipe)) out += buf;
+    int raw = pclose(pipe);
+    const int status = WEXITSTATUS(raw);
+
+    EXPECT_NE(status, 0) << out;
+    EXPECT_EQ(lastJsonObject(out).value("code", std::string{}), "UNAUTHORIZED") << out;
+    EXPECT_EQ(out.find("not_running"), std::string::npos) << out;
+}
+
 // Detector: a module that never answered read as RPC_FAILED. The client gave up
 // on the daemon when the daemon gave up on the module, and the reason, when it
 // arrived, was "transport" rather than "timeout".

@@ -183,6 +183,35 @@ listeners. The daemon writes the local client dial spec and token into the
 session on every boot; remote clients can configure the advertised network
 endpoints separately.
 
+#### Reaching a daemon over tcp or tls
+
+The boot token the daemon writes to `client/auto.json` is accepted over the
+local socket only, so copying it to another machine no longer works: the
+daemon refuses it over `tcp` and `tcp_ssl`, and the client says so with
+`UNAUTHORIZED`. Issue a named token for each remote client instead, with an
+expiry, on the daemon's host:
+
+```bash
+logosctl token issue --name laptop --expires 30d --json   # prints the raw token once
+```
+
+On the client, `client/config.yaml` names the network listener (its port is in
+the daemon's `daemon/state.json`) and the file holding that token:
+
+```yaml
+version: 2
+token_file: laptop.json          # client/laptop.json: {"token": "<raw token>"}
+daemon:
+  core_service:
+    transport: tcp_ssl           # or tcp
+    host: node.example.org
+    port: 6443
+    ca: /path/to/ca.pem          # tcp_ssl only
+```
+
+`$LOGOSCTL_TOKEN` overrides the token file. `logosctl token revoke laptop`
+withdraws it at once; the expiry bounds a token nobody revoked.
+
 > The two documents are kept separate on purpose: the daemon never reads
 > `client/`, and the client never reads `daemon/`. Only the files above are
 > YAML — everything the daemon and the modules own (`state.json`, `tokens.json`,
