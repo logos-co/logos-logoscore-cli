@@ -76,6 +76,8 @@ target_include_directories(unit_tests PRIVATE
 target_link_libraries(unit_tests PRIVATE
     logosctl_testlib
     GTest::gtest_main
+    # test_local_endpoint's oracle: the transport the daemon binds with.
+    logos-protocol::logos_qt_remote_plain_transport
 )
 
 gtest_discover_tests(unit_tests)

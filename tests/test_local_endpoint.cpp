@@ -2,6 +2,8 @@
 
 #include "local_endpoint.h"
 
+#include <qtro_transport.h>
+
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -16,9 +18,8 @@
 // localEndpointProvablyAbsent() is what turns "a daemon that stopped" from a
 // twenty-second wait into an immediate answer, and it is the one piece of this
 // that could refuse a LIVE daemon if it got either half wrong. So these pin
-// both halves: the path derivation (against Qt's temporary directory)
-// and the liveness
-// verdict for each shape the path can be in.
+// both halves: the path derivation (against where the daemon's transport
+// binds) and the liveness verdict for each shape the path can be in.
 
 namespace {
 
@@ -27,10 +28,11 @@ std::string uniqueId(const char* suffix)
     return "ut" + std::to_string(::getpid()) + suffix;
 }
 
+// Where the daemon's own transport binds the endpoint: the oracle, never the
+// resolver under test.
 std::filesystem::path endpointPath(const std::string& instanceId)
 {
-    return std::filesystem::path(logosctl::localTransportTempDirectory())
-         / ("logos_core_service_" + instanceId);
+    return logos::qt_remote_plain::localSocketPath("logos_core_service_" + instanceId);
 }
 
 #ifndef _WIN32
@@ -94,17 +96,15 @@ TEST(LocalEndpointTest, UsesDarwinUserTempWhenTmpdirIsUnset)
     while (expected.size() > 1 && expected.back() == '/') expected.pop_back();
 
     const std::string id = uniqueId("_darwin");
-    const std::filesystem::path path = std::filesystem::path(expected) /
-        ("logos_core_service_" + id);
-    const int fd = bindListen(path);
-    ASSERT_GE(fd, 0) << "could not bind " << path.string();
+    logos::qt_remote_plain::Server daemon;
+    std::string error;
+    ASSERT_TRUE(daemon.start("local:logos_core_service_" + id, &error)) << error;
+    ASSERT_EQ(std::filesystem::path(daemon.socketPath()).parent_path(),
+              std::filesystem::path(expected));
 
     std::string checked;
     EXPECT_FALSE(logosctl::localEndpointProvablyAbsent("core_service", id, &checked));
-    EXPECT_EQ(checked, path.string());
-
-    ::close(fd);
-    ::unlink(path.string().c_str());
+    EXPECT_EQ(checked, daemon.socketPath());
 }
 #endif
 
@@ -145,17 +145,16 @@ TEST(LocalEndpointTest, SocketFileWithNoListener_IsProvablyAbsent)
 TEST(LocalEndpointTest, LiveListener_IsNeverCalledAbsent)
 {
     // The control, and the one that matters most: refusing a reachable daemon
-    // is far worse than the wait this avoids.
+    // is far worse than the wait this avoids. The listener is the transport's
+    // own, so it sits where a daemon's would.
     const std::string id = uniqueId("_live");
-    const std::filesystem::path path = endpointPath(id);
+    logos::qt_remote_plain::Server daemon;
+    std::string error;
+    ASSERT_TRUE(daemon.start("local:logos_core_service_" + id, &error)) << error;
 
-    const int fd = bindListen(path);
-    ASSERT_GE(fd, 0) << "could not bind " << path.string();
-
-    EXPECT_FALSE(logosctl::localEndpointProvablyAbsent("core_service", id));
-
-    ::close(fd);
-    ::unlink(path.string().c_str());
+    std::string checked;
+    EXPECT_FALSE(logosctl::localEndpointProvablyAbsent("core_service", id, &checked));
+    EXPECT_EQ(checked, daemon.socketPath());
 }
 #endif
 
