@@ -39,8 +39,20 @@ struct RpcClient::Impl {
     nlohmann::json invoke(const std::string& method,
                           const nlohmann::json& args = nlohmann::json::array(),
                           int timeoutMs = 0) {
-        return coreService->invoke(method, args, timeoutMs);
+        lastFailure = {};
+        return coreService->invoke(method, args, timeoutMs, &lastFailure);
     }
+
+    // A call that produced no reply. A refused token is the daemon answering,
+    // which RPC_FAILED ("no daemon") would misreport.
+    LogosMap failed(const std::string& message) const {
+        if (lastFailure.code == "unauthorized")
+            return LogosMap{{"status","error"},{"code","UNAUTHORIZED"},
+                            {"message", kTokenRefusedMessage}};
+        return LogosMap{{"status","error"},{"code","RPC_FAILED"}, {"message", message}};
+    }
+
+    logosctl::PlainRpcError lastFailure;
 };
 
 namespace {
@@ -195,6 +207,11 @@ std::string RpcClient::lastError() const
     return m_lastError;
 }
 
+bool RpcClient::tokenRefused() const
+{
+    return d->lastFailure.code == "unauthorized";
+}
+
 // ---------------------------------------------------------------------------
 // Module lifecycle — delegate to core_service
 // ---------------------------------------------------------------------------
@@ -203,8 +220,7 @@ LogosMap RpcClient::loadModule(const std::string& name, bool withOptional)
 {
     nlohmann::json ret = d->invoke("loadModule", nlohmann::json::array({name, withOptional}));
     if (ret.is_object()) return ret;
-    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
-                    {"message", fmt::format("loadModule('{}') RPC call failed.", name)}};
+    return d->failed(fmt::format("loadModule('{}') RPC call failed.", name));
 }
 
 LogosMap RpcClient::unloadModule(const std::string& name, bool withDependents)
@@ -212,16 +228,14 @@ LogosMap RpcClient::unloadModule(const std::string& name, bool withDependents)
     nlohmann::json ret = d->invoke("unloadModule",
                                    nlohmann::json::array({name, withDependents}));
     if (ret.is_object()) return ret;
-    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
-                    {"message", fmt::format("unloadModule('{}') RPC call failed.", name)}};
+    return d->failed(fmt::format("unloadModule('{}') RPC call failed.", name));
 }
 
 LogosMap RpcClient::refreshModules()
 {
     nlohmann::json ret = d->invoke("refreshModules", nlohmann::json::array());
     if (ret.is_object()) return ret;
-    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
-                    {"message", "refreshModules() RPC call failed."}};
+    return d->failed("refreshModules() RPC call failed.");
 }
 
 // ---------------------------------------------------------------------------
@@ -237,8 +251,7 @@ LogosMap RpcClient::planPackageOperation(const std::string& op, const LogosList&
                                    nlohmann::json::array({op, names, opts}),
                                    kCatalogTimeoutMs);
     if (ret.is_object()) return ret;
-    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
-                    {"message", fmt::format("planPackageOperation('{}') RPC call failed.", op)}};
+    return d->failed(fmt::format("planPackageOperation('{}') RPC call failed.", op));
 }
 
 LogosMap RpcClient::applyPackageOperation(const std::string& op, const LogosList& names,
@@ -251,8 +264,7 @@ LogosMap RpcClient::applyPackageOperation(const std::string& op, const LogosList
                                    nlohmann::json::array({op, names, opts}),
                                    kTransferTimeoutMs);
     if (ret.is_object()) return ret;
-    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
-                    {"message", fmt::format("applyPackageOperation('{}') RPC call failed.", op)}};
+    return d->failed(fmt::format("applyPackageOperation('{}') RPC call failed.", op));
 }
 
 LogosMap RpcClient::downloadPackage(const std::string& name, const LogosMap& opts)
@@ -263,16 +275,14 @@ LogosMap RpcClient::downloadPackage(const std::string& name, const LogosMap& opt
                                    nlohmann::json::array({name, opts}),
                                    kTransferTimeoutMs);
     if (ret.is_object()) return ret;
-    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
-                    {"message", fmt::format("downloadPackage('{}') RPC call failed.", name)}};
+    return d->failed(fmt::format("downloadPackage('{}') RPC call failed.", name));
 }
 
 LogosMap RpcClient::reloadModule(const std::string& name)
 {
     nlohmann::json ret = d->invoke("reloadModule", nlohmann::json::array({name}));
     if (ret.is_object()) return ret;
-    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
-                    {"message", fmt::format("reloadModule('{}') RPC call failed.", name)}};
+    return d->failed(fmt::format("reloadModule('{}') RPC call failed.", name));
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +300,7 @@ LogosMap RpcClient::getStatus()
 {
     nlohmann::json ret = d->invoke("getStatus");
     if (ret.is_object()) return ret;
+    if (tokenRefused()) return d->failed({});
 
     std::string version = logosctl_version::version();
     LogosMap daemon{{"status","not_running"},{"version", version}};
@@ -304,8 +315,7 @@ LogosMap RpcClient::getModuleInfo(const std::string& name)
 {
     nlohmann::json ret = d->invoke("getModuleInfo", nlohmann::json::array({name}));
     if (ret.is_object()) return ret;
-    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
-                    {"message", fmt::format("getModuleInfo('{}') RPC call failed.", name)}};
+    return d->failed(fmt::format("getModuleInfo('{}') RPC call failed.", name));
 }
 
 std::optional<LogosList> RpcClient::getModuleStats()
@@ -327,9 +337,8 @@ LogosMap RpcClient::callModuleMethod(const std::string& module,
                                    nlohmann::json::array({module, method, args}),
                                    rpc_deadlines::kModuleCallReplyMs);
     if (ret.is_object()) return ret;
-    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
-                    {"message", fmt::format("callModuleMethod('{}','{}') RPC call failed.",
-                                            module, method)}};
+    return d->failed(fmt::format("callModuleMethod('{}','{}') RPC call failed.",
+                                            module, method));
 }
 
 // ---------------------------------------------------------------------------
@@ -377,6 +386,7 @@ LogosMap RpcClient::shutdown()
         }
         return ret;
     }
+    if (tokenRefused()) return d->failed({});
 
     // No reply. Every other call in this file is right to read that as
     // failure; this one is not. Asking a process to die is the one request
@@ -402,14 +412,13 @@ LogosMap RpcClient::shutdown()
                         {"confirmed_by", how}};
     }
 
-    return LogosMap{{"status","error"},{"code","RPC_FAILED"},
-                    {"message", pid > 0
+    return d->failed(pid > 0
                         ? fmt::format("shutdown RPC returned no reply and the daemon "
                                       "(pid {}) is still running {}s later.",
                                       pid, kShutdownConfirmMs / 1000)
                         : fmt::format("shutdown RPC returned no reply and the daemon "
                                       "is still answering {}s later.",
-                                      kShutdownConfirmMs / 1000)}};
+                                      kShutdownConfirmMs / 1000));
 }
 
 bool RpcClient::confirmDaemonStopped(long long pid, std::string& how)

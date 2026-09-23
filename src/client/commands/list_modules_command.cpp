@@ -26,6 +26,10 @@ int ListModulesCommand::execute(const std::vector<std::string>& args)
     // possible answer: a script cannot tell it apart from a healthy session
     // with nothing loaded, so "no modules found" silently became a fact.
     if (!modules) {
+        if (client().tokenRefused()) {
+            output().printError("UNAUTHORIZED", kTokenRefusedMessage);
+            return 2;
+        }
         output().printError("DAEMON_UNREACHABLE",
                             "The daemon did not answer, so the module list is "
                             "unknown (this is not an empty list).");
