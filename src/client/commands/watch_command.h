@@ -3,6 +3,15 @@
 
 #include "command.h"
 
+#include <condition_variable>
+#include <functional>
+#include <mutex>
+
+// Blocks until `stopped()` holds. A wakeup that finds it false, notified or
+// spurious, waits again.
+void waitForStop(std::mutex& mutex, std::condition_variable& wake,
+                 const std::function<bool()>& stopped);
+
 class WatchCommand : public Command {
 public:
     using Command::Command;

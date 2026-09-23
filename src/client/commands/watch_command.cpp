@@ -1,9 +1,14 @@
 #include "watch_command.h"
 #include <CLI/CLI.hpp>
 #include <fmt/format.h>
-#include <condition_variable>
 #include <iostream>
-#include <mutex>
+
+void waitForStop(std::mutex& mutex, std::condition_variable& wake,
+                 const std::function<bool()>& stopped)
+{
+    std::unique_lock<std::mutex> lock(mutex);
+    wake.wait(lock, stopped);
+}
 
 int WatchCommand::execute(const std::vector<std::string>& args)
 {
@@ -43,7 +48,6 @@ int WatchCommand::execute(const std::vector<std::string>& args)
     // until the operating system handles Ctrl+C (the historical behavior).
     std::mutex mutex;
     std::condition_variable wake;
-    std::unique_lock<std::mutex> lock(mutex);
-    wake.wait(lock);
+    waitForStop(mutex, wake, [] { return false; });
     return 0;
 }

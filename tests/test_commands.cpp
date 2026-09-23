@@ -3,6 +3,11 @@
 #include <filesystem>
 #include <logos_json.h>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -18,6 +23,7 @@
 #include "client/output.h"
 #include "client/commands/command.h"
 #include "client/commands/package_command.h"
+#include "client/commands/watch_command.h"
 #include "config.h"
 #include "daemon/daemon_state.h"
 
@@ -1024,6 +1030,32 @@ TEST_F(CommandTest, Stats_Success)
 }
 
 // ── watch ────────────────────────────────────────────────────────────────────
+
+// Detector: watch waited without a predicate, so a spurious wakeup (which the
+// waiter cannot tell from a notify) ended it with exit 0.
+TEST(WatchWait, AWakeupThatFindsNothingToStopWaitsAgain)
+{
+    std::mutex mutex;
+    std::condition_variable wake;
+    std::atomic<bool> stop{false};
+    std::atomic<bool> returned{false};
+    std::thread waiter([&] {
+        waitForStop(mutex, wake, [&] { return stop.load(); });
+        returned = true;
+    });
+    for (int i = 0; i < 20; ++i) {
+        wake.notify_all();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_FALSE(returned.load()) << "a wakeup ended the wait";
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        stop = true;
+    }
+    wake.notify_all();
+    waiter.join();
+    EXPECT_TRUE(returned.load());
+}
 
 TEST_F(CommandTest, Watch_MissingArgs)
 {
