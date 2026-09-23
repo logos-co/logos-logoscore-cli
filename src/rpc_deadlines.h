@@ -12,6 +12,12 @@ namespace rpc_deadlines {
 constexpr int kCatalogMs  = 2  * 60 * 1000;   // fetch and resolve against the catalog
 constexpr int kTransferMs = 30 * 60 * 1000;   // download, inspect, or install a package
 
+// A module method called through the daemon, and the client's wait for the
+// daemon's answer. The wait outlasts the call, so a module that never answers
+// reads as the daemon's METHOD_FAILED/timeout, not as RPC_FAILED (no daemon).
+constexpr int kModuleCallMs      = 20 * 1000;
+constexpr int kModuleCallReplyMs = kModuleCallMs + 10 * 1000;
+
 // The daemon's deadline for one call into package_manager / package_downloader.
 // The heavy methods do the entire transfer or archive walk inside the call.
 inline int forPackageCall(const std::string& method)

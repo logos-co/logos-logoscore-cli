@@ -663,6 +663,21 @@ TEST_F(ErrorPathTest, FailedCallReportsTheErrorChannelNotTheValue) {
     EXPECT_FALSE(diag.value("message", std::string{}).empty()) << out;
 }
 
+// Detector: a module that never answered read as RPC_FAILED. The client gave up
+// on the daemon when the daemon gave up on the module, and the reason, when it
+// arrived, was "transport" rather than "timeout".
+TEST_F(ErrorPathTest, AHungModuleReportsTheDaemonsTimeout) {
+    std::string out;
+    ASSERT_EQ(d.run("load-module test_basic_module", &out, kNegativeBudgetSecs), 0) << out;
+    EXPECT_NE(d.run("call test_basic_module echoWithDelay hung 26000", &out, 60), 0)
+        << "a call that outlived its deadline must not report success.\n" << out;
+    const nlohmann::json env = lastJsonObject(out);
+    EXPECT_EQ(env.value("code", std::string{}), "METHOD_FAILED") << out;
+    const nlohmann::json diag = env.value("error", nlohmann::json());
+    ASSERT_TRUE(diag.is_object()) << out;
+    EXPECT_EQ(diag.value("code", std::string{}), "timeout") << out;
+}
+
 // The whole point, on a live transport: two calls that both come back null are
 // now told apart, and by different means — one by the error channel, one by
 // asking the module what it exposes.

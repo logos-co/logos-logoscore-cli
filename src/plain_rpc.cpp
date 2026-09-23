@@ -19,11 +19,11 @@ PlainRpcError parseError(const char* text)
     PlainRpcError result;
     const nlohmann::json value = parseJson(text);
     if (value.is_object()) {
-        result.code = value.value("code", std::string{"transport"});
+        result.code = value.value("code", std::string{"transport_error"});
         result.message = value.value("message", std::string{"RPC failed"});
         result.origin = value.value("origin", std::string{});
     } else {
-        result.code = "transport";
+        result.code = "transport_error";
         result.message = text ? text : "RPC failed";
     }
     return result;

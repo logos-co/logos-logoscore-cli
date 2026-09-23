@@ -1,6 +1,7 @@
 #include "core_service_impl.h"
 #include "package_ops.h"
 #include "call_envelope.h"
+#include "rpc_deadlines.h"
 #include "logos_core.h"
 #include "../daemon/daemon.h"
 #include <algorithm>
@@ -503,7 +504,8 @@ StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
     }
 
     logosctl::PlainRpcError err;
-    const nlohmann::json ret = moduleClient->invoke(method, args, 0, &err);
+    const nlohmann::json ret =
+        moduleClient->invoke(method, args, rpc_deadlines::kModuleCallMs, &err);
 
     result = core_service::callEnvelope(
         module, method, ret,

@@ -318,7 +318,8 @@ LogosMap RpcClient::callModuleMethod(const std::string& module,
                                       const LogosList& args)
 {
     nlohmann::json ret = d->invoke("callModuleMethod",
-                                   nlohmann::json::array({module, method, args}));
+                                   nlohmann::json::array({module, method, args}),
+                                   rpc_deadlines::kModuleCallReplyMs);
     if (ret.is_object()) return ret;
     return LogosMap{{"status","error"},{"code","RPC_FAILED"},
                     {"message", fmt::format("callModuleMethod('{}','{}') RPC call failed.",

@@ -28,6 +28,12 @@ TEST(RpcDeadlines, LocalCallsKeepTheTransportDefault) {
         EXPECT_EQ(forPackageCall(m), 0) << m;
 }
 
+// Detector: both legs of a module call ran on the same 20 s default, so the
+// client stopped waiting when the daemon did and a hung module read RPC_FAILED.
+TEST(RpcDeadlines, TheClientOutwaitsTheDaemonsModuleCall) {
+    EXPECT_GT(rpc_deadlines::kModuleCallReplyMs, rpc_deadlines::kModuleCallMs);
+}
+
 // The budgets only mean something if they exceed the default they replace.
 TEST(RpcDeadlines, BudgetsExceedTheTransportDefault) {
     EXPECT_GT(rpc_deadlines::kCatalogMs, 20 * 1000);
