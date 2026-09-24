@@ -109,13 +109,24 @@ bool PlainRpcClient::subscribe(
                                          &PlainRpcClient::onEvent,
                                          subscription.get());
     if (!subscription->handle) return false;
+    std::lock_guard<std::mutex> lock(m_subscriptionsMutex);
     m_subscriptions.push_back(std::move(subscription));
     return true;
 }
 
+std::size_t PlainRpcClient::subscriptionCount() const
+{
+    std::lock_guard<std::mutex> lock(m_subscriptionsMutex);
+    return m_subscriptions.size();
+}
+
 void PlainRpcClient::unsubscribeAll()
 {
-    m_subscriptions.clear();
+    std::vector<std::unique_ptr<Subscription>> cancelled;
+    {
+        std::lock_guard<std::mutex> lock(m_subscriptionsMutex);
+        cancelled.swap(m_subscriptions);
+    }
 }
 
 void PlainRpcClient::onStatus(int state, unsigned long long /*generation*/,
@@ -129,9 +140,13 @@ bool PlainRpcClient::setSubscriptionStatusCallback(StatusCallback callback)
     if (!m_client) return false;
     if (!callback)
         return lp_client_set_subscription_status_cb(m_client, nullptr, nullptr) == 1;
-    m_statusCallbacks.push_back(std::make_unique<StatusCallback>(std::move(callback)));
-    return lp_client_set_subscription_status_cb(m_client, &PlainRpcClient::onStatus,
-                                                m_statusCallbacks.back().get()) == 1;
+    auto installed = std::make_unique<StatusCallback>(std::move(callback));
+    StatusCallback* raw = installed.get();
+    {
+        std::lock_guard<std::mutex> lock(m_subscriptionsMutex);
+        m_statusCallbacks.push_back(std::move(installed));
+    }
+    return lp_client_set_subscription_status_cb(m_client, &PlainRpcClient::onStatus, raw) == 1;
 }
 
 bool PlainRpcClient::setSubscriptionOptions(const nlohmann::json& options)

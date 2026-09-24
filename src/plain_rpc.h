@@ -40,9 +40,11 @@ public:
                           int timeoutMs = 0,
                           PlainRpcError* error = nullptr);
     nlohmann::json methods();
+    // Safe from several threads at once: core_service serves calls concurrently.
     bool subscribe(const std::string& eventName,
                    std::function<void(const std::string&,
                                       const nlohmann::json&)> callback);
+    std::size_t subscriptionCount() const;
     // Cancels every subscription taken through this client.
     void unsubscribeAll();
     // The target's subscription edges (LP_SUB_*) and the reason for a loss;
@@ -60,6 +62,7 @@ private:
                          const char* reason, void* userData);
 
     lp_client* m_client = nullptr;
+    mutable std::mutex m_subscriptionsMutex;
     std::vector<std::unique_ptr<Subscription>> m_subscriptions;
     // Every callback ever installed stays alive until lp_client_destroy, since
     // one being replaced may still be running.
