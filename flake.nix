@@ -740,14 +740,17 @@ ${pkgs.lib.optionalString withPkgModules ''
           logoscoreCli = pkgs.symlinkJoin { name = pname;            paths = [ binLegacy ]; };
           logosctlCli  = pkgs.symlinkJoin { name = "${pname}-ctl";   paths = [ binCtl ];    };
 
-          # The unit suites, cross-built for Windows. Windows CI runs them from the
-          # manifest installed beside them; the daemon-driving suites are not
-          # ported yet (see tests/CMakeLists.txt).
+          # The unit and CLI suites, cross-built for Windows. Windows CI runs them
+          # from the manifest installed beside them; the integration suites are
+          # not ported yet (see tests/CMakeLists.txt).
           testsWindows = let
             manifest = builtins.toFile "logosctl-tests.json" (builtins.toJSON {
               suites = [
                 { name = "unit"; exe = "bin/unit_tests.exe"; timeout = 120; }
                 { name = "plain_rpc"; exe = "bin/plain_rpc_tests.exe"; timeout = 120; }
+                # The logosctl.exe the `ctl` target stages beside this one.
+                { name = "cli"; exe = "bin/cli_tests.exe"; timeout = 120;
+                  env.LOGOSCTL_BINARY = "{stage}/ctl/bin/logosctl.exe"; }
               ];
             });
           in buildPortable.overrideAttrs (old: {
@@ -757,12 +760,13 @@ ${pkgs.lib.optionalString withPkgModules ''
               # Discovery would run the PE on the build machine.
               "-DCMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE=PRE_TEST"
             ];
-            ninjaFlags = [ "unit_tests" "plain_rpc_tests" "logosctl_test_child" ];
+            ninjaFlags = [ "unit_tests" "plain_rpc_tests" "logosctl_test_child" "cli_tests" ];
             installPhase = ''
               runHook preInstall
               mkdir -p $out/bin $out/share/logos-tests
               # Their DLLs are linked in beside them by the mingw fixup hook.
-              cp bin/unit_tests.exe bin/plain_rpc_tests.exe bin/logosctl_test_child.exe $out/bin/
+              cp bin/unit_tests.exe bin/plain_rpc_tests.exe bin/logosctl_test_child.exe \
+                bin/cli_tests.exe $out/bin/
               cp ${manifest} $out/share/logos-tests/logosctl.json
               runHook postInstall
             '';

@@ -36,7 +36,12 @@
 #include <string>
 #include <utility>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
@@ -78,7 +83,7 @@ inline std::string localTransportTempDirectory()
 //
 // FAILS CLOSED. Every outcome that is merely suggestive -- a socket that
 // accepts us, a connect that errors any other way, a path too long to try, a
-// non-socket inode, Windows -- returns false and lets the normal dial proceed.
+// non-socket inode, a busy pipe -- returns false and lets the normal dial proceed.
 // A wrong `true` would refuse a reachable daemon, which is far worse than the
 // twenty-second wait this exists to remove.
 //
@@ -89,17 +94,30 @@ inline std::string localTransportTempDirectory()
 // also covers Qt's macOS fallback when $TMPDIR is absent. A daemon started
 // under a different temp directory is genuinely unreachable from here.
 //
-// Windows: always false. The local transport there is a named pipe, which
-// lives in the pipe namespace rather than the temp directory and stops
-// existing when its last handle closes, so this platform keeps the
-// pre-existing behaviour.
+// Windows: the local transport is a named pipe, whose name exists exactly
+// while one of its server instances is open -- and the transport opens the
+// next instance before closing the last, so the name never lapses while a
+// server runs. A name that is not there has nobody behind it; one that is,
+// busy or free, has someone.
 inline bool localEndpointProvablyAbsent(const std::string& moduleName,
                                         const std::string& instanceId,
                                         std::string* pathOut = nullptr)
 {
 #ifdef _WIN32
-    (void)moduleName; (void)instanceId; (void)pathOut;
-    return false;
+    if (moduleName.empty() || instanceId.empty())
+        return false;   // nothing to derive a name from
+
+    // Named as qt_remote_plain's localSocketPath() names the bare server name.
+    std::string name = "logos_" + moduleName + "_" + instanceId;
+    for (char& c : name)
+        if (c == '/' || c == '\\' || c == ':') c = '_';
+    const std::string path = R"(\\.\pipe\)" + name;
+    if (pathOut) *pathOut = path;
+
+    // 1 ms, not 0: 0 is NMPWAIT_USE_DEFAULT_WAIT.
+    if (::WaitNamedPipeA(path.c_str(), 1))
+        return false;                                  // an instance is free
+    return ::GetLastError() == ERROR_FILE_NOT_FOUND;   // no instance at all
 #else
     if (moduleName.empty() || instanceId.empty())
         return false;   // nothing to derive a name from

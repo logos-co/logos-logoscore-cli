@@ -105,11 +105,6 @@ if(WIN32)
     add_dependencies(unit_tests logosctl_test_child)
 endif()
 
-# The rest drive a daemon over AF_UNIX, fork/waitpid and popen: not on Windows yet.
-if(WIN32)
-    return()
-endif()
-
 # ── CLI integration tests (require compiled logosctl binary) ─────────────────
 
 add_executable(cli_tests
@@ -125,6 +120,11 @@ target_include_directories(cli_tests PRIVATE
 )
 
 gtest_discover_tests(cli_tests)
+
+# The rest drive a daemon over AF_UNIX, fork/waitpid and popen: not on Windows yet.
+if(WIN32)
+    return()
+endif()
 
 # The same suite against logoscore. Both binaries ship, so both are tested;
 # this target goes away with the tool.
