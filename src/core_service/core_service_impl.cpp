@@ -575,8 +575,9 @@ bool CoreServiceImpl::watchModuleEvents(const std::string& module,
 
 // Milliseconds between answering a `shutdown` RPC and leaving the event loop.
 //
-// This is a courtesy margin, not the mechanism that gets the reply out --
-// see the drain in shutdown() below. It exists so that anything the transport
+// This is a courtesy margin, not the mechanism that gets the reply out:
+// lp_provider_destroy lets a call it is running answer before it closes the
+// connection. It exists so that anything the transport
 // wants to do on its own schedule (heartbeats, a second in-flight call) still
 // gets a turn. $LOGOSCTL_SHUTDOWN_GRACE_MS overrides it; the daemon-stop
 // integration test pins it to 0, which is the hostile setting that used to
@@ -601,9 +602,8 @@ LogosMap CoreServiceImpl::shutdown()
     result["status"] = "ok";
     result["message"] = "Daemon shutting down.";
 
-    // The C ABI provider serializes this value after the callback returns.
-    // Leave a small grace period before waking the daemon thread so the reply
-    // is queued before provider teardown closes the pipe.
+    // The provider writes this value after the callback returns, and its
+    // teardown waits for that write, so the grace below is not what saves it.
     Daemon::requestShutdownAfter(shutdownGraceMs());
 
     return result;
