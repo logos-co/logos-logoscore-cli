@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -20,6 +21,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <cwchar>
 #else
 #include <cerrno>
 #include <csignal>
@@ -128,52 +130,94 @@ inline std::wstring quoteArg(const std::wstring& arg)
 }
 #endif
 
+// Held while a child starts: the handles it inherits exist only inside it, so
+// no other thread's child can inherit them and hold a pipe open.
+inline std::mutex& spawnMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
+#ifdef _WIN32
+// This process's environment with `env` applied, as CreateProcessW takes it.
+// An empty value unsets the variable, as _putenv_s does.
+inline std::wstring environmentBlock(const std::vector<std::pair<std::string, std::string>>& env)
+{
+    std::vector<std::wstring> vars;
+    if (wchar_t* block = ::GetEnvironmentStringsW()) {
+        for (const wchar_t* var = block; *var; var += std::wcslen(var) + 1) vars.emplace_back(var);
+        ::FreeEnvironmentStringsW(block);
+    }
+    for (const auto& [name, value] : env) {
+        const std::wstring key = std::filesystem::path(name).wstring() + L"=";
+        vars.erase(std::remove_if(vars.begin(), vars.end(), [&key](const std::wstring& var) {
+            return ::_wcsnicmp(var.c_str(), key.c_str(), key.size()) == 0;
+        }), vars.end());
+        if (!value.empty()) vars.push_back(key + std::filesystem::path(value).wstring());
+    }
+    std::wstring block;
+    for (const auto& var : vars) block.append(var).push_back(L'\0');
+    block.push_back(L'\0');
+    return block;
+}
+#else
+// This process's environment with `env` applied, as posix_spawn takes it.
+inline std::vector<std::string> environmentList(
+    const std::vector<std::pair<std::string, std::string>>& env)
+{
+    std::vector<std::string> vars;
+    for (char** var = environ; *var; ++var) vars.emplace_back(*var);
+    for (const auto& [name, value] : env) {
+        const std::string key = name + "=";
+        vars.erase(std::remove_if(vars.begin(), vars.end(), [&key](const std::string& var) {
+            return var.compare(0, key.size(), key) == 0;
+        }), vars.end());
+        vars.push_back(key + value);
+    }
+    return vars;
+}
+#endif
+
 // Runs `exe args...` with stdout and stderr captured together into `output`,
-// as `timeout N exe args 2>&1` does: killed after `timeoutSecs`, reported as
-// exit 124. `env` sets variables for the child only.
+// as `timeout N exe args 2>&1` does: killed after `timeoutSecs` (none if 0),
+// reported as exit 124. `env` sets variables for the child only. Safe to call
+// from several threads at once.
 inline int runProcess(const std::filesystem::path& exe, const std::vector<std::string>& args,
                       std::string* output, int timeoutSecs,
                       const std::vector<std::pair<std::string, std::string>>& env = {})
 {
     std::string sink;
     if (!output) output = &sink;
-    // Set in this process around the spawn, and restored: the tests are
-    // single-threaded, and the child inherits the environment at spawn.
-    std::vector<std::pair<std::string, std::optional<std::string>>> saved;
-    for (const auto& [name, value] : env) {
-        const char* old = std::getenv(name.c_str());
-        saved.emplace_back(name, old ? std::optional<std::string>(old) : std::nullopt);
-        setEnv(name.c_str(), value);
-    }
-    auto restore = [&saved]() {
-        for (const auto& [name, value] : saved) {
-            if (value) setEnv(name.c_str(), *value);
-            else unsetEnv(name.c_str());
-        }
-    };
+    const bool bounded = timeoutSecs > 0;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSecs);
 #ifdef _WIN32
-    SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
-    HANDLE readEnd = nullptr, writeEnd = nullptr;
-    if (!::CreatePipe(&readEnd, &writeEnd, &inherit, 0)) { restore(); return -1; }
-    ::SetHandleInformation(readEnd, HANDLE_FLAG_INHERIT, 0);
-    HANDLE nul = ::CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit,
-                               OPEN_EXISTING, 0, nullptr);
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
-    startup.dwFlags = STARTF_USESTDHANDLES;
-    startup.hStdInput = nul;
-    startup.hStdOutput = writeEnd;
-    startup.hStdError = writeEnd;
+    std::wstring environment = environmentBlock(env);
     std::wstring command = quoteArg(exe.wstring());
     for (const auto& arg : args) command += L" " + quoteArg(std::filesystem::path(arg).wstring());
+    HANDLE readEnd = nullptr;
     PROCESS_INFORMATION info{};
-    const BOOL started = ::CreateProcessW(exe.wstring().c_str(), command.data(), nullptr, nullptr,
-                                          TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &info);
-    restore();
-    ::CloseHandle(writeEnd);
-    if (nul != INVALID_HANDLE_VALUE) ::CloseHandle(nul);
-    if (!started) { ::CloseHandle(readEnd); return -1; }
+    {
+        std::lock_guard<std::mutex> lock(spawnMutex());
+        SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+        HANDLE writeEnd = nullptr;
+        if (!::CreatePipe(&readEnd, &writeEnd, &inherit, 0)) return -1;
+        ::SetHandleInformation(readEnd, HANDLE_FLAG_INHERIT, 0);
+        HANDLE nul = ::CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                   &inherit, OPEN_EXISTING, 0, nullptr);
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        startup.dwFlags = STARTF_USESTDHANDLES;
+        startup.hStdInput = nul;
+        startup.hStdOutput = writeEnd;
+        startup.hStdError = writeEnd;
+        const BOOL started = ::CreateProcessW(exe.wstring().c_str(), command.data(), nullptr,
+                                              nullptr, TRUE,
+                                              CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+                                              environment.data(), nullptr, &startup, &info);
+        ::CloseHandle(writeEnd);
+        if (nul != INVALID_HANDLE_VALUE) ::CloseHandle(nul);
+        if (!started) { ::CloseHandle(readEnd); return -1; }
+    }
     ::CloseHandle(info.hThread);
     // Drained on a thread of its own, so a full pipe never stalls the child.
     std::thread reader([readEnd, output]() {
@@ -182,11 +226,14 @@ inline int runProcess(const std::filesystem::path& exe, const std::vector<std::s
         while (::ReadFile(readEnd, buffer, sizeof(buffer), &n, nullptr) && n > 0)
             output->append(buffer, n);
     });
-    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
-        deadline - std::chrono::steady_clock::now());
+    DWORD wait = INFINITE;
+    if (bounded) {
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        wait = static_cast<DWORD>(std::max<long long>(0, left.count()));
+    }
     int code = 124;
-    if (::WaitForSingleObject(info.hProcess, static_cast<DWORD>(std::max<long long>(0, left.count())))
-        == WAIT_OBJECT_0) {
+    if (::WaitForSingleObject(info.hProcess, wait) == WAIT_OBJECT_0) {
         DWORD exitCode = 0;
         ::GetExitCodeProcess(info.hProcess, &exitCode);
         code = static_cast<int>(exitCode);
@@ -199,33 +246,46 @@ inline int runProcess(const std::filesystem::path& exe, const std::vector<std::s
     ::CloseHandle(readEnd);
     return code;
 #else
-    int fds[2];
-    if (::pipe(fds) != 0) { restore(); return -1; }
-    posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-    posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
-    posix_spawn_file_actions_adddup2(&actions, fds[1], STDOUT_FILENO);
-    posix_spawn_file_actions_adddup2(&actions, fds[1], STDERR_FILENO);
-    posix_spawn_file_actions_addclose(&actions, fds[0]);
-    posix_spawn_file_actions_addclose(&actions, fds[1]);
+    std::vector<std::string> envStore = environmentList(env);
+    std::vector<char*> envp;
+    for (auto& var : envStore) envp.push_back(var.data());
+    envp.push_back(nullptr);
     std::vector<std::string> argvStore{exe.string()};
     argvStore.insert(argvStore.end(), args.begin(), args.end());
     std::vector<char*> argv;
     for (auto& arg : argvStore) argv.push_back(arg.data());
     argv.push_back(nullptr);
+    int fds[2];
     pid_t pid = 0;
-    const int rc = ::posix_spawn(&pid, argvStore[0].c_str(), &actions, nullptr, argv.data(), environ);
-    posix_spawn_file_actions_destroy(&actions);
-    restore();
-    ::close(fds[1]);
+    int rc = 0;
+    {
+        std::lock_guard<std::mutex> lock(spawnMutex());
+        if (::pipe(fds) != 0) return -1;
+        // The child's stdout and stderr are dup2 copies; the pipe itself
+        // closes on exec in every child.
+        ::fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+        ::fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+        posix_spawn_file_actions_t actions;
+        posix_spawn_file_actions_init(&actions);
+        posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+        posix_spawn_file_actions_adddup2(&actions, fds[1], STDOUT_FILENO);
+        posix_spawn_file_actions_adddup2(&actions, fds[1], STDERR_FILENO);
+        rc = ::posix_spawn(&pid, argvStore[0].c_str(), &actions, nullptr, argv.data(), envp.data());
+        posix_spawn_file_actions_destroy(&actions);
+        ::close(fds[1]);
+    }
     if (rc != 0) { ::close(fds[0]); return -1; }
     bool timedOut = false;
     for (;;) {
-        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
-            deadline - std::chrono::steady_clock::now()).count();
-        if (left <= 0) { timedOut = true; break; }
+        int wait = -1;
+        if (bounded) {
+            const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count();
+            if (left <= 0) { timedOut = true; break; }
+            wait = static_cast<int>(left);
+        }
         pollfd pfd{fds[0], POLLIN, 0};
-        const int ready = ::poll(&pfd, 1, static_cast<int>(left));
+        const int ready = ::poll(&pfd, 1, wait);
         if (ready < 0 && errno == EINTR) continue;
         if (ready <= 0) continue;
         char buffer[4096];
