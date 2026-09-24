@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "test_platform.h"
 
 #include "local_endpoint.h"
 
@@ -25,7 +26,7 @@ namespace {
 
 std::string uniqueId(const char* suffix)
 {
-    return "ut" + std::to_string(::getpid()) + suffix;
+    return "ut" + std::to_string(logosctl_test::currentPid()) + suffix;
 }
 
 // Where the daemon's own transport binds the endpoint: the oracle, never the
@@ -61,18 +62,17 @@ int bindListen(const std::filesystem::path& path)
 
 } // namespace
 
+#ifndef _WIN32
+// Named pipes: no path is derived on Windows.
 TEST(LocalEndpointTest, ReportsTheDerivedPathItChecked)
 {
-#ifdef _WIN32
-    GTEST_SKIP() << "named pipes: no path is derived";
-#else
     std::string path;
     logosctl::localEndpointProvablyAbsent("core_service", "abc123", &path);
     EXPECT_EQ(path, endpointPath("abc123").string())
         << "the path must be the one a bare QLocalSocket name resolves to, or "
            "the check is answering a question about the wrong file";
-#endif
 }
+#endif
 
 #ifdef __APPLE__
 TEST(LocalEndpointTest, UsesDarwinUserTempWhenTmpdirIsUnset)
@@ -81,10 +81,10 @@ TEST(LocalEndpointTest, UsesDarwinUserTempWhenTmpdirIsUnset)
         const char* previous = std::getenv("TMPDIR");
         std::string saved = previous ? previous : "";
         bool hadPrevious = previous != nullptr;
-        TmpdirGuard() { ::unsetenv("TMPDIR"); }
+        TmpdirGuard() { logosctl_test::unsetEnv("TMPDIR"); }
         ~TmpdirGuard() {
-            if (hadPrevious) ::setenv("TMPDIR", saved.c_str(), 1);
-            else ::unsetenv("TMPDIR");
+            if (hadPrevious) logosctl_test::setEnv("TMPDIR", saved);
+            else logosctl_test::unsetEnv("TMPDIR");
         }
     } guard;
 
@@ -158,6 +158,8 @@ TEST(LocalEndpointTest, LiveListener_IsNeverCalledAbsent)
 }
 #endif
 
+#ifndef _WIN32
+// A named pipe has no file to wear its name on Windows.
 TEST(LocalEndpointTest, SomeOtherFileWearingTheName_IsNotEvidence)
 {
     // Only S_ISSOCK inodes get an opinion. A regular file that happens to
@@ -171,6 +173,7 @@ TEST(LocalEndpointTest, SomeOtherFileWearingTheName_IsNotEvidence)
 
     std::filesystem::remove(path);
 }
+#endif
 
 TEST(LocalEndpointTest, NothingToDeriveANameFromIsNotEvidence)
 {

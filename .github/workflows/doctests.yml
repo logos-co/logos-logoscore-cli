@@ -159,7 +159,9 @@ jobs:
     uses: logos-co/logos-windows-ci/.github/workflows/windows-ci.yml@v1
     secrets: inherit
     with:
-      targets: ctl
+      targets: ctl tests
+      # The unit suites the Windows `tests` package declares, one case per process.
+      tests: true
       doctest-spec: doctests/logosctl-modules-bundle.test.yaml
       doctest-artifact: doctest-report
       # Default is 30, and a dependency bump that shifts the closure lands just
