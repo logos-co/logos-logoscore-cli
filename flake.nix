@@ -38,14 +38,15 @@
     logos-modules-state-module.url = "github:logos-co/logos-modules-state-module";
     logos-package-manager-module.url = "github:logos-co/logos-package-manager-module";
     logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module";
-    # No logos-test-modules input: it takes this flake back, and the cycle unrolled
-    # this lock to 15k nodes. The suites needing its plugins run over there.
+    # The integration suites' test modules, as source only: the flake takes this
+    # one back as an input, and that cycle unrolled this lock to 15k nodes.
+    logos-test-modules-src = { url = "github:logos-co/logos-test-modules"; flake = false; };
     nix-bundle-logos-module-install.url = "github:logos-co/nix-bundle-logos-module-install";
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-liblogos, logos-package-manager, logos-capability-module, logos-modules-state-module, logos-package-manager-module, logos-package-downloader-module, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
+  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-liblogos, logos-package-manager, logos-capability-module, logos-modules-state-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules-src, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       # Build info baked into the logosctl binary so `--version` reports the
@@ -152,6 +153,21 @@
             then nix-bundle-appimage.lib.${system}.mkAppImage
             else null;
         });
+
+      # The integration suites' test modules, built by the builder capability_module
+      # comes with, so none of our own is locked. ipc_new_api declares the other two.
+      itModules = let
+        mkModule = logos-capability-module.inputs.logos-module-builder.lib.mkLogosModule;
+        mk = dir: args: mkModule ({
+          src = "${logos-test-modules-src}/${dir}";
+          configFile = "${logos-test-modules-src}/${dir}/metadata.json";
+        } // args);
+        basic = mk "test-basic-module" { };
+        extlib = mk "test-extlib-module" { };
+        ipcNewApi = mk "test-ipc-module-new-api" {
+          flakeInputs = { test_basic_module = basic; test_extlib_module = extlib; };
+        };
+      in [ basic extlib ipcNewApi ];
     in
     {
       packages = forAllTargets ({ pkgs, system, cppSdk, protocolPkg, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, modulesStateModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, installDev, installPortable, dirBundler, appBundler }:
@@ -915,9 +931,37 @@ ${pkgs.lib.optionalString withPkgModules ''
         }
       );
 
-      checks = forAllSystems ({ pkgs, system, liblogos, ... }:
+      checks = forAllSystems ({ pkgs, system, liblogos, capabilityModuleLib, installDev, ... }:
         let
           testsPkg = self.packages.${system}.tests;
+
+          # Installed as the daemon discovers modules. Without capability_module
+          # every load and call blocks for about 20 s.
+          itModulesDir = pkgs.symlinkJoin {
+            name = "logos-logoscore-cli-it-modules";
+            paths = map installDev
+              ([ capabilityModuleLib ] ++ map (m: m.packages.${system}.lib) itModules);
+          };
+
+          # Each group skips itself when its modules do not load, so a skip fails here.
+          mkIntegration = { name, binaryVar, modulesVar, binary, suite }:
+            pkgs.runCommand "logos-logoscore-cli-${name}" { } ''
+              export QT_QPA_PLATFORM=offscreen
+              export QT_FORCE_STDERR_LOGGING=1
+              ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+                export QT_PLUGIN_PATH="${pkgs.qt6.qtbase}/${pkgs.qt6.qtbase.qtPluginPrefix}"
+              ''}
+              export ${binaryVar}=${testsPkg}/bin/${binary}
+              export ${modulesVar}=${itModulesDir}/modules
+              export LOGOS_HOST_PATH=${liblogos}/bin/logos_host
+              mkdir -p $out
+              ${testsPkg}/bin/${suite} --gtest_output=xml:$out/results.xml
+              if grep -q 'result="skipped"' $out/results.xml; then
+                echo "FAIL: ${suite} skipped cases:" >&2
+                grep -A1 'result="skipped"' $out/results.xml >&2
+                exit 1
+              fi
+            '';
         in rec {
           # One runner, two flavours. They are separate derivations so nix
           # builds them in parallel: while both binaries ship, a regression in
@@ -948,6 +992,22 @@ ${pkgs.lib.optionalString withPkgModules ''
             ${testsPkg}/bin/cli_tests_logoscore --gtest_output=xml:$out/cli-test-results.xml
           '';
 
+          # The daemon-backed suites, against real modules.
+          integration-logosctl = mkIntegration {
+            name = "integration-logosctl";
+            binaryVar = "LOGOSCTL_BINARY";
+            modulesVar = "LOGOSCTL_TEST_MODULES_DIR";
+            binary = "logosctl";
+            suite = "integration_tests";
+          };
+          integration-logoscore = mkIntegration {
+            name = "integration-logoscore";
+            binaryVar = "LOGOSCORE_BINARY";
+            modulesVar = "LOGOSCORE_TEST_MODULES_DIR";
+            binary = "logoscore";
+            suite = "integration_tests_logoscore";
+          };
+
           # Front-end boundary gate. It asserts one shared lp_* runtime, no
           # private lp_* copies in consumers, and no Qt/full-protocol dynamic
           # dependency in logoscore, logosctl, or liblogos_core.
@@ -967,12 +1027,14 @@ ${pkgs.lib.optionalString withPkgModules ''
             negativeControl = true;
           };
 
-          # Aggregate. `nix build .#checks.<sys>.tests` still works and now
-          # covers both tools; nix builds the two dependencies concurrently.
+          # Aggregate. `nix build .#checks.<sys>.tests` covers both tools, the
+          # integration suites included; nix builds its dependencies concurrently.
           tests = pkgs.runCommand "logos-logoscore-cli-tests" { } ''
             mkdir -p $out
             cp -r ${tests-logosctl}/. $out/logosctl/
             cp -r ${tests-logoscore}/. $out/logoscore/
+            cp -r ${integration-logosctl}/. $out/integration-logosctl/
+            cp -r ${integration-logoscore}/. $out/integration-logoscore/
           '';
         }
       );

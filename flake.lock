@@ -10404,6 +10404,22 @@
         "type": "github"
       }
     },
+    "logos-test-modules-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1790111299,
+        "narHash": "sha256-YoT2gl1Ql2cZHHofApJvQD340wJtyuj3P7Kb1NDlZ6A=",
+        "owner": "logos-co",
+        "repo": "logos-test-modules",
+        "rev": "23870fcb085c93c7b8e6ea71d37d2fe1aa03e200",
+        "type": "github"
+      },
+      "original": {
+        "owner": "logos-co",
+        "repo": "logos-test-modules",
+        "type": "github"
+      }
+    },
     "logos-view-module": {
       "inputs": {
         "logos-nix": [
@@ -17335,6 +17351,7 @@
         "logos-package-manager": "logos-package-manager_6",
         "logos-package-manager-module": "logos-package-manager-module",
         "logos-protocol": "logos-protocol_26",
+        "logos-test-modules-src": "logos-test-modules-src",
         "nix-bundle-appimage": "nix-bundle-appimage_15",
         "nix-bundle-dir": "nix-bundle-dir_30",
         "nix-bundle-logos-module-install": "nix-bundle-logos-module-install_7",
