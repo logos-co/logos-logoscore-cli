@@ -40,15 +40,18 @@ public:
                           int timeoutMs = 0,
                           PlainRpcError* error = nullptr);
     nlohmann::json methods();
+    // Safe from several threads at once: core_service serves calls concurrently.
     bool subscribe(const std::string& eventName,
                    std::function<void(const std::string&,
                                       const nlohmann::json&)> callback);
+    std::size_t subscriptionCount() const;
 
 private:
     struct Subscription;
     static void onEvent(const char* name, const char* dataJson, void* userData);
 
     lp_client* m_client = nullptr;
+    mutable std::mutex m_subscriptionsMutex;
     std::vector<std::unique_ptr<Subscription>> m_subscriptions;
 };
 

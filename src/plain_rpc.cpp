@@ -109,8 +109,15 @@ bool PlainRpcClient::subscribe(
                                          &PlainRpcClient::onEvent,
                                          subscription.get());
     if (!subscription->handle) return false;
+    std::lock_guard<std::mutex> lock(m_subscriptionsMutex);
     m_subscriptions.push_back(std::move(subscription));
     return true;
+}
+
+std::size_t PlainRpcClient::subscriptionCount() const
+{
+    std::lock_guard<std::mutex> lock(m_subscriptionsMutex);
+    return m_subscriptions.size();
 }
 
 PlainRpcContext::PlainRpcContext(std::string origin,

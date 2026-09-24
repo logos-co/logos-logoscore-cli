@@ -577,6 +577,7 @@ ${pkgs.lib.optionalString withPkgModules ''
 
               cp bin/cli_tests $out/bin/
               cp bin/unit_tests $out/bin/
+              cp bin/plain_rpc_tests $out/bin/
               cp bin/integration_tests $out/bin/
               cp bin/logosctl $out/bin/
               # Both binaries ship, so both are tested.
@@ -897,6 +898,7 @@ ${pkgs.lib.optionalString withPkgModules ''
             mkdir -p $out
             echo "unit tests (shared code)..."
             ${testsPkg}/bin/unit_tests --gtest_output=xml:$out/unit-test-results.xml
+            ${testsPkg}/bin/plain_rpc_tests --gtest_output=xml:$out/plain-rpc-test-results.xml
             echo "logosctl CLI tests..."
             ${testsPkg}/bin/cli_tests --gtest_output=xml:$out/cli-test-results.xml
           '';

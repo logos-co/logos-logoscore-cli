@@ -82,6 +82,19 @@ target_link_libraries(unit_tests PRIVATE
 
 gtest_discover_tests(unit_tests)
 
+# PlainRpcClient against the shared plain runtime the daemon links.
+add_executable(plain_rpc_tests
+    test_plain_rpc.cpp
+    ${CMAKE_SOURCE_DIR}/src/plain_rpc.cpp
+)
+target_include_directories(plain_rpc_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(plain_rpc_tests PRIVATE
+    logos-protocol::logos_protocol_plain_shared
+    nlohmann_json::nlohmann_json
+    GTest::gtest_main
+)
+gtest_discover_tests(plain_rpc_tests)
+
 # ── CLI integration tests (require compiled logosctl binary) ─────────────────
 
 add_executable(cli_tests
