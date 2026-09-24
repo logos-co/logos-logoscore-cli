@@ -39,14 +39,18 @@
 // since that is what the change alters for a user.
 //
 // Requires LOGOSCTL_BINARY + LOGOSCTL_TEST_MODULES_DIR (the flake's
-// `tests` check wires both, plus LOGOS_HOST_PATH so modules can load).
-// Absent ⇒ everything GTEST_SKIPs so the suite stays green locally.
+// `integration-logosctl` check wires both, plus LOGOS_HOST_PATH so modules
+// can load; on Windows the test manifest does). Absent ⇒ everything
+// GTEST_SKIPs so the suite stays green locally.
 
 #include <gtest/gtest.h>
+
+#include "test_platform.h"
 
 #include <logos_json.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
@@ -60,12 +64,14 @@
 #include <thread>
 #include <vector>
 
+#ifndef _WIN32
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -102,6 +108,33 @@ nlohmann::json lastJsonObject(const std::string& out)
     return nlohmann::json::object();
 }
 
+#ifdef _WIN32
+// `args` split as the POSIX build's shell splits them: '' is an empty word.
+std::vector<std::string> shellWords(const std::string& args)
+{
+    std::vector<std::string> words;
+    std::string word;
+    bool inWord = false, quoted = false;
+    for (char c : args) {
+        if (quoted) {
+            if (c == '\'') quoted = false;
+            else word += c;
+        } else if (c == '\'') {
+            quoted = inWord = true;
+        } else if (std::isspace(static_cast<unsigned char>(c))) {
+            if (inWord) words.push_back(word);
+            word.clear();
+            inWord = false;
+        } else {
+            word += c;
+            inWord = true;
+        }
+    }
+    if (inWord) words.push_back(word);
+    return words;
+}
+#endif
+
 // A real logosctl daemon in an isolated config/HOME, plus helpers to
 // drive clients against it. Not a gtest fixture so it can be owned
 // per-test (error paths) or once per suite (the API/concurrency matrix).
@@ -118,7 +151,8 @@ public:
     }
 
     void start(const std::string& tag) {
-        base      = fs::temp_directory_path() / ("logosctl_it_" + tag + "_" + std::to_string(getpid()));
+        base      = fs::temp_directory_path()
+                  / ("logosctl_it_" + tag + "_" + std::to_string(logosctl_test::currentPid()));
         configDir = base / "config";
         homeDir   = base / "home";
         daemonLog = base / "daemon.log";
@@ -134,12 +168,13 @@ public:
             std::ofstream cfg(configDir / "daemon" / "config.yaml", std::ios::trunc);
             cfg << "version: 2\n"
                 << "modules_dirs:\n"
-                << "  - \"" << modulesDir.string() << "\"\n";
+                << "  - \"" << modulesDir.generic_string() << "\"\n";
             if (!extraConfig.empty()) cfg << extraConfig;
         }
         pid = spawnBg({"daemon", "start"}, daemonLog);
     }
 
+#ifndef _WIN32
     // fork + setsid + exec a logosctl subprocess (daemon or watch) with
     // this daemon's isolated env; stdout+stderr → logFile, stdin
     // detached. setsid ⇒ the pid leads a process group so the whole
@@ -176,6 +211,73 @@ public:
         }
         return p;
     }
+#else
+    // The same on Windows. The daemon's logos_host children are in its
+    // kill-on-close job, so they end with it.
+    pid_t spawnBg(const std::vector<std::string>& cliArgs, const fs::path& logFile) {
+        std::vector<std::pair<std::string, std::string>> env{
+            {"LOGOSCTL_CONFIG_DIR", configDir.string()},
+            {logosctl_test::homeVar(), homeDir.string()}};
+        for (const auto& kv : extraEnv) env.emplace_back(kv.first, kv.second);
+        std::wstring environment = logosctl_test::environmentBlock(env);
+        std::wstring command = logosctl_test::quoteArg(binary.wstring());
+        for (const auto& a : cliArgs) command += L" " + logosctl_test::quoteArg(fs::path(a).wstring());
+        PROCESS_INFORMATION info{};
+        {
+            std::lock_guard<std::mutex> lock(logosctl_test::spawnMutex());
+            SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+            HANDLE log = ::CreateFileW(logFile.wstring().c_str(), GENERIC_WRITE,
+                                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                       &inherit, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            HANDLE nul = ::CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                       &inherit, OPEN_EXISTING, 0, nullptr);
+            STARTUPINFOW startup{};
+            startup.cb = sizeof(startup);
+            startup.dwFlags = STARTF_USESTDHANDLES;
+            startup.hStdInput = nul;
+            startup.hStdOutput = log;
+            startup.hStdError = log;
+            const BOOL started = ::CreateProcessW(binary.wstring().c_str(), command.data(), nullptr,
+                                                  nullptr, TRUE,
+                                                  CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+                                                  environment.data(), nullptr, &startup, &info);
+            if (log != INVALID_HANDLE_VALUE) ::CloseHandle(log);
+            if (nul != INVALID_HANDLE_VALUE) ::CloseHandle(nul);
+            if (!started) return -1;
+        }
+        ::CloseHandle(info.hThread);
+        const auto p = static_cast<pid_t>(info.dwProcessId);
+        procs[p] = info.hProcess;
+        return p;
+    }
+#endif
+
+    // True once `p` has exited, which also reaps it: until then an exited
+    // child of ours is a zombie, and kill(pid, 0) — what logosctl::processAlive
+    // asks, rightly for a client unrelated to the daemon — calls it alive.
+    bool exited(pid_t p, int waitMs = 0) {
+        if (p <= 0) return true;
+#ifdef _WIN32
+        const auto it = procs.find(p);
+        if (it == procs.end()) return true;
+        if (::WaitForSingleObject(it->second, static_cast<DWORD>(waitMs)) != WAIT_OBJECT_0)
+            return false;
+        ::CloseHandle(it->second);
+        procs.erase(it);
+        return true;
+#else
+        const auto deadline = std::chrono::steady_clock::now()
+                            + std::chrono::milliseconds(waitMs);
+        for (;;) {
+            int st = 0;
+            const pid_t r = ::waitpid(p, &st, WNOHANG);
+            if (r == p) return true;
+            if (r < 0 && errno == ECHILD) return true;
+            if (std::chrono::steady_clock::now() >= deadline) return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+#endif
+    }
 
     bool waitReady() {
         // Bound each probe: a partially-started daemon (client config
@@ -183,21 +285,33 @@ public:
         // block the full SDK timeout per iteration, blowing the ~20s
         // readiness budget into minutes.
         for (int i = 0; i < 200; ++i) {
-            int st = 0;
-            if (pid > 0 && waitpid(pid, &st, WNOHANG) == pid) { pid = -1; return false; }
+            if (pid > 0 && exited(pid)) { pid = -1; return false; }
             if (run("status", nullptr, /*timeoutSecs=*/5) == 0) return true;
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
         return false;
     }
 
-    // Run `logosctl <args> --json` against this daemon. timeoutSecs>0
-    // wraps it in coreutils `timeout` (exit 124 if it fires). Safe to
-    // call concurrently from multiple threads — each call is its own
-    // process and FILE*, sharing no mutable state on this object.
-    int run(const std::string& args, std::string* out, int timeoutSecs = 0) const {
+    // Run `logosctl <args> --json` against this daemon, or as a client
+    // configured in `clientConfigDir`. timeoutSecs>0 wraps it in coreutils
+    // `timeout` (exit 124 if it fires). Safe to call concurrently from
+    // multiple threads — each call is its own process, sharing no mutable
+    // state on this object.
+    int run(const std::string& args, std::string* out, int timeoutSecs = 0,
+            const fs::path& clientConfigDir = {}) const {
+        const fs::path& config = clientConfigDir.empty() ? configDir : clientConfigDir;
+#ifdef _WIN32
+        std::vector<std::string> argv = shellWords(args);
+        argv.push_back("--json");
+        std::string captured;
+        const int rc = logosctl_test::runProcess(binary, argv, &captured, timeoutSecs,
+                                                 {{"LOGOSCTL_CONFIG_DIR", config.string()},
+                                                  {logosctl_test::homeVar(), homeDir.string()}});
+        if (out) *out = captured;
+        return rc;
+#else
         std::string cmd =
-            "LOGOSCTL_CONFIG_DIR='" + configDir.string() + "' " +
+            "LOGOSCTL_CONFIG_DIR='" + config.string() + "' " +
             "HOME='" + homeDir.string() + "' ";
         // The client dials the same bare socket name, so it must resolve
         // QDir::tempPath() to the same place the daemon bound in.
@@ -212,10 +326,18 @@ public:
         if (out) *out = captured;
         int status = pclose(pipe);
         return WEXITSTATUS(status);
+#endif
     }
 
     void killGroup(pid_t p) {
         if (p <= 0) return;
+#ifdef _WIN32
+        // Nothing to ask it to stop with; its logos_host children end with it.
+        const auto it = procs.find(p);
+        if (it == procs.end()) return;
+        ::TerminateProcess(it->second, 1);
+        exited(p, 10000);
+#else
         kill(-p, SIGTERM);
         for (int i = 0; i < 30; ++i) {
             int st = 0;
@@ -225,6 +347,7 @@ public:
         kill(-p, SIGKILL);
         int st = 0;
         waitpid(p, &st, 0);
+#endif
     }
 
     void shutdown() {
@@ -248,8 +371,13 @@ public:
     // the shutdown test needs, which is not a config-file setting.
     std::map<std::string, std::string> extraEnv;
     pid_t    pid = -1;
+#ifdef _WIN32
+    // Handles of what spawnBg started, by pid.
+    std::map<pid_t, HANDLE> procs;
+#endif
 };
 
+#ifndef _WIN32
 // ── socket-file helpers (shared by the socket-lifecycle tests) ─────────────
 
 // Unix socket paths are hard-capped by sockaddr_un::sun_path — 104 bytes on
@@ -312,6 +440,7 @@ int bindListen(const fs::path& p)
     }
     return fd;
 }
+#endif
 
 // Reap a spawned subprocess (e.g. `watch`) on every exit path —
 // including a fatal gtest assertion that `return`s out of the test —
@@ -705,16 +834,8 @@ TEST_F(RemoteClientTest, TheBootTokenOverTcpIsReportedAsRefused) {
         {"daemon", {{"core_service",
                      {{"transport", "tcp"}, {"host", "127.0.0.1"}, {"port", port}}}}}}.dump();
 
-    const std::string cmd = "LOGOSCTL_CONFIG_DIR='" + remote.string() + "' HOME='"
-        + d.homeDir.string() + "' timeout 40 '" + d.binary.string()
-        + "' status --json 2>&1";
-    FILE* pipe = popen(cmd.c_str(), "r");
-    ASSERT_NE(pipe, nullptr);
     std::string out;
-    char buf[256];
-    while (fgets(buf, sizeof(buf), pipe)) out += buf;
-    int raw = pclose(pipe);
-    const int status = WEXITSTATUS(raw);
+    const int status = d.run("status", &out, 40, remote);
 
     EXPECT_NE(status, 0) << out;
     EXPECT_EQ(lastJsonObject(out).value("code", std::string{}), "UNAUTHORIZED") << out;
@@ -1274,6 +1395,8 @@ TEST_F(LoadedModuleTest, ConcurrentMixedMethodsFromManyClients) {
         EXPECT_EQ(ok[i], 1) << "client " << i << ": " << detail[i];
 }
 
+// Windows has named pipes, not socket files: nothing is left behind.
+#ifndef _WIN32
 // ═══════════════════════════════════════════════════════════════════════════
 // Socket lifecycle — the node must not leave unix-socket files behind
 //
@@ -1392,6 +1515,7 @@ TEST_F(SocketLifecycleTest, BootReapsStaleSocketsButSparesLiveOnesAndFiles)
         << "the reaper deleted a regular file sharing the prefix: " << plain;
     EXPECT_EQ(slurp(plain), "not a socket") << "regular file was modified";
 }
+#endif
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Deny-by-default inter-module access enforcement (`access_policy`)
@@ -1565,24 +1689,6 @@ int stopCycles()
     return 60;
 }
 
-// The daemon here is this process's own child, so kill(pid, 0) — what
-// logosctl::processAlive asks, and the right question for a client that is
-// unrelated to the daemon — reports a zombie as alive. Reap it instead.
-bool waitForChildExit(pid_t p, int timeoutMs)
-{
-    if (p <= 0) return true;
-    const auto deadline = std::chrono::steady_clock::now()
-                        + std::chrono::milliseconds(timeoutMs);
-    for (;;) {
-        int st = 0;
-        const pid_t r = ::waitpid(p, &st, WNOHANG);
-        if (r == p) return true;
-        if (r < 0 && errno == ECHILD) return true;
-        if (std::chrono::steady_clock::now() >= deadline) return false;
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-}
-
 } // namespace
 
 TEST(ShutdownReplyTest, StopSucceedsWithNoGracePeriod)
@@ -1626,7 +1732,7 @@ TEST(ShutdownReplyTest, StopSucceedsWithNoGracePeriod)
         // The other half of the contract, and the reason "treat silence as
         // success" is not on its own an acceptable fix: a stop that reports
         // ok must correspond to a daemon that is actually gone.
-        const bool gone = waitForChildExit(daemonPid, 15000);
+        const bool gone = d.exited(daemonPid, 15000);
         if (!gone) ++survived;
         EXPECT_TRUE(gone)
             << "cycle " << i << ": daemon pid " << daemonPid

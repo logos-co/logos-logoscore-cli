@@ -756,10 +756,13 @@ ${pkgs.lib.optionalString withPkgModules ''
           logoscoreCli = pkgs.symlinkJoin { name = pname;            paths = [ binLegacy ]; };
           logosctlCli  = pkgs.symlinkJoin { name = "${pname}-ctl";   paths = [ binCtl ];    };
 
-          # The unit and CLI suites, cross-built for Windows. Windows CI runs them
-          # from the manifest installed beside them; the integration suites are
-          # not ported yet (see tests/CMakeLists.txt).
+          # The unit, CLI and integration suites, cross-built for Windows. Windows
+          # CI runs them from the manifest installed beside them; logoscore's
+          # copies are not ported (see tests/CMakeLists.txt).
           testsWindows = let
+            # The integration suite's modules, for the portable logosctl.exe
+            # that `ctl` stages with capability_module beside it.
+            itModulesInstalled = map (m: installPortable m.packages.${system}.lib) itModules;
             manifest = builtins.toFile "logosctl-tests.json" (builtins.toJSON {
               suites = [
                 { name = "unit"; exe = "bin/unit_tests.exe"; timeout = 120; }
@@ -767,6 +770,14 @@ ${pkgs.lib.optionalString withPkgModules ''
                 # The logosctl.exe the `ctl` target stages beside this one.
                 { name = "cli"; exe = "bin/cli_tests.exe"; timeout = 120;
                   env.LOGOSCTL_BINARY = "{stage}/ctl/bin/logosctl.exe"; }
+                # One process, so LoadedModuleTest shares one daemon as it does
+                # on Linux and macOS.
+                { name = "integration"; exe = "bin/integration_tests.exe"; isolation = "suite";
+                  wine = false;
+                  env = {
+                    LOGOSCTL_BINARY = "{stage}/ctl/bin/logosctl.exe";
+                    LOGOSCTL_TEST_MODULES_DIR = "{target}/it-modules";
+                  }; }
               ];
             });
           in buildPortable.overrideAttrs (old: {
@@ -776,13 +787,18 @@ ${pkgs.lib.optionalString withPkgModules ''
               # Discovery would run the PE on the build machine.
               "-DCMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE=PRE_TEST"
             ];
-            ninjaFlags = [ "unit_tests" "plain_rpc_tests" "logosctl_test_child" "cli_tests" ];
+            ninjaFlags = [
+              "unit_tests" "plain_rpc_tests" "logosctl_test_child" "cli_tests" "integration_tests"
+            ];
             installPhase = ''
               runHook preInstall
-              mkdir -p $out/bin $out/share/logos-tests
+              mkdir -p $out/bin $out/share/logos-tests $out/it-modules
               # Their DLLs are linked in beside them by the mingw fixup hook.
               cp bin/unit_tests.exe bin/plain_rpc_tests.exe bin/logosctl_test_child.exe \
-                bin/cli_tests.exe $out/bin/
+                bin/cli_tests.exe bin/integration_tests.exe $out/bin/
+              for installed in ${pkgs.lib.escapeShellArgs itModulesInstalled}; do
+                cp -r "$installed"/modules/. $out/it-modules/
+              done
               cp ${manifest} $out/share/logos-tests/logosctl.json
               runHook postInstall
             '';
@@ -854,25 +870,11 @@ ${pkgs.lib.optionalString withPkgModules ''
           #     of which `build` already had: the Qt host-tool cmakeFlags, and
           #     the !isWindows guard on wrapQtAppsNoGuiHook.
           #
-          #   * tests. Verified here rather than inherited from the old comment.
-          #     CMakeLists.txt:277 skips the whole test block under WIN32, and
-          #     the block could not be un-skipped by removing that gate:
-          #       - `unit_tests` is a SINGLE executable built from 9 translation
-          #         units (tests/CMakeLists.txt), and 4 of them -- test_paths,
-          #         test_daemon_state, test_log_sink, test_token_store -- use
-          #         <unistd.h> for getpid()/::sleep(), and test_token_store
-          #         asserts on ::chmod(dir, 0500), a POSIX permission model
-          #         Windows does not have. The 5 portable suites cannot be split
-          #         out without editing the target.
-          #       - cli_tests and integration_tests (both spellings) drive the
-          #         daemon over AF_UNIX (sys/un.h, sys/socket.h) and reap it with
-          #         fork/waitpid, and shell out via popen/WEXITSTATUS.
-          #     And compiling is not the binding constraint anyway: `checks` is
-          #     forAllSystems, not forAllTargets, because running these would
-          #     mean executing PE test binaries on the x86_64-linux builder.
+          # NOW SHIPPED, and what changed. `tests` is testsWindows above: the
+          # suites logos-windows-ci runs from their manifest.
           #
-          # NOW SHIPPED, and what changed. `*-bundle-dir` used to be on the list
-          # above on the premise that "nix-bundle-dir is an ELF/Mach-O tool".
+          # `*-bundle-dir` used to be on the list above on the premise that
+          # "nix-bundle-dir is an ELF/Mach-O tool".
           # That premise has expired -- bundle.sh has a full PE path (import
           # table sweep, wrong-machine DLL refusal, hard failure on an
           # unresolved import). What is still true, and is what the premise was

@@ -121,27 +121,6 @@ target_include_directories(cli_tests PRIVATE
 
 gtest_discover_tests(cli_tests)
 
-# The rest drive a daemon over AF_UNIX, fork/waitpid and popen: not on Windows yet.
-if(WIN32)
-    return()
-endif()
-
-# The same suite against logoscore. Both binaries ship, so both are tested;
-# this target goes away with the tool.
-add_executable(cli_tests_logoscore
-    test_cli_logoscore.cpp
-)
-
-target_link_libraries(cli_tests_logoscore PRIVATE
-    GTest::gtest_main
-)
-
-target_include_directories(cli_tests_logoscore PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-)
-
-gtest_discover_tests(cli_tests_logoscore)
-
 # ── Daemon-backed integration tests (own target, own CTest entry) ────────────
 #
 # Kept separate from cli_tests and registered as a SINGLE CTest test
@@ -163,6 +142,29 @@ target_include_directories(integration_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 
+add_test(NAME integration_tests COMMAND integration_tests)
+
+# logoscore's copies of the suites are not ported to Windows; they go with the tool.
+if(WIN32)
+    return()
+endif()
+
+# The same suite against logoscore. Both binaries ship, so both are tested;
+# this target goes away with the tool.
+add_executable(cli_tests_logoscore
+    test_cli_logoscore.cpp
+)
+
+target_link_libraries(cli_tests_logoscore PRIVATE
+    GTest::gtest_main
+)
+
+target_include_directories(cli_tests_logoscore PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+gtest_discover_tests(cli_tests_logoscore)
+
 # Same again for logoscore. Deleted with the tool.
 add_executable(integration_tests_logoscore
     test_integration_logoscore.cpp
@@ -176,4 +178,3 @@ target_include_directories(integration_tests_logoscore PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 
-add_test(NAME integration_tests COMMAND integration_tests)
