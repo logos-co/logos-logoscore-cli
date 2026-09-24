@@ -62,8 +62,6 @@ int bindListen(const std::filesystem::path& path)
 
 } // namespace
 
-#ifndef _WIN32
-// Named pipes: no path is derived on Windows.
 TEST(LocalEndpointTest, ReportsTheDerivedPathItChecked)
 {
     std::string path;
@@ -72,7 +70,6 @@ TEST(LocalEndpointTest, ReportsTheDerivedPathItChecked)
         << "the path must be the one a bare QLocalSocket name resolves to, or "
            "the check is answering a question about the wrong file";
 }
-#endif
 
 #ifdef __APPLE__
 TEST(LocalEndpointTest, UsesDarwinUserTempWhenTmpdirIsUnset)
@@ -111,14 +108,12 @@ TEST(LocalEndpointTest, UsesDarwinUserTempWhenTmpdirIsUnset)
 TEST(LocalEndpointTest, NoSocketFileAtAll_IsProvablyAbsent)
 {
     // What a clean `daemon stop` leaves: QLocalServer's destructor unlinks it.
+    // On Windows the pipe name goes with the server's last instance.
     const std::string id = uniqueId("_gone");
-    std::filesystem::remove(endpointPath(id));
+    std::error_code ec;
+    std::filesystem::remove(endpointPath(id), ec);
 
-#ifdef _WIN32
-    EXPECT_FALSE(logosctl::localEndpointProvablyAbsent("core_service", id));
-#else
     EXPECT_TRUE(logosctl::localEndpointProvablyAbsent("core_service", id));
-#endif
 }
 
 #ifndef _WIN32
@@ -141,6 +136,7 @@ TEST(LocalEndpointTest, SocketFileWithNoListener_IsProvablyAbsent)
 
     ::unlink(path.string().c_str());
 }
+#endif
 
 TEST(LocalEndpointTest, LiveListener_IsNeverCalledAbsent)
 {
@@ -156,7 +152,6 @@ TEST(LocalEndpointTest, LiveListener_IsNeverCalledAbsent)
     EXPECT_FALSE(logosctl::localEndpointProvablyAbsent("core_service", id, &checked));
     EXPECT_EQ(checked, daemon.socketPath());
 }
-#endif
 
 #ifndef _WIN32
 // A named pipe has no file to wear its name on Windows.

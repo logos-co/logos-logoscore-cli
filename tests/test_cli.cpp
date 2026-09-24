@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "test_platform.h"
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -6,16 +7,16 @@
 #include <fstream>
 #include <functional>
 #include <string>
+#include <vector>
+#ifndef _WIN32
 #include <sys/socket.h>
 #include <sys/un.h>
-#include <sys/wait.h>
 #include <unistd.h>
-#include <vector>
+#endif
 
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #elif defined(__linux__)
-#include <unistd.h>
 #include <climits>
 #endif
 
@@ -36,9 +37,19 @@ static fs::path getExecutableDir() {
         path[len] = '\0';
         return fs::path(path).parent_path();
     }
+#elif defined(_WIN32)
+    std::wstring path(MAX_PATH, L'\0');
+    path.resize(::GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size())));
+    if (!path.empty()) return fs::path(path).parent_path();
 #endif
     return fs::path();
 }
+
+#ifdef _WIN32
+static const char* const kLogosctlName = "logosctl.exe";
+#else
+static const char* const kLogosctlName = "logosctl";
+#endif
 
 class CLITest : public ::testing::Test {
 protected:
@@ -51,6 +62,10 @@ protected:
             logosctlBinary = envBinary;
             return;
         }
+        // Named but absent is a broken setup, not a machine without the
+        // binary: a skip would read as a pass.
+        if (envBinary && *envBinary)
+            FAIL() << "LOGOSCTL_BINARY names no file: " << envBinary;
 
         // Get the directory where the test executable is located
         fs::path execDir = getExecutableDir();
@@ -60,14 +75,14 @@ protected:
 
         // First, check in the same directory as the test executable (Nix builds)
         if (!execDir.empty()) {
-            searchPaths.push_back(execDir / "logosctl");
+            searchPaths.push_back(execDir / kLogosctlName);
         }
 
         // Then try paths relative to current working directory
-        searchPaths.push_back(fs::current_path() / ".." / "bin" / "logosctl");
-        searchPaths.push_back(fs::current_path() / "bin" / "logosctl");
-        searchPaths.push_back(fs::current_path() / ".." / ".." / "bin" / "logosctl");
-        searchPaths.push_back(fs::current_path().parent_path() / "logosctl");
+        searchPaths.push_back(fs::current_path() / ".." / "bin" / kLogosctlName);
+        searchPaths.push_back(fs::current_path() / "bin" / kLogosctlName);
+        searchPaths.push_back(fs::current_path() / ".." / ".." / "bin" / kLogosctlName);
+        searchPaths.push_back(fs::current_path().parent_path() / kLogosctlName);
 
         for (const auto& path : searchPaths) {
             if (fs::exists(path)) {
@@ -86,38 +101,16 @@ protected:
                      << triedPaths;
     }
 
-    // Helper to run logosctl command
+    // Helper to run logosctl command, stdout and stderr together.
     int runLogosctl(const std::string& args, std::string* output = nullptr) {
-        std::string cmd = logosctlBinary.string() + " " + args;
-        if (output) {
-            cmd += " 2>&1";
-            FILE* pipe = popen(cmd.c_str(), "r");
-            if (!pipe) return -1;
-
-            char buffer[128];
-            while (fgets(buffer, sizeof(buffer), pipe)) {
-                *output += buffer;
-            }
-            int status = pclose(pipe);
-            return WEXITSTATUS(status);
-        } else {
-            int status = system(cmd.c_str());
-            return WEXITSTATUS(status);
-        }
+        return logosctl_test::runProcess(logosctlBinary, logosctl_test::splitArgs(args), output, 60);
     }
 
-    // Helper to run logosctl with timeout (for commands that run event loop)
+    // Helper to run logosctl with timeout (for commands that run event loop):
+    // killed after timeoutSecs and reported as exit 124, as timeout(1) does.
     int runLogosctlWithTimeout(const std::string& args, std::string* output, int timeoutSecs = 2) {
-        std::string cmd = "timeout " + std::to_string(timeoutSecs) + " " + logosctlBinary.string() + " " + args + " 2>&1";
-        FILE* pipe = popen(cmd.c_str(), "r");
-        if (!pipe) return -1;
-
-        char buffer[128];
-        while (fgets(buffer, sizeof(buffer), pipe)) {
-            *output += buffer;
-        }
-        int status = pclose(pipe);
-        return WEXITSTATUS(status);
+        return logosctl_test::runProcess(logosctlBinary, logosctl_test::splitArgs(args), output,
+                                         timeoutSecs);
     }
 };
 
@@ -304,7 +297,7 @@ struct DeadSessionFixture {
     DeadSessionFixture(const std::string& name, Shape shape)
     {
         dir = fs::temp_directory_path() /
-              ("logosctl_cli_" + name + "_" + std::to_string(::getpid()));
+              ("logosctl_cli_" + name + "_" + std::to_string(logosctl_test::currentPid()));
         fs::remove_all(dir);
         fs::create_directories(dir / "client");
         fs::create_directories(dir / "daemon");
@@ -323,13 +316,15 @@ struct DeadSessionFixture {
                     + R"(","pid":)" + kGonePid
                     + R"(,"started_at":"2026-01-01T00:00:00Z"})");
 
+#ifndef _WIN32
         if (shape == SocketLeftOver) {
-            socketDir = fs::path("/tmp") / ("lgx" + std::to_string(::getpid()));
+            socketDir = fs::path("/tmp") / ("lgx" + std::to_string(logosctl_test::currentPid()));
             fs::remove_all(socketDir);
             fs::create_directories(socketDir);
             socketStaged = bindThenAbandon(
                 socketDir / (std::string("logos_core_service_") + kDeadInstance));
         }
+#endif
     }
     ~DeadSessionFixture()
     {
@@ -337,14 +332,15 @@ struct DeadSessionFixture {
         if (!socketDir.empty()) fs::remove_all(socketDir);
     }
 
-    // What the command line needs in front of it to make this session's socket
+    // What the command needs in its environment to make this session's socket
     // the one the dial resolves to. Empty for the shapes that do not stage one.
-    std::string env() const
+    std::vector<std::pair<std::string, std::string>> env() const
     {
-        return socketDir.empty() ? std::string{}
-                                 : "TMPDIR='" + socketDir.string() + "' ";
+        if (socketDir.empty()) return {};
+        return {{"TMPDIR", socketDir.string()}};
     }
 
+#ifndef _WIN32
     // Bind and listen, then close the listener WITHOUT unlinking -- leaving an
     // inode that exists and refuses. False if the path would not fit in
     // sun_path, which the caller reports as a skip rather than a failure.
@@ -367,6 +363,7 @@ struct DeadSessionFixture {
         ::close(fd);          // listener gone; the inode stays
         return true;
     }
+#endif
 
     static void put(const fs::path& path, const std::string& body)
     {
@@ -432,8 +429,10 @@ TEST_F(CLITest, CleanlyStoppedSession_EveryRpcCommandFailsAtOnce) {
         fx, /*expectPid=*/false);
 }
 
+#ifndef _WIN32
 // The window a stat cannot see through: the socket file is still on disk, so
 // "is it there?" says yes, and only being REFUSED by it settles the question.
+// Windows has named pipes, which leave no file behind.
 TEST_F(CLITest, SocketLeftOverWithNoListener_EveryRpcCommandFailsAtOnce) {
     DeadSessionFixture fx("socketleft", DeadSessionFixture::SocketLeftOver);
     if (!fx.socketStaged)
@@ -444,20 +443,14 @@ TEST_F(CLITest, SocketLeftOverWithNoListener_EveryRpcCommandFailsAtOnce) {
     // the fixture's env() carries it, so this runner cannot go through
     // runLogosctlWithTimeout (which has nowhere to put it).
     const fs::path bin = logosctlBinary;
-    const std::string env = fx.env();
+    const auto env = fx.env();
     expectEveryRpcCommandFailsAtOnce(
         [&bin, &env](const std::string& a, std::string* o) -> int {
-            const std::string cmd = env + "timeout 5 " + bin.string() + " " + a + " 2>&1";
-            FILE* pipe = popen(cmd.c_str(), "r");
-            if (!pipe) return -1;
-            char buf[256];
-            while (fgets(buf, sizeof(buf), pipe)) *o += buf;
-            // An lvalue: WEXITSTATUS takes the address of its argument.
-            int status = pclose(pipe);
-            return WEXITSTATUS(status);
+            return logosctl_test::runProcess(bin, logosctl_test::splitArgs(a), o, 5, env);
         },
         fx, /*expectPid=*/false);
 }
+#endif
 
 // `status` asks the same question and answers it as a status report rather
 // than an error, so it exits 1 and describes the session instead.
@@ -570,7 +563,7 @@ TEST_F(CLITest, RemovedFlags_AreRejectedNotIgnored) {
 
 TEST_F(CLITest, DaemonConfigSet_RejectsMalformedYaml) {
     const fs::path cfgDir = fs::temp_directory_path() /
-        ("logosctl_cli_badyaml_" + std::to_string(::getpid()));
+        ("logosctl_cli_badyaml_" + std::to_string(logosctl_test::currentPid()));
     fs::create_directories(cfgDir);
     const fs::path doc = cfgDir / "bad.yaml";
     { std::ofstream ofs(doc, std::ios::trunc); ofs << "modules:\n  - [unclosed\n"; }
@@ -591,7 +584,7 @@ TEST_F(CLITest, DaemonConfigSet_RejectsUnknownKeys) {
     // unrecognised keys, so without this check the daemon would boot with the
     // operator's intent silently dropped.
     const fs::path cfgDir = fs::temp_directory_path() /
-        ("logosctl_cli_badkey_" + std::to_string(::getpid()));
+        ("logosctl_cli_badkey_" + std::to_string(logosctl_test::currentPid()));
     fs::create_directories(cfgDir);
     const fs::path doc = cfgDir / "typo.yaml";
     { std::ofstream ofs(doc, std::ios::trunc); ofs << "insecureTcp: true\n"; }
@@ -608,7 +601,7 @@ TEST_F(CLITest, DaemonConfigSet_RejectsUnknownKeys) {
 
 TEST_F(CLITest, DaemonConfigSet_RoundTripsThroughShow) {
     const fs::path cfgDir = fs::temp_directory_path() /
-        ("logosctl_cli_rt_" + std::to_string(::getpid()));
+        ("logosctl_cli_rt_" + std::to_string(logosctl_test::currentPid()));
     fs::create_directories(cfgDir);
     const fs::path doc = cfgDir / "node.yaml";
     {
@@ -640,7 +633,7 @@ TEST_F(CLITest, DaemonConfigSet_AcceptsEverySignaturePolicyValue) {
     for (const char* policy : {"none", "warn", "require"}) {
         const fs::path cfgDir = fs::temp_directory_path() /
             ("logosctl_cli_sigok_" + std::string(policy) + "_" +
-             std::to_string(::getpid()));
+             std::to_string(logosctl_test::currentPid()));
         fs::remove_all(cfgDir);
         fs::create_directories(cfgDir);
         const fs::path doc = cfgDir / "node.yaml";
@@ -668,7 +661,7 @@ TEST_F(CLITest, DaemonConfigSet_RejectsUnknownSignaturePolicy) {
     // (the key takes `require`) would leave it on the default `warn` while
     // `daemon config show` kept reporting the operator's stricter intent.
     const fs::path cfgDir = fs::temp_directory_path() /
-        ("logosctl_cli_sigbad_" + std::to_string(::getpid()));
+        ("logosctl_cli_sigbad_" + std::to_string(logosctl_test::currentPid()));
     fs::remove_all(cfgDir);
     fs::create_directories(cfgDir);
     const fs::path doc = cfgDir / "node.yaml";
@@ -688,7 +681,7 @@ TEST_F(CLITest, DaemonStart_RefusesTlsListenerWithNoCertificate) {
     // A tcp_ssl listener with no material binds fine and then fails every
     // handshake with "no shared cipher", which reads like a client fault.
     const fs::path cfgDir = fs::temp_directory_path() /
-        ("logosctl_cli_nocert_" + std::to_string(::getpid()));
+        ("logosctl_cli_nocert_" + std::to_string(logosctl_test::currentPid()));
     fs::remove_all(cfgDir);
     fs::create_directories(cfgDir);
     const fs::path doc = cfgDir / "node.yaml";
@@ -721,7 +714,7 @@ TEST_F(CLITest, DaemonStart_RefusesTlsListenerWithNoCertificate) {
 TEST_F(CLITest, DaemonConfigShow_AbsentIsNotAnError) {
     // A session with no config runs on defaults; that is a normal state.
     const fs::path cfgDir = fs::temp_directory_path() /
-        ("logosctl_cli_absent_" + std::to_string(::getpid()));
+        ("logosctl_cli_absent_" + std::to_string(logosctl_test::currentPid()));
     fs::create_directories(cfgDir);
     std::string output;
     int exitCode = runLogosctlWithTimeout(
@@ -757,7 +750,7 @@ struct ConfigFixture {
     ConfigFixture(const std::string& name, const std::string& body)
     {
         dir = fs::temp_directory_path() /
-              ("logosctl_cli_" + name + "_" + std::to_string(::getpid()));
+              ("logosctl_cli_" + name + "_" + std::to_string(logosctl_test::currentPid()));
         fs::remove_all(dir);
         fs::create_directories(dir);
         doc = dir / "doc.yaml";
