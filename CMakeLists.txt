@@ -202,7 +202,8 @@ if(WIN32)
     # PortAllocator's probe socket. Winsock is not in the default link set the
     # way libc's sockets are on POSIX, so without this the build fails at link
     # with undefined `socket`/`bind`/`getsockname`/`WSAStartup`.
-    target_link_libraries(${_tgt} PRIVATE ws2_32)
+    # shell32: CommandLineToArgvW, for UTF-8 arguments (utf8_args.h).
+    target_link_libraries(${_tgt} PRIVATE ws2_32 shell32)
 endif()
 
 target_include_directories(${_tgt} PRIVATE
@@ -235,8 +236,7 @@ endforeach()
 # ── Tests ─────────────────────────────────────────────────────────────────────
 #
 # Off by default for a Windows host, where only the Windows test package
-# builds them: there, the unit suites build and the daemon-driving ones
-# (AF_UNIX, fork/waitpid, popen) do not yet -- see tests/CMakeLists.txt.
+# builds them: there, all but logoscore's copies build -- see tests/CMakeLists.txt.
 #
 # The gate wraps the GTest lookup too: `find_package(GTest)` falling through to
 # the FetchContent branch would try to DOWNLOAD googletest, which in a Nix

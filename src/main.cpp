@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "config.h"
+#include "utf8_args.h"
 #include "paths.h"
 #include "platform_compat.h"
 #include "daemon/daemon.h"
@@ -294,6 +295,8 @@ static std::vector<std::string> normalizeGroupVerbs(int argc, char* argv[])
 
 int main(int argc, char *argv[])
 {
+    logosctl::Utf8Args utf8Args(argc, argv);
+
     // This binary is logosctl: new surface, own session directory,
     // YAML config. Set before any Config::* call.
     Config::setFlavor(Config::Flavor::Modern);

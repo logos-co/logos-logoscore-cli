@@ -12,6 +12,7 @@
 #include <string>
 
 #include "config.h"
+#include "utf8_args.h"
 #include "paths.h"
 #include "platform_compat.h"
 #include "daemon/daemon.h"
@@ -55,6 +56,8 @@ static std::optional<std::string> resolveAccessPolicy(const std::string& arg)
 
 int main(int argc, char *argv[])
 {
+    logosctl::Utf8Args utf8Args(argc, argv);
+
     // This binary is logoscore: the surface that exists today,
     // ~/.logoscore, JSON config. logosctl ships alongside it and
     // shares no state; this one changes only when it must.

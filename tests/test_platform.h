@@ -107,6 +107,17 @@ inline std::vector<std::string> splitArgs(const std::string& line)
 }
 
 #ifdef _WIN32
+// The tests' UTF-8 text as UTF-16, for CreateProcessW.
+inline std::wstring widen(const std::string& text)
+{
+    if (text.empty()) return {};
+    const int size = ::MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+                                           nullptr, 0);
+    std::wstring out(static_cast<size_t>(size), L'\0');
+    ::MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), out.data(), size);
+    return out;
+}
+
 // Quoted so CommandLineToArgvW gives the child `arg` back unchanged.
 inline std::wstring quoteArg(const std::wstring& arg)
 {
@@ -149,11 +160,11 @@ inline std::wstring environmentBlock(const std::vector<std::pair<std::string, st
         ::FreeEnvironmentStringsW(block);
     }
     for (const auto& [name, value] : env) {
-        const std::wstring key = std::filesystem::path(name).wstring() + L"=";
+        const std::wstring key = widen(name) + L"=";
         vars.erase(std::remove_if(vars.begin(), vars.end(), [&key](const std::wstring& var) {
             return ::_wcsnicmp(var.c_str(), key.c_str(), key.size()) == 0;
         }), vars.end());
-        if (!value.empty()) vars.push_back(key + std::filesystem::path(value).wstring());
+        if (!value.empty()) vars.push_back(key + widen(value));
     }
     std::wstring block;
     for (const auto& var : vars) block.append(var).push_back(L'\0');
@@ -193,7 +204,7 @@ inline int runProcess(const std::filesystem::path& exe, const std::vector<std::s
 #ifdef _WIN32
     std::wstring environment = environmentBlock(env);
     std::wstring command = quoteArg(exe.wstring());
-    for (const auto& arg : args) command += L" " + quoteArg(std::filesystem::path(arg).wstring());
+    for (const auto& arg : args) command += L" " + quoteArg(widen(arg));
     HANDLE readEnd = nullptr;
     PROCESS_INFORMATION info{};
     {

@@ -656,6 +656,25 @@ TEST_F(CLITest, DaemonConfigSet_AcceptsEverySignaturePolicyValue) {
     }
 }
 
+// Paths are UTF-8 on every platform. On Windows the CLI used to take them in
+// the ANSI code page and abort decoding them.
+TEST_F(CLITest, DaemonConfigSet_NonAsciiPaths) {
+    const fs::path cfgDir = fs::temp_directory_path() /
+        fs::u8path("logosctl_cli_\u00e9\u65e5_" + std::to_string(logosctl_test::currentPid()));
+    fs::remove_all(cfgDir);
+    fs::create_directories(cfgDir);
+    const fs::path doc = cfgDir / "node.yaml";
+    { std::ofstream ofs(doc, std::ios::trunc); ofs << "signature_policy: warn\n"; }
+
+    std::string output;
+    const int exitCode = runLogosctlWithTimeout(
+        "--config-dir " + cfgDir.u8string() + " daemon config set " + doc.u8string(),
+        &output, 5);
+    EXPECT_EQ(exitCode, 0) << "Output:\n" << output;
+    EXPECT_TRUE(fs::exists(cfgDir / "daemon" / "config.yaml")) << "Output:\n" << output;
+    fs::remove_all(cfgDir);
+}
+
 TEST_F(CLITest, DaemonConfigSet_RejectsUnknownSignaturePolicy) {
     // package_manager ignores a policy it does not recognise, so `required`
     // (the key takes `require`) would leave it on the default `warn` while

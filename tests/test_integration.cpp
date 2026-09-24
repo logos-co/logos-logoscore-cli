@@ -221,7 +221,7 @@ public:
         for (const auto& kv : extraEnv) env.emplace_back(kv.first, kv.second);
         std::wstring environment = logosctl_test::environmentBlock(env);
         std::wstring command = logosctl_test::quoteArg(binary.wstring());
-        for (const auto& a : cliArgs) command += L" " + logosctl_test::quoteArg(fs::path(a).wstring());
+        for (const auto& a : cliArgs) command += L" " + logosctl_test::quoteArg(logosctl_test::widen(a));
         PROCESS_INFORMATION info{};
         {
             std::lock_guard<std::mutex> lock(logosctl_test::spawnMutex());
@@ -1210,6 +1210,15 @@ TEST_F(LoadedModuleTest, LogosResultShapes) {
     nlohmann::json vErr = call("validateInput", "''");
     EXPECT_FALSE(vErr["success"].get<bool>());
     EXPECT_EQ(vErr["error"].get<std::string>(), "input cannot be empty");
+}
+
+// Arguments are UTF-8 on every platform. On Windows they used to reach the CLI
+// in the ANSI code page: "é" aborted it and "日本" arrived as "??".
+TEST_F(LoadedModuleTest, NonAsciiArgumentsRoundTrip) {
+    for (const std::string text : {"h\u00e9llo", "\u65e5\u672c", "smile\U0001F600"})
+        EXPECT_EQ(call("echo", text).get<std::string>(), text);
+    EXPECT_EQ(call("stringLength", "h\u00e9llo").get<int>(), 5);
+    EXPECT_EQ(call("stringLength", "\u65e5\u672c").get<int>(), 2);
 }
 
 TEST_F(LoadedModuleTest, VariantAndCollectionReturns) {
