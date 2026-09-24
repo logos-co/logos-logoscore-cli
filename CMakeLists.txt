@@ -234,17 +234,19 @@ endforeach()
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 #
-# Not built for a Windows host. The suites are POSIX by construction, not by
-# accident: test_integration.cpp drives the daemon over AF_UNIX (sys/un.h) and
-# reaps it with fork/waitpid, and test_cli.cpp shells out through
-# popen/WEXITSTATUS. There is nothing to gate at the case level -- the
-# translation units do not compile.
+# Off by default for a Windows host, where only the Windows test package
+# builds them: there, the unit suites build and the daemon-driving ones
+# (AF_UNIX, fork/waitpid, popen) do not yet -- see tests/CMakeLists.txt.
 #
-# Skipping the whole block (rather than just the test targets) is deliberate
-# for a second reason: `find_package(GTest)` falling through to the
-# FetchContent branch would try to DOWNLOAD googletest, which in a Nix sandbox
-# fails as an opaque "downloading ... failed" long after the real cause.
-if(NOT WIN32)
+# The gate wraps the GTest lookup too: `find_package(GTest)` falling through to
+# the FetchContent branch would try to DOWNLOAD googletest, which in a Nix
+# sandbox fails as an opaque "downloading ... failed" long after the real cause.
+if(WIN32)
+    option(LOGOS_BUILD_TESTS "Build the test suites" OFF)
+else()
+    option(LOGOS_BUILD_TESTS "Build the test suites" ON)
+endif()
+if(LOGOS_BUILD_TESTS)
     find_package(GTest QUIET)
 
     if(NOT GTest_FOUND)

@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "test_platform.h"
 
 #include "paths.h"
 
@@ -6,7 +7,6 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
-#include <unistd.h>
 
 namespace fs = std::filesystem;
 
@@ -24,7 +24,7 @@ protected:
     fs::path dir;
     void SetUp() override {
         dir = fs::temp_directory_path() /
-              ("logosctl_relaunch_" + std::to_string(::getpid()));
+              ("logosctl_relaunch_" + std::to_string(logosctl_test::currentPid()));
         fs::remove_all(dir);
         fs::create_directories(dir);
     }
@@ -42,7 +42,7 @@ protected:
 TEST_F(RelaunchPathTest, PrefersArgv0OverTheResolvedBinary)
 {
     const fs::path launcher = makeExecutable("logosctl");
-    EXPECT_EQ(paths::relaunchPath(launcher.c_str()), launcher.string())
+    EXPECT_EQ(paths::relaunchPath(launcher.string().c_str()), launcher.string())
         << "argv[0] is the launcher the caller actually ran; the resolved "
            "binary may be an ELF that cannot be exec'd on its own";
 }
@@ -67,9 +67,9 @@ TEST_F(RelaunchPathTest, ResolvesABareNameThroughPath)
     makeExecutable("logosctl");
     const char* old = std::getenv("PATH");
     const std::string saved = old ? old : "";
-    setenv("PATH", (dir.string() + ":" + saved).c_str(), 1);
+    logosctl_test::setEnv("PATH", dir.string() + logosctl_test::kPathListSep + saved);
     const std::string got = paths::relaunchPath("logosctl");
-    setenv("PATH", saved.c_str(), 1);
+    logosctl_test::setEnv("PATH", saved);
 
     EXPECT_EQ(got, (dir / "logosctl").string())
         << "invoked by name, we must find the same file the shell found";
@@ -81,7 +81,7 @@ TEST_F(RelaunchPathTest, FallsBackWhenArgv0IsUseless)
 {
     EXPECT_EQ(paths::relaunchPath(nullptr), paths::executablePath());
     EXPECT_EQ(paths::relaunchPath(""), paths::executablePath());
-    EXPECT_EQ(paths::relaunchPath((dir / "nope").c_str()),
+    EXPECT_EQ(paths::relaunchPath((dir / "nope").string().c_str()),
               paths::executablePath());
 }
 
@@ -94,7 +94,7 @@ TEST_F(RelaunchPathTest, MapsAHiddenBundleElfBackToItsLauncher)
     const fs::path launcher = makeExecutable("logosctl");
     const fs::path hidden   = makeExecutable(".logosctl.elf");
 
-    EXPECT_EQ(paths::relaunchPath(hidden.c_str()), launcher.string())
+    EXPECT_EQ(paths::relaunchPath(hidden.string().c_str()), launcher.string())
         << "exec'ing the hidden ELF fails with ENOENT; the launcher is what "
            "the bundle provides to start it";
 }
@@ -104,7 +104,7 @@ TEST_F(RelaunchPathTest, MapsAHiddenBundleElfBackToItsLauncher)
 TEST_F(RelaunchPathTest, LeavesAHiddenElfAloneWithoutALauncher)
 {
     const fs::path hidden = makeExecutable(".orphan.elf");
-    EXPECT_EQ(paths::relaunchPath(hidden.c_str()), hidden.string());
+    EXPECT_EQ(paths::relaunchPath(hidden.string().c_str()), hidden.string());
 }
 
 // A normal binary that merely ends in .elf is not the bundle convention —
@@ -113,17 +113,20 @@ TEST_F(RelaunchPathTest, DoesNotRewriteAnOrdinaryDotElfName)
 {
     makeExecutable("logosctl");
     const fs::path plain = makeExecutable("logosctl.elf");
-    EXPECT_EQ(paths::relaunchPath(plain.c_str()), plain.string());
+    EXPECT_EQ(paths::relaunchPath(plain.string().c_str()), plain.string());
 }
 
 TEST_F(RelaunchPathTest, IgnoresNonExecutableCandidates)
 {
+#ifndef _WIN32
+    // Windows has no execute bit: any regular file there counts.
     const fs::path notExec = dir / "logosctl";
     std::ofstream(notExec) << "not a program\n";
     fs::permissions(notExec, fs::perms::owner_read | fs::perms::owner_write);
-    EXPECT_EQ(paths::relaunchPath(notExec.c_str()), paths::executablePath());
+    EXPECT_EQ(paths::relaunchPath(notExec.string().c_str()), paths::executablePath());
+#endif
 
     fs::create_directories(dir / "adir");
-    EXPECT_EQ(paths::relaunchPath((dir / "adir").c_str()),
+    EXPECT_EQ(paths::relaunchPath((dir / "adir").string().c_str()),
               paths::executablePath());
 }

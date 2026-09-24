@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "test_platform.h"
 
 #include <filesystem>
 #include <logos_json.h>
@@ -16,7 +17,6 @@
 #include <optional>
 #include <sstream>
 #include <string>
-#include <unistd.h>
 #include <vector>
 #include "client/client.h"
 #include "client/client_state.h"
@@ -214,17 +214,17 @@ protected:
         mockClient.shouldConnect = true;
 
         testDir = std::filesystem::temp_directory_path()
-                / ("logosctl_test_cmd_" + std::to_string(getpid()));
+                / ("logosctl_test_cmd_" + std::to_string(logosctl_test::currentPid()));
         std::filesystem::create_directories(testDir);
 
-        const char* home = std::getenv("HOME");
+        const char* home = std::getenv(logosctl_test::homeVar());
         origHome = home ? home : "";
-        setenv("HOME", testDir.c_str(), 1);
+        logosctl_test::setEnv(logosctl_test::homeVar(), testDir);
 
         const char* cd = std::getenv("LOGOSCTL_CONFIG_DIR");
         origConfigDirSet = cd != nullptr;
         origConfigDir = origConfigDirSet ? cd : "";
-        unsetenv("LOGOSCTL_CONFIG_DIR");
+        logosctl_test::unsetEnv("LOGOSCTL_CONFIG_DIR");
 
         Config::setConfigDir(testDir.string());
     }
@@ -232,11 +232,11 @@ protected:
     void TearDown() override {
         ClientStateFile::setOverride(std::nullopt);
         Config::setConfigDir("");
-        setenv("HOME", origHome.c_str(), 1);
+        logosctl_test::setEnv(logosctl_test::homeVar(), origHome);
         if (origConfigDirSet)
-            setenv("LOGOSCTL_CONFIG_DIR", origConfigDir.c_str(), 1);
+            logosctl_test::setEnv("LOGOSCTL_CONFIG_DIR", origConfigDir);
         else
-            unsetenv("LOGOSCTL_CONFIG_DIR");
+            logosctl_test::unsetEnv("LOGOSCTL_CONFIG_DIR");
         std::error_code ec;
         std::filesystem::remove_all(testDir, ec);
     }
@@ -1208,7 +1208,7 @@ TEST_F(CommandTest, Stop_LiveSession_StillStops)
 {
     // The control. A guard that refuses every session would satisfy the test
     // above and break the command; this pins the other side of the line.
-    seedSession("deadbeef1234", static_cast<long long>(getpid()));
+    seedSession("deadbeef1234", static_cast<long long>(logosctl_test::currentPid()));
     if (::testing::Test::HasFatalFailure()) return;
 
     mockClient.shutdownResult = LogosMap{
@@ -1365,7 +1365,7 @@ TEST_F(CommandTest, EveryRpcCommand_LiveSession_StillDials)
     for (const RpcCommand& c : kRpcCommands) {
         SCOPED_TRACE(c.typed);
 
-        seedSession("deadbeef1234", static_cast<long long>(getpid()));
+        seedSession("deadbeef1234", static_cast<long long>(logosctl_test::currentPid()));
         if (::testing::Test::HasFatalFailure()) return;
 
         MockClient mock;
@@ -1510,7 +1510,7 @@ TEST_F(CommandTest, Status_UnansweredRpc_ReportsNotRunningAndExitsNonZero)
 {
     // A live session, so `status` gets past "not_configured" and past the
     // stale-session guard and actually reaches the RPC.
-    seedSession("deadbeef1234", static_cast<long long>(getpid()));
+    seedSession("deadbeef1234", static_cast<long long>(logosctl_test::currentPid()));
     if (::testing::Test::HasFatalFailure()) return;
 
     mockClient.statusResult = LogosMap{
@@ -1532,7 +1532,7 @@ TEST_F(CommandTest, Status_UnansweredRpc_ReportsNotRunningAndExitsNonZero)
 
 TEST_F(CommandTest, Status_LiveDaemon_StillExitsZero)
 {
-    seedSession("deadbeef1234", static_cast<long long>(getpid()));
+    seedSession("deadbeef1234", static_cast<long long>(logosctl_test::currentPid()));
     if (::testing::Test::HasFatalFailure()) return;
 
     mockClient.statusResult = LogosMap{
@@ -1695,14 +1695,16 @@ TEST_F(CommandTest, PackageDownload_PassesOutputDirectoryThrough)
         {"status", "ok"},
         {"result", LogosMap{{"name", "storage_module"}, {"path", "/out/storage_module.lgx"}}}};
 
+    // Absolute on every platform: on Windows "/out" has no drive, so it is relative.
+    const std::string out = (std::filesystem::temp_directory_path() / "out").string();
     auto cmd = createCommand("package", mockClient, output);
     captureOutput([&]() {
-        int exitCode = cmd->execute({"download", "storage_module", "-o", "/out"});
+        int exitCode = cmd->execute({"download", "storage_module", "-o", out});
         EXPECT_EQ(exitCode, 0);
     });
 
     EXPECT_EQ(mockClient.lastDownloadName, "storage_module");
-    EXPECT_EQ(mockClient.lastDownloadOpts.value("output", std::string{}), "/out");
+    EXPECT_EQ(mockClient.lastDownloadOpts.value("output", std::string{}), out);
 }
 
 // A relative -o has to become absolute before it leaves this process: the

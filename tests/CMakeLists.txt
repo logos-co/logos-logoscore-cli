@@ -49,6 +49,10 @@ target_link_libraries(logosctl_testlib PUBLIC
     yaml-cpp::yaml-cpp
     spdlog::spdlog
 )
+if(WIN32)
+    # port_allocator.cpp probes ports with Winsock, as logosctl does.
+    target_link_libraries(logosctl_testlib PUBLIC ws2_32)
+endif()
 
 # Unit tests
 add_executable(unit_tests
@@ -94,6 +98,17 @@ target_link_libraries(plain_rpc_tests PRIVATE
     GTest::gtest_main
 )
 gtest_discover_tests(plain_rpc_tests)
+
+# test_process_util.cpp's child on Windows, which has no fork().
+if(WIN32)
+    add_executable(logosctl_test_child test_child.cpp)
+    add_dependencies(unit_tests logosctl_test_child)
+endif()
+
+# The rest drive a daemon over AF_UNIX, fork/waitpid and popen: not on Windows yet.
+if(WIN32)
+    return()
+endif()
 
 # ── CLI integration tests (require compiled logosctl binary) ─────────────────
 
