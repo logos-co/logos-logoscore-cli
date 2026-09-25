@@ -330,6 +330,7 @@ logosctl package download NAME [--version V] [--root-hash H] [--catalog C] [-o|-
 logosctl catalog ls
 logosctl catalog add URL | remove URL | enable URL | disable URL
 logosctl catalog refresh
+logosctl catalog source [any|logos|http]   # where packages download from
 
 # Trusted signing keys (per session)
 logosctl key ls
@@ -357,6 +358,14 @@ older releases exist. `package show NAME` names every one of them on an
 as one that is installed. Pass any of those values to `package install` or
 `package download` with `--version` to select that exact release; without it,
 the newest version is used.
+
+`catalog source` sets where packages download from: `any` (Logos Storage, then
+HTTP; the default), `logos` (Logos Storage only) or `http` (HTTP only). Under
+`logos` or `http`, a release the source cannot serve is not available: `search`
+leaves it out of the count (a package with none reads `not available`), `show`
+lists it on a `not available:` line with the reason, and `install` never picks
+it. `--json` output carries the downloader's per-release `sourceAvailable` and
+`sourceUnavailableReason`.
 
 Two defaults are worth stating plainly, because they are the opposite of what
 some tools do:
@@ -466,6 +475,7 @@ where those modules live.
 logosctl catalog ls                     # configured catalogs
 logosctl catalog add <url>              # add one; also remove/enable/disable
 logosctl catalog refresh                # re-fetch every enabled catalog
+logosctl catalog source logos           # download from Logos Storage only
 
 logosctl search storage                 # search the merged catalog
 logosctl install storage_module --dry-run   # show what would change
