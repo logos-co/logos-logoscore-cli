@@ -113,23 +113,18 @@ logos-logoscore-cli/
 
 The CLI uses these functions from liblogos (declared in `logos_core.h`):
 
+The runtime runs in a process of its own (`bin/logos_runtime`); the daemon is
+its `logoscore` shell.
+
 | Function | Used by |
 |---|---|
-| `logos_core_init(argc, argv)` | Daemon |
-| `logos_core_add_modules_dir(path)` | Daemon |
-| `logos_core_set_persistence_base_path(path)` | Daemon |
-| `logos_core_set_module_transports(name, json)` | Daemon |
-| `logos_core_set_access_policy(json)` | Daemon |
-| `logos_core_set_bundled_modules_dirs(dirs)` | Daemon: `<bin>/../modules`, the package modules' directory, `bundled_modules_dirs` |
-| `logos_core_set_placement_policy(json)` | Daemon: `placement` / `--placement` |
-| `logos_core_set_shell_identity("logoscore")` | Daemon |
-| `logos_core_set_core_service_transports(json)` | Daemon: core_service's `tcp` / `tcp_ssl` listeners |
-| `logos_core_set_operator_resolver(cb)` | Daemon: names operators from `TokenStore` |
-| `logos_core_set_shutdown_handler(cb)` | Daemon: `core_service.shutdown` |
-| `logos_core_set_core_service_extension(cb, methods)` | Daemon: package operations |
-| `logos_core_start()` | Daemon |
-| `logos_core_take_shell_binding()`, `logos_consumer_call(...)` | Daemon: its lifecycle calls go through core_service as `logoscore` — `loadModule`/`unloadModule` (package bootstrap, package operations), `refreshModules` and `listModules` (package operations). Without a binding (no token authority) the daemon exits |
-| `logos_core_cleanup()` | Daemon |
+| `logos_runtime_spawn(json, &error)` | Daemon: starts the runtime with its modules directories, bundled directories (`<bin>/../modules`, the package modules' directory, `bundled_modules_dirs`), persistence path, access and placement policy (`placement` / `--placement`), capability_module's transports, core_service's `tcp` / `tcp_ssl` listeners, and package_manager's settings. Without its token authority it does not start, and the daemon exits |
+| `logos_core_set_operator_resolver(cb)` | Daemon: names operators from `TokenStore`; the runtime forwards each lookup |
+| `logos_core_set_shutdown_handler(cb)` | Daemon: `core_service.shutdown`, forwarded by the runtime |
+| `logos_core_set_core_service_extension(cb, methods)` | Daemon: package operations, forwarded by the runtime |
+| `logos_runtime_binding()`, `logos_consumer_call(...)` | Daemon: its lifecycle calls go through core_service as `logoscore` — `loadModule` (package bootstrap, package operations), `unloadModule`, `refreshModules` and `listModules` (package operations) |
+| `logos_runtime_on_exit(cb)` | Daemon: a runtime that stops on its own stops the daemon, which exits 1 |
+| `logos_runtime_stop()` | Daemon: stops the runtime, which unloads its modules in order |
 
 ---
 
@@ -160,18 +155,20 @@ else                                   → print help
 ```
 main.cpp
   → Daemon::start(...)
-    1. Claim the config directory and set LOGOS_INSTANCE_ID
-    2. Initialize liblogos, add module directories, and discover modules
-    3. Create CoreServiceImpl and publish it with lp_provider over
-       qt_remote_plain
-    4. Adopt liblogos' capability credential, install the persistent-token
-       validator, and save the boot token in the provider
-    5. Write daemon/state.json plus the local client config and token
-    6. Wait on a condition variable until SIGINT, SIGTERM, or shutdown()
-    7. Destroy the provider, clean up liblogos, and remove state.json
+    1. Claim the config directory and set LOGOS_INSTANCE_ID, which the
+       runtime inherits, so both name the same sockets
+    2. Spawn logos_runtime with the module directories and settings; it runs
+       capability_module and core_service, and answers with the logoscore
+       shell's binding
+    3. Issue the boot token and load the package modules as the shell
+    4. Write daemon/state.json plus the local client config and token
+    5. Wait on a condition variable until SIGINT, SIGTERM, shutdown(), or
+       the runtime stopping
+    6. Stop the runtime (its modules unload in order) and remove state.json
 ```
 
-The daemon uses liblogos only for module discovery and lifecycle. Current Qt
+The daemon runs no module and holds no module's credential: its runtime, a
+`logos_runtime` child process, does, and starts every module host. Current Qt
 plugins still run in separate `logos_host_qt` child processes. The daemon,
 core service, and client use the shared `logos_protocol_plain` runtime and do
 not load Qt.
@@ -217,11 +214,12 @@ daemon starts clean; `-m`/`--persistence-path` configure daemon startup only
 
 ## CoreService Module
 
-`core_service` is liblogos' own: `logos_core_start()` publishes it as a module of
-its own on `inproc` and the local socket, and it authorizes each method by the
-caller's scope (logos-co/logos-liblogos#227). Its methods and answers are the
-ones this daemon used to serve, so the client is unchanged. The daemon supplies
-what only it knows, before start:
+`core_service` is liblogos' own: the runtime publishes it as a module of its own
+on the local socket (and `inproc` inside the runtime), and it authorizes each
+method by the caller's scope (logos-co/logos-liblogos#227). Its methods and
+answers are the ones this daemon used to serve, so the client is unchanged. The
+daemon supplies what only it knows; the runtime forwards each hook to it over its
+private pipe:
 
 - **Its identity.** It is the `logoscore` shell of its runtime.
 - **Operators.** `resolveOperator` looks a presented token up in `TokenStore`
@@ -234,9 +232,10 @@ what only it knows, before start:
 - **Package operations.** `planPackageOperation`, `applyPackageOperation` and
   `downloadPackage` are the daemon's, added through
   `logos_core_set_core_service_extension`. `extendCoreService` answers only
-  those names and only for the runtime and operators; package_manager and
-  package_downloader take their calls from `core`, since their settings answer
-  only the runtime and core_service.
+  those names and only for the runtime and operators. They run here, as the
+  `logoscore` shell: package_manager's install flow and package_downloader take
+  any permitted caller, and package_manager's settings (directories, keyring,
+  signature policy) are the runtime's package config, applied as it loads.
 - **Network listeners.** The `tcp` / `tcp_ssl` entries of core_service's
   transport set.
 
@@ -409,11 +408,12 @@ logosctl daemon [--modules-dir <path>]...
 ```
 
 **Behavior:**
-1. Initialize liblogos, add module directories, and call `logos_core_start()`
-2. Publish `core_service` with `lp_provider_register()`
+1. Start the runtime (`logos_runtime`) with the module directories and settings;
+   it publishes `core_service` and answers with the `logoscore` shell's binding
+2. Load the package modules as the shell
 3. Write `daemon/state.json` and the local client config/token
-4. Wait for a signal or the `shutdown` RPC
-5. Destroy the provider, clean up liblogos, remove `state.json`, and exit
+4. Wait for a signal, the `shutdown` RPC, or the runtime stopping
+5. Stop the runtime (its modules unload in order), remove `state.json`, and exit
 
 **Exit codes:** 0 on clean shutdown, 1 on error.
 
