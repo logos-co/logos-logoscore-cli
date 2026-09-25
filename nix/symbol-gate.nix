@@ -11,7 +11,8 @@
 #   IN   bin/logosctl, bin/logoscore   the front-ends
 #   IN   lib/liblogos_core.*           a plain-runtime consumer
 #   IN   lib/*.dylib|so                anything else loaded into the front-end
-#   OUT  bin/logos_host* and ui-host   separate processes that may load Qt
+#   OUT  bin/logos_runtime, bin/logos_host* and ui-host
+#                                      separate processes (the hosts may load Qt)
 #   OUT  modules/**                    loaded by logos_host, out-of-process, so
 #                                      a module's own copy is the CORRECT
 #                                      per-process singleton
@@ -140,7 +141,7 @@ pkgs.runCommand "logos-logoscore-cli-symbol-gate${pkgs.lib.optionalString negati
   for e in "$ROOT"/bin/*; do
     [ -f "$e" ] || continue
     case "$(basename "$e")" in
-      logos_host*|ui-host|*.dll) continue ;;                 # separate processes
+      logos_host*|logos_runtime*|ui-host|*.dll) continue ;;  # separate processes
       .*) continue ;;                                       # reached via resolve_image
     esac
     CONSUMERS+=("$(resolve_image "$e")")

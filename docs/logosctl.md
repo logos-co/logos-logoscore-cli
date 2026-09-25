@@ -198,8 +198,9 @@ the daemon's process instead when three things hold:
   modules);
 - the placement policy puts it there.
 
-The runtime's own modules already run in-process: `capability_module`,
-`modules_state` and the package modules.
+The runtime's own modules already run in its process: `capability_module` and
+`modules_state`. The package modules never do, whatever the placement policy
+says: they download and unpack packages, so each runs in a host of its own.
 
 ```yaml
 bundled_modules_dirs:            # scanned too; their modules may run in-process
@@ -271,9 +272,13 @@ Two kinds of target are handled differently:
   the runtime and `core_service`, so a forwarded call to them is made as
   `core_service`.
 
-The bundled `capability_module` runs in the daemon's process as the token
-authority, as it does in the shipped package. A daemon without it does not start:
-it logs `no token authority` and exits, because nothing could load.
+The daemon runs its runtime in a process of its own, `logos_runtime`: the bundled
+`capability_module` runs there as the token authority, with every module's
+credential, and the daemon holds only its own identity as the `logoscore` shell,
+its operators' tokens and the package operations. A daemon whose runtime has no
+authority does not start: it logs `no token authority` and exits, because nothing
+could load. `daemon stop`, or the daemon dying, stops the runtime and every
+module host with it.
 
 #### Client Commands
 

@@ -7,7 +7,7 @@
     # On the runtime-control branches (logos-liblogos#227 and the PRs under it) until they merge.
     logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk/feat/runtime-delegate-export";
     logos-protocol.url = "github:logos-co/logos-protocol/feat/drop-legacy-mode";
-    logos-liblogos.url = "github:logos-co/logos-liblogos/feat/drop-legacy-mode";
+    logos-liblogos.url = "github:logos-co/logos-liblogos/feat/runtime-process";
     # liblogos and the CLI must share one instance of the plain protocol
     # runtime: that library owns the process-wide credential registry.
     logos-cpp-sdk.inputs.logos-protocol.follows = "logos-protocol";
@@ -324,7 +324,8 @@
               mkdir -p $out/bin $out/lib $out/modules
 
               cp ${build}/bin/${binName} $out/bin/
-              for host in ${liblogos}/bin/logos_host*; do
+              # logos_runtime, which the daemon spawns, and the module hosts.
+              for host in ${liblogos}/bin/logos_runtime ${liblogos}/bin/logos_host*; do
                 [ -f "$host" ] || continue
                 cp -L "$host" $out/bin/
               done
@@ -471,7 +472,7 @@
                 exit 1
               fi
 
-              # logos_host_qt.exe, the module-host process this CLI spawns.
+              # logos_runtime.exe, which the daemon spawns, and the module hosts.
               # The native packages inject LOGOS_HOST_PATH through a Qt wrapper
               # script; there is no wrapper on a PE, so the host has to sit
               # beside the CLI where the default lookup finds it.
@@ -737,7 +738,8 @@ ${pkgs.lib.optionalString withPkgModules ''
 
               # The one binary this package ships, from the portable build
               cp ${buildPortable}/bin/${binName} $out/bin/
-              for host in ${liblogosPortable}/bin/logos_host*; do
+              # logos_runtime, which the daemon spawns, and the module hosts.
+              for host in ${liblogosPortable}/bin/logos_runtime ${liblogosPortable}/bin/logos_host*; do
                 [ -f "$host" ] || continue
                 cp -L "$host" $out/bin/
               done
