@@ -31,6 +31,10 @@ pkgs.runCommand "logos-logoscore-cli-bundled-authority" {
     || fail "a forwarded call failed: $(cat call.json)"
   [ "$(jq -r .result call.json)" = bundled_ok ] || fail "unexpected answer: $(cat call.json)"
 
+  $ctl module info modules_state > info.json || fail "module info: $(cat info.json)"
+  [ "$(jq -r .placement info.json)" = inproc ] \
+    || fail "the bundled modules_state does not run in-process: $(cat info.json)"
+
   if $ctl call capability_module requestModule x test_basic_module > refused.json; then
     fail "an operator minted a module token: $(cat refused.json)"
   fi

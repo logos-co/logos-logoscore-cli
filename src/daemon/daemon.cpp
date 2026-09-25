@@ -604,10 +604,19 @@ int Daemon::start(int argc, char* argv[],
     if (!bundledDir.empty()) bundledDirs.push_back(bundledDir);
     if (modern && !paths::bundledPackageModulesDir().empty())
         bundledDirs.push_back(paths::bundledPackageModulesDir());
+    for (const std::string& dir : cfg.bundledModulesDirs) {
+        logos_core_add_modules_dir(dir.c_str());
+        bundledDirs.push_back(dir);
+    }
     std::vector<const char*> bundledList;
     for (const std::string& dir : bundledDirs) bundledList.push_back(dir.c_str());
     bundledList.push_back(nullptr);
     logos_core_set_bundled_modules_dirs(bundledList.data());
+    if (!cfg.placement.empty() && logos_core_set_placement_policy(cfg.placement.c_str()) != 0) {
+        fprintf(stderr, "Invalid placement policy: %s\n", cfg.placement.c_str());
+        logos_core_cleanup();
+        return 1;
+    }
     logos_core_set_shell_identity("logoscore");
     {
         const std::string network =
