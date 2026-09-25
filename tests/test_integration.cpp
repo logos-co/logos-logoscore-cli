@@ -1535,35 +1535,10 @@ TEST_F(SocketLifecycleTest, BootReapsStaleSocketsButSparesLiveOnesAndFiles)
 // daemon config; logoscore spells the same document `--access-policy enforce`
 // (see test_integration_logoscore.cpp).
 //
-// The direct CLI probe below is deliberately a HOST call, not a synthetic
-// module call. `fromModuleName` is legacy, untrusted input; capability_module
-// must derive the caller from the token and therefore see this as `core`.
-// The declared module-to-module half is driven through test_ipc_new_api_module
-// below, where the call genuinely originates in that module's process.
+// A logosctl call reaches modules as an operator, never as the host, so the
+// token authority is out of its reach. The declared module-to-module half is
+// driven through test_ipc_new_api_module, where the call originates.
 namespace {
-
-// requestModule is the legacy two-argument surface. The first argument is
-// intentionally supplied here to prove it CANNOT forge the caller identity;
-// the dispatch token is authoritative. Returns nullopt only when the client
-// call itself failed (as distinct from an empty refusal result).
-std::optional<std::string> requestModuleToken(const LogosctlDaemon& d,
-                                              const std::string& caller,
-                                              const std::string& target,
-                                              std::string* raw)
-{
-    std::string out;
-    const std::string cmd =
-        "call capability_module requestModule " + caller + " " + target;
-    const int rc = d.run(cmd, &out, /*timeoutSecs=*/20);
-    if (raw) *raw = out;
-    if (rc != 0) return std::nullopt;
-    nlohmann::json env = lastJsonObject(out);
-    if (env.value("status", std::string{}) != "ok") return std::nullopt;
-    const nlohmann::json result = env.value("result", nlohmann::json{});
-    if (result.is_string()) return result.get<std::string>();
-    if (result.is_null()) return std::string{};
-    return std::nullopt;
-}
 
 // The bare deny-by-default document — the same text `logoscore
 // --access-policy enforce` expands to (src/daemon/access_policy_arg.h). `mode`
@@ -1608,27 +1583,19 @@ protected:
 
 } // namespace
 
-TEST_F(AccessPolicyFixture, EnforcePolicy_IgnoresTheForgedLegacyCallerName) {
+// capability_module's own tests cover a forged fromModuleName.
+TEST_F(AccessPolicyFixture, EnforcePolicy_AnOperatorCannotMintTokens) {
     bootWith(kEnforceDoc);
     if (::testing::Test::IsSkipped() || ::testing::Test::HasFatalFailure()) return;
 
-    std::string raw;
-    // This RPC originates in logosctl's core_service. Passing
-    // test_basic_module here used to make the test *pretend* that module had
-    // called; the caller-identity hardening deliberately rejects that premise.
-    // `core` is an allowed control-plane caller, so the token is minted, while
-    // the daemon log proves the legacy string was ignored rather than trusted.
-    auto token = requestModuleToken(d, "test_basic_module", "test_extlib_module", &raw);
-    ASSERT_TRUE(token.has_value()) << "requestModule call failed outright:\n" << raw;
-    EXPECT_FALSE(token->empty())
-        << "the host control plane must retain its allowed request path under "
-           "enforcement.\n"
-        << raw << "\n--- daemon log ---\n" << slurp(d.daemonLog);
-    const std::string log = slurp(d.daemonLog);
-    EXPECT_NE(log.find("ignoring leftover fromModuleName='test_basic_module' "
-                       "(token-bound caller is 'core')"), std::string::npos)
-        << "capability_module trusted the caller-supplied legacy name instead "
-           "of the token-bound host identity.\n" << log;
+    std::string out;
+    ASSERT_NE(d.run("call capability_module requestModule test_basic_module test_extlib_module",
+                    &out, /*timeoutSecs=*/20), 0)
+        << "an operator minted a module token through core_service.\n" << out;
+    const nlohmann::json env = lastJsonObject(out);
+    EXPECT_EQ(env.value("code", std::string{}), "METHOD_FAILED") << out;
+    const nlohmann::json diag = env.value("error", nlohmann::json::object());
+    EXPECT_EQ(diag.value("code", std::string{}), "unauthorized") << out;
 }
 
 TEST_F(AccessPolicyFixture, EnforcePolicy_StillAllowsADeclaredPair) {

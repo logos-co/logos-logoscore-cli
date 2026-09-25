@@ -113,6 +113,12 @@ struct DaemonConfig {
     // Inter-module access policy: resolved JSON text (from --access-policy
     // file or inline). Empty means none. Persisted across launches.
     std::string accessPolicy;
+    // Where modules run, as the runtime's placement policy JSON (--placement).
+    // Empty keeps the runtime's default. Persisted across launches.
+    std::string placement;
+    // Directories whose modules count as bundled too (--bundled-modules-dir):
+    // a reserved name may come from them, and their modules may run in-process.
+    std::vector<std::string> bundledModulesDirs;
     // OS group to share the daemon with (from --access-group). When set, the
     // daemon (1) exports LOGOS_SOCKET_GROUP + LOGOS_SOCKET_MODE=0660 so every
     // module/host process chgrp's + widens its local socket for the group, and

@@ -171,10 +171,8 @@ set(SHARED_SOURCES
     src/client/commands/catalog_command.cpp
     src/client/commands/config_command.cpp
 
-    # Core service (in-process daemon module)
-    src/core_service/core_service_impl.cpp
-    src/core_service/call_envelope.cpp
-    src/core_service/core_service_dispatch.cpp
+    # The daemon's own methods on liblogos' core_service
+    src/core_service/package_service.cpp
     src/core_service/package_ops.cpp
 )
 

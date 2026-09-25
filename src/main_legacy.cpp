@@ -130,6 +130,17 @@ int main(int argc, char *argv[])
         "Also accepts a path to a JSON file, or inline JSON "
         "(mode + per-target caller allowlists)");
 
+    // Where modules run, and which directories count as bundled: the runtime's
+    // placement policy, e.g. {"default":"inproc"}, and its bundled directories.
+    std::string placementArg;
+    auto* placementOpt = app.add_option("--placement", placementArg,
+        "Where modules run, as the runtime's placement policy JSON, e.g. "
+        "'{\"default\":\"inproc\"}' (default: the runtime's own)");
+    std::vector<std::string> bundledDirsArg;
+    auto* bundledDirsOpt = app.add_option("--bundled-modules-dir", bundledDirsArg,
+        "A directory whose modules count as bundled: they may run in-process "
+        "(repeatable)");
+
     // --access-group: share the daemon with an OS group. Sockets become
     // group-connectable (0660, chgrp'd) and the client artifacts group-readable,
     // so a second OS user in the group can drive the daemon (docker.sock model).
@@ -481,6 +492,8 @@ int main(int argc, char *argv[])
                              || (moduleTransportOpt->count() > 0)
                              || (insecureTcpOpt->count()     > 0)
                              || (accessPolicyOpt->count()    > 0)
+                             || (placementOpt->count()       > 0)
+                             || (bundledDirsOpt->count()     > 0)
                              || (accessGroupOpt->count()     > 0);
         if (anyCliFlag) configSource = "cli";
 
@@ -526,6 +539,15 @@ int main(int argc, char *argv[])
         }
         if (insecureTcpOpt->count() > 0)     mergedCfg.insecureTcp     = insecureTcp;
         if (accessGroupOpt->count() > 0)     mergedCfg.accessGroup     = accessGroupArg;
+        if (placementOpt->count() > 0)       mergedCfg.placement       = placementArg;
+        if (bundledDirsOpt->count() > 0) {
+            mergedCfg.bundledModulesDirs.clear();
+            for (const std::string& dir : bundledDirsArg) {
+                std::error_code ec;
+                const auto abs = std::filesystem::absolute(dir, ec);
+                mergedCfg.bundledModulesDirs.push_back(ec ? dir : abs.lexically_normal().string());
+            }
+        }
         // Resolve --access-policy (file-or-inline); abort on bad input.
         if (accessPolicyOpt->count() > 0) {
             auto resolved = resolveAccessPolicy(accessPolicyArg);

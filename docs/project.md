@@ -15,14 +15,14 @@ This project will live in its own repository. liblogos is consumed as an externa
 logos-logoscore-cli/
 ├── src/                              # All CLI source code
 │   ├── main.cpp                      # logosctl entry point — detects mode, dispatches
-│   ├── main_legacy.cpp               # logoscore entry point — same daemon/client/core_service
-│   │                                 # code below, frozen surface (see the README)
+│   ├── main_legacy.cpp               # logoscore entry point — same daemon/client code
+│   │                                 # below, frozen surface (see the README)
 │   ├── config.cpp/h                  # Token + config file resolution
 │   ├── paths.cpp/h                   # Executable/bundle-relative path resolution (no Qt)
 │   │
 │   ├── daemon/                       # Daemon path (logosctl daemon start)
-│   │   ├── daemon.cpp/h              # Start core, register core_service through the
-│   │   │                             # plain C ABI, wait for shutdown
+│   │   ├── daemon.cpp/h              # Configure and start liblogos (which serves
+│   │   │                             # core_service), name its operators, wait for shutdown
 │   │   ├── daemon_state.cpp/h        # DaemonConfig (config.json) + DaemonRuntimeState
 │   │   │                             # (state.json) — operator preferences (writes only
 │   │   │                             # on --persist-config) + live runtime state.
@@ -58,14 +58,11 @@ logos-logoscore-cli/
 │   │       ├── revoke_token_command.cpp/h   # Revokes by name
 │   │       └── list_tokens_command.cpp/h    # Lists issued tokens (name + metadata, no plaintext)
 │   │
-│   └── core_service/                 # Built-in module — CLI ↔ daemon RPC gateway
-│       ├── core_service_impl.h       # Plain C++ service implementation
-│       ├── core_service_impl.cpp     # Method implementations (delegates to liblogos C API)
+│   └── core_service/                 # The daemon's methods on liblogos' core_service
+│       ├── package_service.cpp/h     # plan/apply/download, answered through
+│       │                             # logos_core_set_core_service_extension
 │       ├── package_ops.cpp/h         # Daemon-side plan/apply for package operations
-│       ├── metadata.json             # Plugin metadata
-│       └── core_service_dispatch.cpp # Hand-written callMethodStd/getMethodsStd dispatch
-│                                     # (no core_service_loader.h: the daemon registers the
-│                                     # object in-process, it is never discovered as a plugin)
+│       └── metadata.json             # core_service's identity document
 │
 ├── tests/
 │   ├── test_commands.cpp             # Subcommands against a mock Client
@@ -108,10 +105,9 @@ logos-logoscore-cli/
 | **Google Test** | Test framework | — |
 | **Nix** | Package manager | Reproducible builds |
 
-**No code generator is in this build.** `core_service` used to be listed here
-as depending on `logos-cpp-generator` to emit a `LOGOS_METHOD` dispatch table;
-that marker macro and that generator mode are gone from this repo's path —
-`core_service_dispatch.cpp` is hand-written (see *Build integration* below).
+**No code generator is in this build.** `core_service` itself is liblogos'
+(see *CoreService* below); the daemon's package methods are dispatched by hand in
+`package_service.cpp`.
 
 ### liblogos C API surface used
 
@@ -121,14 +117,20 @@ The CLI uses these functions from liblogos (declared in `logos_core.h`):
 |---|---|
 | `logos_core_init(argc, argv)` | Daemon |
 | `logos_core_add_modules_dir(path)` | Daemon |
+| `logos_core_set_persistence_base_path(path)` | Daemon |
+| `logos_core_set_module_transports(name, json)` | Daemon |
+| `logos_core_set_access_policy(json)` | Daemon |
+| `logos_core_set_bundled_modules_dirs(dirs)` | Daemon: `<bin>/../modules`, the package modules' directory, `bundled_modules_dirs` |
+| `logos_core_set_placement_policy(json)` | Daemon: `placement` / `--placement` |
+| `logos_core_set_shell_identity("logoscore")` | Daemon |
+| `logos_core_set_core_service_transports(json)` | Daemon: core_service's `tcp` / `tcp_ssl` listeners |
+| `logos_core_set_operator_resolver(cb)` | Daemon: names operators from `TokenStore` |
+| `logos_core_set_shutdown_handler(cb)` | Daemon: `core_service.shutdown` |
+| `logos_core_set_core_service_extension(cb, methods)` | Daemon: package operations |
 | `logos_core_start()` | Daemon |
 | `logos_core_cleanup()` | Daemon |
-| `logos_core_load_module(name, LOGOS_LOAD_REQUIRED_AND_OPTIONAL)` | Daemon, core_service |
-| `logos_core_unload_module(name, false)` | core_service |
-| `logos_core_get_known_modules()` | core_service |
-| `logos_core_get_loaded_modules()` | core_service |
-| `logos_core_get_modules_info()` | core_service |
-| `logos_core_get_module_stats()` | core_service |
+| `logos_core_load_module(name, …)`, `logos_core_unload_module(name, …)` | Daemon (package bootstrap), package operations |
+| `logos_core_refresh_modules()`, `logos_core_get_loaded_modules()` | package operations |
 
 ---
 
@@ -179,9 +181,10 @@ The Qt-free C ABI exposes local `qt_remote_plain` plus `tcp` and `tcp_ssl`
 providers and clients. The daemon's resolved transport set supplies listener
 addresses; the client config supplies dial addresses and TLS verification.
 
-Named tokens are persisted as SHA-256 digests by `TokenStore`. The provider's
-token-validator callback consults that store on demand, which lets tokens
-issued after startup authenticate without copying Qt token-manager state.
+Named tokens are persisted as SHA-256 digests by `TokenStore`. liblogos'
+core_service asks the daemon's operator resolver, which consults that store on
+demand, so tokens issued after startup authenticate at once and a revoked one
+stops at once.
 
 ### Client Path (`logosctl <subcommand>`)
 
@@ -215,53 +218,31 @@ daemon starts clean; `-m`/`--persistence-path` configure daemon startup only
 
 ## CoreService Module
 
-`core_service` is an ordinary C++ object owned by the daemon. It is not a Qt
-object or a plugin. An `lp_provider` callback passes each incoming JSON request
-to `CoreServiceImpl::callMethodStd()`; the metadata callback returns
-`getMethodsStd()`.
+`core_service` is liblogos' own: `logos_core_start()` publishes it as a module of
+its own on `inproc` and the local socket, and it authorizes each method by the
+caller's scope (logos-co/logos-liblogos#227). Its methods and answers are the
+ones this daemon used to serve, so the client is unchanged. The daemon supplies
+what only it knows, before start:
 
-```cpp
-class CoreServiceImpl {
-public:
-    StdLogosResult loadModule(const std::string& name);
-    StdLogosResult callModuleMethod(const std::string& module,
-                                    const std::string& method,
-                                    const LogosList& args);
-    bool watchModuleEvents(const std::string& module,
-                           const std::string& eventName);
-    LogosMap shutdown();
+- **Its identity.** It is the `logoscore` shell of its runtime.
+- **Operators.** `resolveOperator` looks a presented token up in `TokenStore`
+  (on the local socket, `inproc` counts as local) and names its holder, so
+  core_service sees `{kind: operator, name}`. A forwarded `callModuleMethod` or
+  `watchModuleEvents` reaches the target as that operator; `capability_module`
+  and `core_service` refuse them.
+- **Shutdown.** `core_service.shutdown` schedules `Daemon::requestShutdownAfter()`
+  so the reply is serialized before the daemon tears the runtime down.
+- **Package operations.** `planPackageOperation`, `applyPackageOperation` and
+  `downloadPackage` are the daemon's, added through
+  `logos_core_set_core_service_extension`. `extendCoreService` answers only
+  those names and only for the runtime and operators; package_manager and
+  package_downloader take their calls from `core`, since their settings answer
+  only the runtime and core_service.
+- **Network listeners.** The `tcp` / `tcp_ssl` entries of core_service's
+  transport set.
 
-    nlohmann::json callMethodStd(const std::string& method,
-                                 const nlohmann::json& args);
-    nlohmann::json getMethodsStd();
-
-private:
-    logosctl::PlainRpcContext m_rpc{"core_service"};
-};
-```
-
-Lifecycle and query methods call the liblogos C API. Calls to loaded modules use
-a cached `PlainRpcClient` targeting that module over `qt_remote_plain`.
-Event watches use `lp_subscribe`; an empty event name subscribes to every
-event and the core service forwards each one as `module_event`.
-
-The hand-written dispatcher converts argument errors to a structured
-`INVALID_ARGS` response. Shutdown schedules `Daemon::requestShutdownAfter()`
-so the provider can serialize the reply before the daemon tears it down.
-
-Daemon-side registration is entirely C ABI based:
-
-```cpp
-lp_provider* provider = lp_provider_create("core_service",
-                                           kPlainLocalTransport);
-lp_provider_set_token_validator(provider, validateToken, &tokenStore);
-lp_provider_register(provider, dispatchCall, methodMetadata,
-                     emitEvent, coreService);
-lp_provider_save_token(provider, "cli_client", autoToken.c_str());
-```
-
-`src/core_service/metadata.json` remains a declarative identity document; the
-daemon does not load it as a plugin.
+`src/core_service/metadata.json` remains a declarative identity document; nothing
+loads it as a plugin.
 
 ## Components
 
