@@ -9,8 +9,8 @@
 //
 // The decision logic lives here, behind injected hooks, rather than inline in
 // daemon.cpp: what a load failure skips — and what it must NOT skip — is the
-// part that has been wrong, and it is not reachable from a test through
-// logos_core_load_module and a live socket.
+// part that has been wrong, and it is not reachable from a test through a live
+// core_service and socket.
 namespace package_bootstrap {
 
 inline constexpr const char* kPackageManager    = "package_manager";
@@ -18,10 +18,10 @@ inline constexpr const char* kPackageDownloader = "package_downloader";
 
 // Everything run() needs from the outside world.
 struct Hooks {
-    // logos_core_load_module(name, LOGOS_LOAD_REQUIRED_AND_OPTIONAL).
+    // core_service.loadModule(name, "required_and_optional"), as the shell.
     std::function<bool(const std::string& module)> loadModule;
 
-    // logos_core_unload_module(name, with_dependents=true). Called only to
+    // core_service.unloadModule(name, true), as the shell. Called only to
     // fail closed — see the signature-policy handling in run().
     std::function<void(const std::string& module)> unloadModule;
 

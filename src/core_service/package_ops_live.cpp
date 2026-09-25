@@ -1,7 +1,8 @@
 // Wires package_ops to the daemon: package modules over plain RPC, and the
-// module runtime through logos_core. The logic is in package_ops.cpp.
+// module runtime through core_service as the daemon's shell (shell_calls).
+// The logic is in package_ops.cpp.
 #include "package_ops.h"
-#include "logos_core.h"
+#include "shell_calls.h"
 #include "rpc_deadlines.h"
 #include "../plain_rpc.h"
 
@@ -30,35 +31,11 @@ Backend liveBackend(logosctl::PlainRpcContext* api)
         }
         return ret;
     };
-    b.loadedModules = [] {
-        std::vector<std::string> out;
-        char** mods = logos_core_get_loaded_modules();
-        if (!mods) return out;
-        for (int i = 0; mods[i]; ++i) {
-            out.emplace_back(mods[i]);
-            delete[] mods[i];
-        }
-        delete[] mods;
-        return out;
-    };
-    b.dependents = [](const std::string& m) {
-        std::vector<std::string> out;
-        char** deps = logos_core_get_module_dependents(m.c_str(), /*recursive=*/true);
-        if (!deps) return out;
-        for (int i = 0; deps[i]; ++i) {
-            out.emplace_back(deps[i]);
-            delete[] deps[i];
-        }
-        delete[] deps;
-        return out;
-    };
-    b.unloadModule = [](const std::string& m) {
-        logos_core_unload_module(m.c_str(), /*with_dependents=*/true);
-    };
-    b.loadModule = [](const std::string& m) {
-        return logos_core_load_module(m.c_str(), LOGOS_LOAD_REQUIRED_AND_OPTIONAL) != 0;
-    };
-    b.refreshModules = [] { logos_core_refresh_modules(); };
+    b.loadedModules = [] { return shell_calls::loaded(); };
+    b.dependents = [](const std::string& m) { return shell_calls::dependents(m); };
+    b.unloadModule = [](const std::string& m) { shell_calls::unload(m, /*withDependents=*/true); };
+    b.loadModule = [](const std::string& m) { return shell_calls::load(m); };
+    b.refreshModules = [] { shell_calls::refresh(); };
     return b;
 }
 
