@@ -14,7 +14,7 @@
 #include <logos_transport_config.h>
 #include <logos_transport_config_json.h>
 #include <logos_protocol.h>
-#include "../core_service/core_service_impl.h"
+#include "../core_service/package_service.h"
 #include "../plain_rpc.h"
 #include "../local_endpoint.h"
 
@@ -277,32 +277,72 @@ char* copyForProtocol(const std::string& value)
     return result;
 }
 
-char* dispatchCoreService(const char* method, const char* argsJson, void* userData)
+// core_service runs in liblogos; the daemon names its operators, handles its
+// shutdown and adds the package operations.
+char* resolveOperator(const char* token, const char* transport, void*)
 {
-    auto* service = static_cast<CoreServiceImpl*>(userData);
+    if (!token || !transport) return nullptr;
+    // A caller in this process is as local as the local socket.
+    const std::string protocol = std::string(transport) == "inproc" ? "local" : transport;
+    TokenStore tokenStore;
+    const auto name = tokenStore.lookupByToken(token, protocol);
+    return name ? copyForProtocol(*name) : nullptr;
+}
+
+// Milliseconds between answering `shutdown` and leaving the wait loop, so the
+// reply and anything else in flight get a turn. $LOGOSCTL_SHUTDOWN_GRACE_MS
+// overrides it; the daemon-stop integration test pins it to 0.
+int shutdownGraceMs()
+{
+    static const int ms = []() {
+        constexpr int kDefault = 200;
+        const char* v = std::getenv("LOGOSCTL_SHUTDOWN_GRACE_MS");
+        if (!v || !*v) return kDefault;
+        char* end = nullptr;
+        const long n = std::strtol(v, &end, 10);
+        if (end == v || *end != '\0' || n < 0 || n > 60000) return kDefault;
+        return static_cast<int>(n);
+    }();
+    return ms;
+}
+
+void requestShutdownFromCoreService(void*)
+{
+    Daemon::requestShutdownAfter(shutdownGraceMs());
+}
+
+// Package operations change what is installed: the runtime and operators only.
+char* extendCoreService(const char* callerJson, const char* method, const char* argsJson,
+                        void* userData)
+{
+    const std::string name = method ? method : "";
+    if (!PackageService::owns(name)) return nullptr;
+    const nlohmann::json caller = nlohmann::json::parse(callerJson ? callerJson : "{}",
+                                                        nullptr, false);
+    const std::string kind = caller.is_object() ? caller.value("kind", std::string{}) : "";
+    if (kind != "host" && kind != "operator")
+        return copyForProtocol(nlohmann::json{
+            {"status", "error"}, {"code", "FORBIDDEN"},
+            {"message", "core_service." + name + " is for operators."}}.dump());
     const nlohmann::json args = nlohmann::json::parse(
         argsJson && *argsJson ? argsJson : "[]", nullptr, false);
-    if (args.is_discarded() || !args.is_array()) return nullptr;
-    return copyForProtocol(service->callMethodStd(method ? method : "", args).dump());
+    auto result = args.is_array() ? static_cast<PackageService*>(userData)->call(name, args)
+                                  : std::nullopt;
+    if (!result)
+        return copyForProtocol(nlohmann::json{
+            {"status", "error"}, {"code", "INVALID_ARGS"},
+            {"message", "core_service." + name + " takes other arguments."}}.dump());
+    return copyForProtocol(result->dump());
 }
 
-char* coreServiceMethods(void* userData)
+// What the embedded core_service adds to its own inproc and local listeners.
+LogosTransportSet networkTransports(const LogosTransportSet& all)
 {
-    return copyForProtocol(
-        static_cast<CoreServiceImpl*>(userData)->getMethodsStd().dump());
-}
-
-int acceptCoreServiceToken(const char* module, const char* token, void*)
-{
-    return lp_token_save_inbound(module, token);
-}
-
-int validateCoreServiceToken(const char* token, const char* transport, void*)
-{
-    if (!token || !transport) return LP_ERR_INVALID_ARG;
-    TokenStore tokenStore;
-    return tokenStore.lookupByToken(token, transport).has_value()
-        ? LP_OK : LP_ERR_UNAVAILABLE;
+    LogosTransportSet network;
+    for (const auto& transport : all)
+        if (transport.protocol == LogosProtocol::Tcp || transport.protocol == LogosProtocol::TcpSsl)
+            network.push_back(transport);
+    return network;
 }
 
 } // namespace
@@ -557,6 +597,31 @@ int Daemon::start(int argc, char* argv[],
         logos_core_set_module_transports("capability_module", capJson.c_str());
     }
 
+    // 5b. core_service is liblogos': the daemon is its shell ("logoscore") and
+    //     hands it what only the daemon knows. The bundled directories are what
+    //     ships beside the binary, so a reserved module name resolves only there.
+    std::vector<std::string> bundledDirs;
+    if (!bundledDir.empty()) bundledDirs.push_back(bundledDir);
+    if (modern && !paths::bundledPackageModulesDir().empty())
+        bundledDirs.push_back(paths::bundledPackageModulesDir());
+    std::vector<const char*> bundledList;
+    for (const std::string& dir : bundledDirs) bundledList.push_back(dir.c_str());
+    bundledList.push_back(nullptr);
+    logos_core_set_bundled_modules_dirs(bundledList.data());
+    logos_core_set_shell_identity("logoscore");
+    {
+        const std::string network =
+            logos::transportSetToJsonString(networkTransports(coreTransports));
+        logos_core_set_core_service_transports(network.c_str());
+    }
+    logos_core_set_operator_resolver(&resolveOperator, nullptr);
+    logos_core_set_shutdown_handler(&requestShutdownFromCoreService, nullptr);
+    auto* packages = new PackageService();
+    {
+        const std::string methods = PackageService::methods().dump();
+        logos_core_set_core_service_extension(&extendCoreService, methods.c_str(), packages);
+    }
+
     // 6. Start core (discover plugins, launch logos_host in remote mode).
     //    capability_module loads now, with the transport set we just
     //    registered.
@@ -576,60 +641,13 @@ int Daemon::start(int argc, char* argv[],
     // and it sticks.
     spdlog::set_level(verbose ? spdlog::level::debug : spdlog::level::info);
 
-    // 7. Publish core_service through the Qt-free protocol C ABI.
-    auto* coreServiceImpl = new CoreServiceImpl();
-    const std::string coreTransportJson =
-        logos::transportSetToJsonString(coreTransports);
-    lp_provider* provider = lp_provider_create(
-        "core_service", coreTransportJson.c_str());
-    if (!provider) {
-        fprintf(stderr, "Failed to create the core_service provider.\n");
-        delete coreServiceImpl;
-        logos_core_cleanup();
-        return 1;
-    }
-
-    // Capability delivers module tokens over a channel authenticated by the
-    // host credential liblogos minted while loading capability_module.
-    if (char* credential = logos_core_get_token("capability_module")) {
-        lp_provider_save_token(provider, "core", credential);
-        delete[] credential;
-    }
-
-    // Make operator-issued tokens (`logosctl token issue --name alice`) actually
-    // authorize core_service calls. The built-in ModuleProxy scan only knows the
-    // boot `auto` token and capability-minted tokens; this validator adds the
-    // persisted token store, so a named token in daemon/tokens.json is accepted —
-    // with its expiry and local_only flag enforced against the call's transport.
-    // A fresh TokenStore per call reads tokens.json on demand, so revocation
-    // (revoke-token) and expiry take effect immediately, without a restart.
-    // Installed before registerObject so the proxy is validated from its first
-    // published call.
-    lp_provider_set_token_validator(provider, validateCoreServiceToken, nullptr);
-    if (lp_provider_register(provider, dispatchCoreService, coreServiceMethods,
-                             acceptCoreServiceToken, coreServiceImpl) != LP_OK) {
-        fprintf(stderr, "Failed to publish the core_service provider.\n");
-        lp_provider_destroy(provider);
-        delete coreServiceImpl;
-        logos_core_cleanup();
-        return 1;
-    }
-    coreServiceImpl->emitEvent = [provider](const std::string& event,
-                                            const std::string& data) {
-        lp_provider_emit_event(provider, event.c_str(), data.c_str());
-    };
-
     // 8. Auto-issue a fresh `auto` token for this boot.
     //
-    // Daemons store hashes at rest, so the raw value of any operator-
-    // issued token (alice, bob, …) isn't recoverable on restart — those
-    // tokens validate via TokenStore::lookupByToken on demand. The `auto`
-    // token is special: the daemon (re-)generates it every boot,
-    // overwrites both the hash entry in tokens.json and the raw files at
-    // daemon/tokens/auto.json + client/auto.json, and saves the raw value in
-    // the provider's inbound token table. Operator-issued tokens are checked
-    // by the validator above, so issue, revoke, and expiry take effect without
-    // restarting the daemon.
+    // Tokens are hashed at rest, so every operator token (auto, alice, …)
+    // validates through TokenStore::lookupByToken on demand, which core_service
+    // consults through resolveOperator: issue, revoke and expiry apply at once.
+    // `auto` is re-issued every boot, overwriting its hash in tokens.json and the
+    // raw files at daemon/tokens/auto.json + client/auto.json.
     TokenStore tokenStore;
     const auto autoTokenOutcome = tokenStore.issueToken("auto",
                                                         /*expiresAt=*/{},
@@ -641,16 +659,11 @@ int Daemon::start(int argc, char* argv[],
         // logos_core_start() already launched the module subprocesses; leaving
         // without cleanup strands them. Every other exit from this function
         // runs logos_core_cleanup() below.
-        lp_provider_destroy(provider);
-        delete coreServiceImpl;
         logos_core_cleanup();
+        delete packages;
         return 1;
     }
     const std::string autoTokenRaw = autoTokenOutcome.token;
-
-    // The boot token is validated through TokenStore like operator-issued
-    // tokens. Saving it in the provider's trusted inbound table would bypass
-    // its local_only policy when a network listener is also configured.
 
     // 8b. Bring up the bundled package modules and point them at this
     //     session's directories.
@@ -673,7 +686,7 @@ int Daemon::start(int argc, char* argv[],
     //     modules, and refusing to boot would turn a missing optional module
     //     into total unavailability.
     if (modern) {
-        logosctl::PlainRpcContext bootstrapRpc("core_service");
+        logosctl::PlainRpcContext bootstrapRpc("core");
         bootstrapPackageModules(&bootstrapRpc, paths::bundledPackageModulesDir(),
                                 cfg.signaturePolicy, verbose);
     }
@@ -705,9 +718,8 @@ int Daemon::start(int argc, char* argv[],
         // logos_core_start() already launched the module subprocesses; leaving
         // without cleanup strands them. Every other exit from this function
         // runs logos_core_cleanup() below.
-        lp_provider_destroy(provider);
-        delete coreServiceImpl;
         logos_core_cleanup();
+        delete packages;
         return 1;
     }
 
@@ -770,9 +782,8 @@ int Daemon::start(int argc, char* argv[],
     fflush(stdout);
 
     DaemonRuntimeStateFile::remove();
-    lp_provider_destroy(provider);
-    delete coreServiceImpl;
     logos_core_cleanup();
+    delete packages;
     LogSink::instance().stop();
 
     fprintf(stdout, "Logosctl daemon stopped.\n");

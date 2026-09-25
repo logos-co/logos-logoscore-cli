@@ -4,9 +4,10 @@
   inputs = {
     logos-nix.url = "github:logos-co/logos-nix";
     nixpkgs.follows = "logos-nix/nixpkgs";
-    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk";
-    logos-protocol.url = "github:logos-co/logos-protocol/codex/qt-remote-plain";
-    logos-liblogos.url = "github:logos-co/logos-liblogos/codex/qt-remote-plain-liblogos";
+    # On the runtime-control branches (logos-liblogos#227 and the PRs under it) until they merge.
+    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk/feat/runtime-delegate-export";
+    logos-protocol.url = "github:logos-co/logos-protocol/feat/plain-local-inproc";
+    logos-liblogos.url = "github:logos-co/logos-liblogos/feat/embedded-core-service";
     # liblogos and the CLI must share one instance of the plain protocol
     # runtime: that library owns the process-wide credential registry.
     logos-cpp-sdk.inputs.logos-protocol.follows = "logos-protocol";
@@ -34,10 +35,10 @@
     logos-liblogos.inputs.logos-package-manager.follows = "logos-package-manager";
     logos-package-manager-module.inputs.logos-package-manager.follows = "logos-package-manager";
     nix-bundle-logos-module-install.inputs.logos-package-manager.follows = "logos-package-manager";
-    logos-capability-module.url = "github:logos-co/logos-capability-module";
-    logos-modules-state-module.url = "github:logos-co/logos-modules-state-module";
-    logos-package-manager-module.url = "github:logos-co/logos-package-manager-module";
-    logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module";
+    logos-capability-module.url = "github:logos-co/logos-capability-module/feat/token-authority";
+    logos-modules-state-module.url = "github:logos-co/logos-modules-state-module/chore/qt-remote-plain";
+    logos-package-manager-module.url = "github:logos-co/logos-package-manager-module/chore/qt-remote-plain";
+    logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module/chore/qt-remote-plain";
     # The integration suites' test modules, as source only: the flake takes this
     # one back as an input, and that cycle unrolled this lock to 15k nodes.
     logos-test-modules-src = { url = "github:logos-co/logos-test-modules"; flake = false; };
