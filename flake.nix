@@ -1039,6 +1039,13 @@ ${pkgs.lib.optionalString withPkgModules ''
             negativeControl = true;
           };
 
+          # The shipped logosctl: its bundled capability_module is the authority.
+          bundled-authority = import ./nix/bundled-authority.nix {
+            inherit pkgs;
+            ctlPkg = self.packages.${system}.ctl;
+            modulesDir = "${itModulesDir}/modules";
+          };
+
           # Aggregate. `nix build .#checks.<sys>.tests` covers both tools, the
           # integration suites included; nix builds its dependencies concurrently.
           tests = pkgs.runCommand "logos-logoscore-cli-tests" { } ''
@@ -1047,6 +1054,7 @@ ${pkgs.lib.optionalString withPkgModules ''
             cp -r ${tests-logoscore}/. $out/logoscore/
             cp -r ${integration-logosctl}/. $out/integration-logosctl/
             cp -r ${integration-logoscore}/. $out/integration-logoscore/
+            cp -r ${bundled-authority}/. $out/bundled-authority/
           '';
         }
       );
