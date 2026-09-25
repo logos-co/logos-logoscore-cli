@@ -1383,37 +1383,10 @@ TEST_F(PersistencePathTest, TildeFlagExpandsAgainstHome) {
 // SPELLING: the literal `enforce` expanding to the deny-by-default document
 // (src/daemon/access_policy_arg.h) and reaching the runtime from a flag.
 //
-// The direct CLI probe below is a HOST call. `fromModuleName` is legacy,
-// untrusted input, while the dispatch token identifies the caller as `core`.
-// The declared path is driven through test_ipc_new_api_module so it really
-// originates in a module process.
-namespace {
-
-// requestModule's first argument is intentionally supplied to prove it cannot
-// forge the caller identity. The token-bound dispatch caller is authoritative.
-// nullopt means the client call itself failed (rather than a policy response).
-std::optional<std::string> requestModuleToken(const LogoscoreDaemon& d,
-                                              const std::string& caller,
-                                              const std::string& target,
-                                              std::string* raw)
-{
-    std::string out;
-    const std::string cmd =
-        "call capability_module requestModule " + caller + " " + target;
-    const int rc = d.run(cmd, &out, /*timeoutSecs=*/20);
-    if (raw) *raw = out;
-    if (rc != 0) return std::nullopt;
-    nlohmann::json env = lastJsonObject(out);
-    if (env.value("status", std::string{}) != "ok") return std::nullopt;
-    const nlohmann::json result = env.value("result", nlohmann::json{});
-    if (result.is_string()) return result.get<std::string>();
-    if (result.is_null()) return std::string{};
-    return std::nullopt;
-}
-
-} // namespace
-
-TEST(AccessPolicyFlagTest, EnforceShorthandUsesTokenBoundIdentityAndKeepsDeclared) {
+// A client call reaches modules as an operator, so the token authority is out
+// of its reach; the declared path is driven through test_ipc_new_api_module so
+// it really originates in a module process.
+TEST(AccessPolicyFlagTest, EnforceShorthandRefusesOperatorTokensAndKeepsDeclared) {
     LogoscoreDaemon d;
     std::string why;
     if (!d.envReady(why)) GTEST_SKIP() << why;
@@ -1436,21 +1409,13 @@ TEST(AccessPolicyFlagTest, EnforceShorthandUsesTokenBoundIdentityAndKeepsDeclare
             << m << " must be loaded before probing the gate.\n" << out
             << "\n--- daemon log ---\n" << slurp(d.daemonLog);
 
-    // This call originates at core_service; the legacy first argument must not
-    // let it impersonate test_basic_module. Core is allowed as control plane,
-    // and the warning pins the identity decision at the runtime boundary.
-    std::string raw;
-    auto hostToken = requestModuleToken(d, "test_basic_module", "test_extlib_module", &raw);
-    ASSERT_TRUE(hostToken.has_value()) << "requestModule call failed outright:\n" << raw;
-    EXPECT_FALSE(hostToken->empty())
-        << "the host control plane must retain its allowed request path under "
-           "enforcement.\n"
-        << raw << "\n--- daemon log ---\n" << slurp(d.daemonLog);
-    const std::string hostLog = slurp(d.daemonLog);
-    EXPECT_NE(hostLog.find("ignoring leftover fromModuleName='test_basic_module' "
-                           "(token-bound caller is 'core')"), std::string::npos)
-        << "capability_module trusted the caller-supplied legacy name instead "
-           "of the token-bound host identity.\n" << hostLog;
+    ASSERT_NE(d.run("call capability_module requestModule test_basic_module test_extlib_module",
+                    &out, /*timeoutSecs=*/20), 0)
+        << "an operator minted a module token through core_service.\n" << out;
+    const nlohmann::json env = lastJsonObject(out);
+    EXPECT_EQ(env.value("code", std::string{}), "METHOD_FAILED") << out;
+    const nlohmann::json diag = env.value("error", nlohmann::json::object());
+    EXPECT_EQ(diag.value("code", std::string{}), "unauthorized") << out;
 
     // This call begins inside test_ipc_new_api_module, which declares
     // test_basic_module. Its wrapper therefore proves the real allow path;

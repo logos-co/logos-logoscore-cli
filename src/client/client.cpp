@@ -218,7 +218,9 @@ bool RpcClient::tokenRefused() const
 
 LogosMap RpcClient::loadModule(const std::string& name, bool withOptional)
 {
-    nlohmann::json ret = d->invoke("loadModule", nlohmann::json::array({name, withOptional}));
+    // core_service takes the dependency policy by name.
+    nlohmann::json ret = d->invoke("loadModule", nlohmann::json::array(
+        {name, withOptional ? "required_and_optional" : "required"}));
     if (ret.is_object()) return ret;
     return d->failed(fmt::format("loadModule('{}') RPC call failed.", name));
 }
