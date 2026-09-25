@@ -58,6 +58,22 @@ Each daemon-side file has one writer and a clear lifetime:
 
 The daemon never reads `client/`; the client never reads `daemon/config.json` or `daemon/tokens.json`. (`status` consults `daemon/state.json` for a fast same-host liveness check via `kill(pid, 0)`, but never opens daemon-only secrets.)
 
+#### In-process modules (`--bundled-modules-dir`, `--placement`)
+
+```bash
+# Modules in ./trusted may run inside the daemon's process, and do by default
+logoscore -D -m ./modules --bundled-modules-dir ./trusted --placement '{"default":"inproc"}'
+```
+
+`--bundled-modules-dir` (repeatable) adds a directory whose modules count as
+bundled. They are scanned too. `--placement` takes the runtime's placement
+policy as JSON, and a malformed one stops the daemon at boot. A module runs
+in-process only if it is bundled, its build stamped it `inproc_eligible`, and the
+policy places it there. Otherwise it runs in its own host process. `module-info`
+reports where a loaded module runs. The same settings in the daemon config are
+`bundled_modules_dirs:` and `placement:`; see
+[Where modules run](logosctl.md#where-modules-run).
+
 #### `--persist-config`
 
 CLI flags affect this run only by default. To bake them into the next launch — daemon or client side — pass `--persist-config`:
@@ -182,6 +198,11 @@ LOGOSCORE_TOKEN=<token> logoscore list-modules --json
 ```
 
 Token resolution order: `LOGOSCORE_TOKEN` env var → `<configDir>/client/<token_file>` (the path is whatever `client/config.json` says — defaults to `auto.json`).
+
+A `call` or `watch` reaches the module as an operator named after the token
+(`auto`, or the name you issued), and calls to `capability_module` and
+`core_service` are refused. See
+[What a module sees when you call it](logosctl.md#what-a-module-sees-when-you-call-it).
 
 ##### Named client tokens
 
