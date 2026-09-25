@@ -81,9 +81,14 @@ How a value is written decides whether portability survives:
 `dirs.data` wins if both are set.
 
 Modules come from two places: the read-only set bundled beside the binary
-(`capability_module`, `package_manager`, `package_downloader`) and the writable
-`<session>/modules`. On a name collision the session's copy wins, which is how
-you override a bundled module.
+(`capability_module`, `modules_state`, `package_manager`, `package_downloader`)
+and the writable `<session>/modules`. The bundled modules are the runtime's own,
+and their names are reserved, compared without case, together with `core_service`,
+anything starting with `logos_`, and the shell names (`logoscore`, `basecamp`,
+`standalone`, `module_viewer`). A session copy of a reserved module is ignored in
+favour of the bundled one, and the daemon logs `Ignoring … for reserved module …`.
+A reserved name the bundle doesn't ship is refused. For every other name, the
+session's copy wins a collision.
 
 #### Starting the Daemon
 
@@ -183,6 +188,38 @@ listeners. The daemon writes the local client dial spec and token into the
 session on every boot; remote clients can configure the advertised network
 endpoints separately.
 
+#### Where modules run
+
+By default each module runs in a host process of its own. A module runs inside
+the daemon's process instead when three things hold:
+- it comes from a bundled directory;
+- its build stamped it in-process eligible (`"inproc_eligible": true` in its
+  `<name>_plugin.metadata.json`, which logos-module-builder writes for plain
+  modules);
+- the placement policy puts it there.
+
+The runtime's own modules already run in-process: `capability_module`,
+`modules_state` and the package modules.
+
+```yaml
+bundled_modules_dirs:            # scanned too; their modules may run in-process
+  - /opt/logos/trusted-modules
+placement: '{"default":"inproc","modules":{"heavy_module":"subprocess"}}'
+```
+
+`placement` is the runtime's placement policy. Like `access_policy`, it is a JSON
+document carried as a string:
+- `default` and each entry of `modules` take `inproc` or `subprocess`;
+- `"single_process": true` refuses to load a module that can't run in-process,
+  rather than giving it a host process.
+
+A malformed policy stops the daemon at boot. While a module is loaded,
+`logosctl module show NAME` reports its placement.
+
+In-process means shared fate. A module that crashes takes the daemon down with
+it, and it has no CPU or memory figures of its own. Only bundle modules you trust
+as much as the daemon.
+
 #### Reaching a daemon over tcp or tls
 
 The boot token the daemon writes to `client/auto.json` is accepted over the
@@ -216,6 +253,27 @@ withdraws it at once; the expiry bounds a token nobody revoked.
 > `client/`, and the client never reads `daemon/`. Only the files above are
 > YAML — everything the daemon and the modules own (`state.json`, `tokens.json`,
 > the token files, the downloader's catalog config) stays JSON.
+
+#### What a module sees when you call it
+
+`logosctl call` and `watch` go through the daemon, which forwards them under
+your token's name. The module sees an operator:
+`{"kind": "operator", "name": "auto"}` for the boot token, or the name you
+issued, such as `laptop`. A module that gates a method on its caller can
+therefore tell you apart from another module and from the runtime itself.
+
+Two kinds of target are handled differently:
+
+- **`capability_module` and `core_service`** are the runtime's own. A forwarded
+  call to either is refused with `unauthorized`, and a watch fails, so no token
+  can mint module tokens through the CLI.
+- **`package_manager` and `package_downloader`** answer their settings only to
+  the runtime and `core_service`, so a forwarded call to them is made as
+  `core_service`.
+
+This requires the bundled `capability_module` to run in the daemon's process, as
+it does in the shipped package. A daemon without it (a build with no bundled
+modules) forwards as the runtime, and the module sees the host.
 
 #### Client Commands
 
