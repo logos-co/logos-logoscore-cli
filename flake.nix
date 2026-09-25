@@ -6,8 +6,8 @@
     nixpkgs.follows = "logos-nix/nixpkgs";
     # On the runtime-control branches (logos-liblogos#227 and the PRs under it) until they merge.
     logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk/feat/runtime-delegate-export";
-    logos-protocol.url = "github:logos-co/logos-protocol/feat/plain-local-inproc";
-    logos-liblogos.url = "github:logos-co/logos-liblogos/feat/embedded-core-service";
+    logos-protocol.url = "github:logos-co/logos-protocol/feat/drop-legacy-mode";
+    logos-liblogos.url = "github:logos-co/logos-liblogos/feat/drop-legacy-mode";
     # liblogos and the CLI must share one instance of the plain protocol
     # runtime: that library owns the process-wide credential registry.
     logos-cpp-sdk.inputs.logos-protocol.follows = "logos-protocol";
@@ -35,10 +35,10 @@
     logos-liblogos.inputs.logos-package-manager.follows = "logos-package-manager";
     logos-package-manager-module.inputs.logos-package-manager.follows = "logos-package-manager";
     nix-bundle-logos-module-install.inputs.logos-package-manager.follows = "logos-package-manager";
-    logos-capability-module.url = "github:logos-co/logos-capability-module/feat/token-authority";
-    logos-modules-state-module.url = "github:logos-co/logos-modules-state-module/chore/qt-remote-plain";
-    logos-package-manager-module.url = "github:logos-co/logos-package-manager-module/chore/qt-remote-plain";
-    logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module/chore/qt-remote-plain";
+    logos-capability-module.url = "github:logos-co/logos-capability-module/feat/drop-legacy-mode";
+    logos-modules-state-module.url = "github:logos-co/logos-modules-state-module/feat/drop-legacy-mode";
+    logos-package-manager-module.url = "github:logos-co/logos-package-manager-module/feat/drop-legacy-mode";
+    logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module/feat/drop-legacy-mode";
     # The integration suites' test modules, as source only: the flake takes this
     # one back as an input, and that cycle unrolled this lock to 15k nodes.
     logos-test-modules-src = { url = "github:logos-co/logos-test-modules"; flake = false; };
@@ -604,6 +604,11 @@ ${pkgs.lib.optionalString withPkgModules ''
               cp bin/cli_tests_logoscore $out/bin/
               cp bin/integration_tests_logoscore $out/bin/
               cp bin/logoscore $out/bin/
+              # The bundled modules beside the binaries, where the shipped package
+              # has them (paths::bundledModulesDir): capability_module, the token
+              # authority, runs in-process from here, so the daemon-backed suites
+              # run the path users get. Without it nothing would load.
+              cp -r ${modules}/modules $out/modules
 
               if [ -d ${liblogosLib}/lib ]; then
                 cp -r ${liblogosLib}/lib/* $out/lib/ || true
@@ -937,16 +942,15 @@ ${pkgs.lib.optionalString withPkgModules ''
         }
       );
 
-      checks = forAllSystems ({ pkgs, system, liblogos, capabilityModuleLib, installDev, ... }:
+      checks = forAllSystems ({ pkgs, system, liblogos, installDev, ... }:
         let
           testsPkg = self.packages.${system}.tests;
 
-          # Installed as the daemon discovers modules. Without capability_module
-          # every load and call blocks for about 20 s.
+          # Installed as the daemon discovers modules. capability_module is not
+          # here: it comes from the bundle beside the test binaries.
           itModulesDir = pkgs.symlinkJoin {
             name = "logos-logoscore-cli-it-modules";
-            paths = map installDev
-              ([ capabilityModuleLib ] ++ map (m: m.packages.${system}.lib) itModules);
+            paths = map installDev (map (m: m.packages.${system}.lib) itModules);
           };
 
           # Each group skips itself when its modules do not load, so a skip fails here.

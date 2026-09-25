@@ -271,9 +271,9 @@ Two kinds of target are handled differently:
   the runtime and `core_service`, so a forwarded call to them is made as
   `core_service`.
 
-This requires the bundled `capability_module` to run in the daemon's process, as
-it does in the shipped package. A daemon without it (a build with no bundled
-modules) forwards as the runtime, and the module sees the host.
+The bundled `capability_module` runs in the daemon's process as the token
+authority, as it does in the shipped package. A daemon without it does not start:
+it logs `no token authority` and exits, because nothing could load.
 
 #### Client Commands
 

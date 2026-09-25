@@ -1,6 +1,6 @@
 #include "package_ops.h"
 #include "config.h"
-#include "logos_core.h"
+#include "shell_calls.h"
 #include "rpc_deadlines.h"
 #include "../plain_rpc.h"
 
@@ -72,15 +72,7 @@ bool ok(const nlohmann::json& r, std::string* errorOut = nullptr)
 
 std::vector<std::string> loadedModules()
 {
-    std::vector<std::string> out;
-    char** mods = logos_core_get_loaded_modules();
-    if (!mods) return out;
-    for (int i = 0; mods[i]; ++i) {
-        out.emplace_back(mods[i]);
-        delete[] mods[i];
-    }
-    delete[] mods;
-    return out;
+    return shell_calls::loaded();
 }
 
 LogosList installedPackages(logosctl::PlainRpcContext* api)
@@ -430,12 +422,12 @@ LogosMap apply(logosctl::PlainRpcContext* api, Op op,
         // Stop them before their files disappear, dependents first — which is
         // the order `victims` is already in.
         for (const auto& v : victims)
-            logos_core_unload_module(v.c_str(), /*with_dependents=*/true);
+            shell_calls::unload(v, /*withDependents=*/true);
 
         nlohmann::json confirmR = call(api, kPm, "confirmMultiUninstall", victimArgs);
         if (!ok(confirmR, &e)) return fail("confirm", e);
 
-        logos_core_refresh_modules();
+        shell_calls::refresh();
         result["removed"] = victims;
         // Nothing to restore: every affected module was just removed.
         result["reloaded"] = LogosList::array();
@@ -455,7 +447,7 @@ LogosMap apply(logosctl::PlainRpcContext* api, Op op,
                 return fail("request", e);
 
             for (const auto& m : toRestore)
-                logos_core_unload_module(m.c_str(), /*with_dependents=*/true);
+                shell_calls::unload(m, /*withDependents=*/true);
 
             nlohmann::json confirmR = (op == Op::Upgrade)
                 ? call(api, kPm, "confirmUpgrade", LogosList{name, std::string{}})
@@ -480,7 +472,7 @@ LogosMap apply(logosctl::PlainRpcContext* api, Op op,
                 return fail("request", e);
 
             for (const auto& m : toRestore)
-                logos_core_unload_module(m.c_str(), /*with_dependents=*/true);
+                shell_calls::unload(m, /*withDependents=*/true);
 
             // confirmUpgrade removes the old copy in-module; confirmInstall
             // has nothing to remove. Either way the download+install below is
@@ -524,14 +516,14 @@ LogosMap apply(logosctl::PlainRpcContext* api, Op op,
     // Make the new files discoverable without a restart. Without this the
     // daemon's known-module set still reflects the pre-install scan, so a
     // freshly installed module could not be loaded at all.
-    logos_core_refresh_modules();
+    shell_calls::refresh();
 
     // Restart what was running before — and only that. A newly installed
     // package is left unloaded: installing puts files on disk, loading is a
     // separate explicit act.
     LogosList reloaded = LogosList::array();
     for (const auto& m : toRestore) {
-        if (logos_core_load_module(m.c_str(), LOGOS_LOAD_REQUIRED_AND_OPTIONAL))
+        if (shell_calls::load(m))
             reloaded.push_back(m);
     }
 

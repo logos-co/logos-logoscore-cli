@@ -15,6 +15,7 @@
 #include <logos_transport_config_json.h>
 #include <logos_protocol.h>
 #include "../core_service/package_service.h"
+#include "../core_service/shell_calls.h"
 #include "../plain_rpc.h"
 #include "../local_endpoint.h"
 
@@ -218,7 +219,8 @@ std::vector<TransportInfo> toAdvertised(const LogosTransportSet& set)
 //
 // The sequencing — which failure skips what — lives in package_bootstrap so it
 // can be tested without a running core. This function is only the wiring from
-// those hooks to logos_core and the live plain provider.
+// those hooks to core_service, over the daemon's shell binding, and the live
+// plain provider.
 void bootstrapPackageModules(logosctl::PlainRpcContext* api,
                              const std::string& bundledDir,
                              const std::string& signaturePolicy,
@@ -226,11 +228,9 @@ void bootstrapPackageModules(logosctl::PlainRpcContext* api,
 {
     package_bootstrap::Hooks hooks;
 
-    hooks.loadModule = [](const std::string& name) {
-        return logos_core_load_module(name.c_str(), LOGOS_LOAD_REQUIRED_AND_OPTIONAL);
-    };
+    hooks.loadModule = [](const std::string& name) { return shell_calls::load(name); };
     hooks.unloadModule = [](const std::string& name) {
-        logos_core_unload_module(name.c_str(), /*with_dependents=*/true);
+        shell_calls::unload(name, /*withDependents=*/true);
     };
     hooks.warn = [](const std::string& line) {
         fprintf(stderr, "%s\n", line.c_str());
@@ -326,6 +326,7 @@ char* extendCoreService(const char* callerJson, const char* method, const char* 
             {"message", "core_service." + name + " is for operators."}}.dump());
     const nlohmann::json args = nlohmann::json::parse(
         argsJson && *argsJson ? argsJson : "[]", nullptr, false);
+    std::lock_guard<std::mutex> turn(shell_calls::packageOperations());
     auto result = args.is_array() ? static_cast<PackageService*>(userData)->call(name, args)
                                   : std::nullopt;
     if (!result)
@@ -636,6 +637,21 @@ int Daemon::start(int argc, char* argv[],
     //    registered.
     logos_core_start();
 
+    // 6b. The shell binding: every lifecycle call the daemon makes goes through
+    //     core_service as "logoscore". Without it there is no token authority,
+    //     and nothing could load.
+    logos_consumer* shell = logos_core_take_shell_binding();
+    if (!shell) {
+        fprintf(stderr,
+                "Daemon startup aborted: no token authority. capability_module must be "
+                "among the bundled modules (%s) and run in-process.\n",
+                bundledDir.empty() ? "none found beside the binary" : bundledDir.c_str());
+        logos_core_cleanup();
+        delete packages;
+        return 1;
+    }
+    shell_calls::install(shell);
+
     // -v has to reach spdlog, and it has to be set HERE.
     //
     // Module subprocesses do not share our stdio. The container gives each one
@@ -668,6 +684,7 @@ int Daemon::start(int argc, char* argv[],
         // logos_core_start() already launched the module subprocesses; leaving
         // without cleanup strands them. Every other exit from this function
         // runs logos_core_cleanup() below.
+        shell_calls::release();
         logos_core_cleanup();
         delete packages;
         return 1;
@@ -727,6 +744,7 @@ int Daemon::start(int argc, char* argv[],
         // logos_core_start() already launched the module subprocesses; leaving
         // without cleanup strands them. Every other exit from this function
         // runs logos_core_cleanup() below.
+        shell_calls::release();
         logos_core_cleanup();
         delete packages;
         return 1;
@@ -791,6 +809,7 @@ int Daemon::start(int argc, char* argv[],
     fflush(stdout);
 
     DaemonRuntimeStateFile::remove();
+    shell_calls::release();
     logos_core_cleanup();
     delete packages;
     LogSink::instance().stop();
