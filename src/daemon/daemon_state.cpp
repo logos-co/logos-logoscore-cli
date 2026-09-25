@@ -164,6 +164,8 @@ json daemonConfigToJson(const DaemonConfig& cfg, bool includeSecrets)
 
     obj["insecure_tcp"] = cfg.insecureTcp;
     if (!cfg.accessPolicy.empty()) obj["access_policy"] = cfg.accessPolicy;
+    if (!cfg.placement.empty())    obj["placement"]     = cfg.placement;
+    if (!cfg.bundledModulesDirs.empty()) obj["bundled_modules_dirs"] = cfg.bundledModulesDirs;
     if (!cfg.accessGroup.empty())  obj["access_group"]  = cfg.accessGroup;
     // Omitted when unset, like access_policy: an empty string is not a valid
     // policy, so emitting one would produce a document that fails its own
@@ -276,6 +278,8 @@ std::optional<DaemonConfig> daemonConfigFromJson(const json& obj,
 
     cfg.insecureTcp  = r.boolean("insecure_tcp", false);
     cfg.accessPolicy = r.str("access_policy");
+    cfg.placement    = r.str("placement");
+    cfg.bundledModulesDirs = r.stringList("bundled_modules_dirs");
     cfg.accessGroup  = r.str("access_group");
 
     // Strict allowlist, same reasoning as the transport `protocol` field: the
