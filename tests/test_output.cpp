@@ -213,6 +213,16 @@ TEST_F(OutputTest, PrintModuleInfo_Human_MethodsAndDescriptions)
     EXPECT_NE(out.find("Uses the active channel."), std::string::npos);
 }
 
+// Human-mode: a loaded module says where it runs (in the daemon's process or its own).
+TEST_F(OutputTest, PrintModuleInfo_Human_Placement)
+{
+    CaptureStdout cap;
+    LogosMap info{{"name", "modules_state"}, {"version", "1.0.0"}, {"status", "loaded"},
+                  {"placement", "inproc"}};
+    humanOutput.printModuleInfo(info);
+    EXPECT_NE(cap.str().find("Placement:     inproc"), std::string::npos);
+}
+
 // Human-mode: events render in their own section as `name(params)` with NO
 // return type (events are fire-and-forget), plus their multi-line description.
 TEST_F(OutputTest, PrintModuleInfo_Human_Events)
