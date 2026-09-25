@@ -12,15 +12,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1789399564,
-        "narHash": "sha256-U9zILMsphmT6/oZ12jB+6vjcJBbuhAl4QhHk46iY/6s=",
+        "lastModified": 1790296007,
+        "narHash": "sha256-kYIGrgnWcL32hrFCS/amRQPpaDLwUhvLFPe2KvPFDOM=",
         "owner": "logos-co",
         "repo": "logos-container-subprocess",
-        "rev": "697c1805eae689fc5945d2afe7038a4b608df07f",
+        "rev": "bbf884922535d98ebbb3ad91b0032e326f408417",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
+        "ref": "fix/windows-stop-while-starting",
         "repo": "logos-container-subprocess",
         "type": "github"
       }
@@ -980,11 +981,11 @@
         "process-stats": "process-stats"
       },
       "locked": {
-        "lastModified": 1790294208,
-        "narHash": "sha256-wvOemNv1cdtjMmhp/y84d6cYY1G5eECBziYRralGR0o=",
+        "lastModified": 1790301603,
+        "narHash": "sha256-+R/E2i3XYCR87jIKWT/mHt+xVxKEYeMTN29SEZCv+5A=",
         "owner": "logos-co",
         "repo": "logos-liblogos",
-        "rev": "6d6503a02bfdbc28ed17af72faf17f736756f30a",
+        "rev": "ffe1ca333df5ae80e50020e9f39cb4053c91a292",
         "type": "github"
       },
       "original": {
