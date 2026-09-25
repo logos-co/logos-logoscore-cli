@@ -8,18 +8,29 @@ namespace {
 constexpr const char* kPd = "package_downloader";
 constexpr const char* kPm = "package_manager";
 
+// What each download source means, for the human output.
+std::string describeSource(const std::string& source)
+{
+    if (source == "logos") return "Logos Storage only";
+    if (source == "http")  return "HTTP only";
+    if (source == "any")   return "Logos Storage, then HTTP";
+    return "unknown";
+}
+
 } // namespace
 
 int CatalogCommand::execute(const std::vector<std::string>& args)
 {
     if (args.empty()) {
         output().printError("INVALID_ARGS",
-            "Usage: logosctl catalog <ls|add|remove|enable|disable|refresh> [url]");
+            "Usage: logosctl catalog <ls|add|remove|enable|disable|refresh|source> [url|source]");
         return 1;
     }
 
     const std::string sub = args[0];
     const std::string url = args.size() > 1 ? args[1] : std::string{};
+
+    if (sub == "source") return downloadSource(url);
 
     const bool needsUrl = (sub == "add" || sub == "remove" ||
                            sub == "enable" || sub == "disable");
@@ -90,6 +101,52 @@ int CatalogCommand::execute(const std::vector<std::string>& args)
     if (output().isJsonMode()) { output().printSuccess(res.is_object() ? res : LogosMap{}); return 0; }
     output().printRaw(sub == "refresh" ? "Catalogs refreshed."
                                        : fmt::format("Catalog {}d: {}", sub, url));
+    return 0;
+}
+
+// `catalog source` prints the download source; `catalog source <value>` sets it.
+int CatalogCommand::downloadSource(const std::string& value)
+{
+    if (!value.empty() && value != "any" && value != "logos" && value != "http") {
+        output().printError("INVALID_ARGS",
+            "Usage: logosctl catalog source [any|logos|http]");
+        return 1;
+    }
+
+    int err = ensureConnected();
+    if (err != 0) return err;
+
+    LogosMap r = value.empty()
+        ? client().callModuleMethod(kPd, "getDownloadSource", LogosList::array())
+        : client().callModuleMethod(kPd, "setDownloadSource", LogosList{value});
+    if (r.value("status", std::string{}) == "error") {
+        output().printError(r.value("code", std::string("RPC_FAILED")),
+                            r.value("message", std::string{}), r);
+        return 1;
+    }
+
+    const auto& res = r["result"];
+    if (value.empty()) {
+        const std::string source = res.is_string() ? res.get<std::string>() : std::string{};
+        if (output().isJsonMode()) {
+            output().printSuccess(LogosMap{{"downloadSource", source}});
+            return 0;
+        }
+        output().printRaw(fmt::format("Download source: {} ({})", source, describeSource(source)));
+        return 0;
+    }
+
+    if (res.is_object() && !res.value("success", true)) {
+        const std::string errMsg = res.value("error", std::string{});
+        output().printError("CATALOG_FAILED",
+                            errMsg.empty() ? "catalog source failed" : errMsg);
+        return 1;
+    }
+    if (output().isJsonMode()) {
+        output().printSuccess(LogosMap{{"success", true}, {"downloadSource", value}});
+        return 0;
+    }
+    output().printRaw(fmt::format("Download source set to {} ({}).", value, describeSource(value)));
     return 0;
 }
 
