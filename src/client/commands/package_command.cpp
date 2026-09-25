@@ -45,6 +45,20 @@ const char* actionVerb(const std::string& action)
     return "keep";
 }
 
+std::string releaseVersion(const nlohmann::json& release)
+{
+    if (!release.is_object()) return {};
+    const auto manifest = release.value("manifest", nlohmann::json::object());
+    return manifest.is_object() ? manifest.value("version", std::string{}) : std::string{};
+}
+
+// The downloader marks a release its download source cannot serve with
+// `sourceAvailable: false`; one that predates the setting marks none.
+bool servedBySource(const nlohmann::json& release)
+{
+    return release.value("sourceAvailable", true);
+}
+
 // `versions` arrives newest-first from the catalog.  A catalog can contain
 // more than one artifact for the same release, though, so show each version
 // once rather than making the user guess whether repeated text is meaningful.
@@ -54,13 +68,33 @@ std::vector<std::string> availableVersions(const nlohmann::json& versions)
     if (!versions.is_array()) return result;
 
     for (const auto& release : versions) {
-        if (!release.is_object()) continue;
-        const auto manifest = release.value("manifest", nlohmann::json::object());
-        if (!manifest.is_object()) continue;
-        const std::string version = manifest.value("version", std::string{});
+        if (!release.is_object() || !servedBySource(release)) continue;
+        const std::string version = releaseVersion(release);
         if (!version.empty()
             && std::find(result.begin(), result.end(), version) == result.end())
             result.push_back(version);
+    }
+    return result;
+}
+
+// The releases the download source cannot serve, with the downloader's reason
+// (the same for all: it names the setting). Empty under the `any` source.
+std::vector<std::string> unavailableVersions(const nlohmann::json& versions,
+                                             std::string& reason)
+{
+    const auto available = availableVersions(versions);
+    std::vector<std::string> result;
+    if (!versions.is_array()) return result;
+
+    for (const auto& release : versions) {
+        if (!release.is_object() || servedBySource(release)) continue;
+        const std::string version = releaseVersion(release);
+        if (version.empty()
+            || std::find(available.begin(), available.end(), version) != available.end()
+            || std::find(result.begin(), result.end(), version) != result.end())
+            continue;
+        result.push_back(version);
+        if (reason.empty()) reason = release.value("sourceUnavailableReason", std::string{});
     }
     return result;
 }
@@ -463,6 +497,12 @@ int PackageCommand::show(const std::vector<std::string>& args)
     const auto versions = availableVersions(catalogEntry.value("versions", LogosList::array()));
     if (!versions.empty())
         output().printRaw(fmt::format("{:<14} {}", "available:", fmt::join(versions, ", ")));
+    std::string reason;
+    const auto unavailable =
+        unavailableVersions(catalogEntry.value("versions", LogosList::array()), reason);
+    if (!unavailable.empty())
+        output().printRaw(fmt::format("{:<14} {} ({})", "not available:",
+                                      fmt::join(unavailable, ", "), reason));
     if (installed.empty())
         output().printRaw(fmt::format("{:<14} {}", "installed:", "no"));
     return 0;
@@ -580,6 +620,9 @@ int PackageCommand::search(const std::vector<std::string>& args)
     // releases exist; `package show` lists them.
     output().printRaw(fmt::format("{:<24} {:<16} {:<12} {}",
                                   "NAME", "VERSION", "CATEGORY", "DESCRIPTION"));
+    // Only releases the download source can serve count; a package with none
+    // reads "not available", and the reason is printed once below the table.
+    std::string unavailableReason;
     for (const auto& p : hits) {
         const auto versions = availableVersions(p.value("versions", LogosList::array()));
         std::string versionText = "-";
@@ -587,6 +630,9 @@ int PackageCommand::search(const std::vector<std::string>& args)
             versionText = versions.front();
             if (versions.size() > 1)
                 versionText += fmt::format(" (+{})", versions.size() - 1);
+        } else if (!unavailableVersions(p.value("versions", LogosList::array()),
+                                        unavailableReason).empty()) {
+            versionText = "not available";
         }
         std::string desc = p.value("description", std::string{});
         if (desc.size() > 44) desc = desc.substr(0, 41) + "...";
@@ -594,6 +640,8 @@ int PackageCommand::search(const std::vector<std::string>& args)
             p.value("name", std::string{}), versionText,
             p.value("category", std::string("-")), desc));
     }
+    if (!unavailableReason.empty())
+        output().printRaw(fmt::format("\nnot available: {}", unavailableReason));
     return 0;
 }
 

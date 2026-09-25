@@ -1990,3 +1990,134 @@ TEST(PackageDepsRow, ADependentRowFallsBackToInstallType)
     EXPECT_NE(row.find("user"), std::string::npos) << row;
     EXPECT_EQ(row.find("optional"), std::string::npos) << row;
 }
+
+// ── catalog source ──────────────────────────────────────────────────────────
+
+TEST_F(CommandTest, CatalogSource_PrintsTheDownloadSource)
+{
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}, {"result", "logos"}};
+    Output humanOutput;
+    humanOutput.setHumanMode(true);
+
+    auto cmd = createCommand("catalog", mockClient, humanOutput);
+    const std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"source"}), 0);
+    });
+
+    EXPECT_EQ(mockClient.lastCallModule, "package_downloader");
+    EXPECT_EQ(mockClient.lastCallMethod, "getDownloadSource");
+    EXPECT_NE(out.find("Download source: logos (Logos Storage only)"), std::string::npos) << out;
+}
+
+TEST_F(CommandTest, CatalogSource_SetsTheDownloadSource)
+{
+    mockClient.callMethodResult =
+        LogosMap{{"status", "ok"}, {"result", LogosMap{{"success", true}}}};
+
+    auto cmd = createCommand("catalog", mockClient, output);
+    const std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"source", "http"}), 0);
+    });
+
+    EXPECT_EQ(mockClient.lastCallMethod, "setDownloadSource");
+    EXPECT_EQ(mockClient.lastCallArgs, LogosList{"http"});
+    EXPECT_NE(out.find("\"downloadSource\":\"http\""), std::string::npos) << out;
+}
+
+// A typo must not reach the daemon, let alone change what installs come from.
+TEST_F(CommandTest, CatalogSource_RefusesAnUnknownSourceBeforeConnecting)
+{
+    auto cmd = createCommand("catalog", mockClient, output);
+    const std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"source", "https"}), 1);
+    });
+
+    EXPECT_EQ(mockClient.connectAttempts, 0);
+    EXPECT_EQ(mockClient.rpcCalls, 0);
+    EXPECT_NE(out.find("INVALID_ARGS"), std::string::npos) << out;
+}
+
+TEST_F(CommandTest, CatalogSource_SurfacesTheDownloaderError)
+{
+    mockClient.callMethodResult = LogosMap{
+        {"status", "ok"},
+        {"result", LogosMap{{"success", false}, {"error", "cannot write config file: /x"}}}};
+
+    auto cmd = createCommand("catalog", mockClient, output);
+    const std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"source", "logos"}), 1);
+    });
+
+    EXPECT_NE(out.find("CATALOG_FAILED"), std::string::npos) << out;
+    EXPECT_NE(out.find("cannot write config file"), std::string::npos) << out;
+}
+
+// ── package search / show under a restrictive download source ───────────────
+
+namespace {
+
+LogosMap unservedRelease(const char* version)
+{
+    return LogosMap{
+        {"manifest", LogosMap{{"version", version}}},
+        {"sourceAvailable", false},
+        {"requiredSource", "logos"},
+        {"sourceUnavailableReason", "Not on Logos Storage (download source: Logos only)"}};
+}
+
+} // namespace
+
+TEST_F(CommandTest, PackageSearch_MarksAPackageNoReleaseOfWhichTheSourceCanServe)
+{
+    mockClient.callMethodResult = LogosMap{
+        {"status", "ok"},
+        {"result", LogosList::array({
+            LogosMap{
+                {"name", "storage_module"},
+                {"category", "storage"},
+                {"versions", LogosList::array({unservedRelease("2.0.0"),
+                                               unservedRelease("1.5.0")})},
+            },
+        })},
+    };
+    Output humanOutput;
+    humanOutput.setHumanMode(true);
+
+    auto cmd = createCommand("package", mockClient, humanOutput);
+    const std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"search", "storage"}), 0);
+    });
+
+    EXPECT_EQ(out.find("2.0.0"), std::string::npos) << out;
+    EXPECT_NE(out.find("not available"), std::string::npos) << out;
+    EXPECT_NE(out.find("Not on Logos Storage"), std::string::npos) << out;
+}
+
+TEST_F(CommandTest, PackageShow_ListsTheReleasesTheSourceCannotServeWithTheReason)
+{
+    mockClient.callMethodResultByMethod["getInstalledPackages"] =
+        LogosMap{{"status", "ok"}, {"result", LogosList::array()}};
+    mockClient.callMethodResultByMethod["getCatalog"] = LogosMap{
+        {"status", "ok"},
+        {"result", LogosList::array({
+            LogosMap{
+                {"name", "storage_module"},
+                {"versions", LogosList::array({
+                    LogosMap{{"manifest", LogosMap{{"version", "2.0.0"}}},
+                             {"sourceAvailable", true}},
+                    unservedRelease("1.5.0"),
+                })},
+            },
+        })},
+    };
+    Output humanOutput;
+    humanOutput.setHumanMode(true);
+
+    auto cmd = createCommand("package", mockClient, humanOutput);
+    const std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"show", "storage_module"}), 0);
+    });
+
+    EXPECT_NE(out.find("available:     2.0.0\n"), std::string::npos) << out;
+    EXPECT_NE(out.find("not available: 1.5.0 (Not on Logos Storage"), std::string::npos) << out;
+}
