@@ -43,11 +43,14 @@
     # one back as an input, and that cycle unrolled this lock to 15k nodes.
     logos-test-modules-src = { url = "github:logos-co/logos-test-modules"; flake = false; };
     nix-bundle-logos-module-install.url = "github:logos-co/nix-bundle-logos-module-install";
+    # Payloads ship their own libiconv (nix-bundle-lgx#17); drop once the installer relocks.
+    nix-bundle-lgx.url = "github:logos-co/nix-bundle-lgx/fix/ship-libiconv";
+    nix-bundle-logos-module-install.inputs.nix-bundle-lgx.follows = "nix-bundle-lgx";
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-liblogos, logos-package-manager, logos-capability-module, logos-modules-state-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules-src, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
+  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-liblogos, logos-package-manager, logos-capability-module, logos-modules-state-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules-src, nix-bundle-logos-module-install, nix-bundle-lgx, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       # Build info baked into the logosctl binary so `--version` reports the
