@@ -128,9 +128,8 @@ The CLI uses these functions from liblogos (declared in `logos_core.h`):
 | `logos_core_set_shutdown_handler(cb)` | Daemon: `core_service.shutdown` |
 | `logos_core_set_core_service_extension(cb, methods)` | Daemon: package operations |
 | `logos_core_start()` | Daemon |
+| `logos_core_take_shell_binding()`, `logos_consumer_call(...)` | Daemon: its lifecycle calls go through core_service as `logoscore` — `loadModule`/`unloadModule` (package bootstrap, package operations), `refreshModules` and `listModules` (package operations). Without a binding (no token authority) the daemon exits |
 | `logos_core_cleanup()` | Daemon |
-| `logos_core_load_module(name, …)`, `logos_core_unload_module(name, …)` | Daemon (package bootstrap), package operations |
-| `logos_core_refresh_modules()`, `logos_core_get_loaded_modules()` | package operations |
 
 ---
 
