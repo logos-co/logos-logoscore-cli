@@ -34,7 +34,7 @@ inline std::string socketError() { return "WSA error " + std::to_string(::WSAGet
 
 // Winsock refuses every call until WSAStartup has run in this process. Qt does
 // call it, but PortAllocator is also exercised by a unit test with no
-// QCoreApplication, so do not depend on that. Refcounted, so an extra pair is
+// an application event loop, so do not depend on one. Refcounted, so an extra pair is
 // harmless; deliberately never cleaned up, since the process needs sockets for
 // its whole life.
 void ensureWinsock()

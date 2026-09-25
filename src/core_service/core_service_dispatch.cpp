@@ -1,9 +1,7 @@
 // Universal dispatch for CoreServiceImpl.
-// Implements the LogosProviderObject interface using the Qt-free std overrides
-// and delegates to the universal-typed business methods.
+// C ABI provider dispatch for the in-process core service.
 
 #include "core_service_impl.h"
-#include <logos_api.h>
 
 // ---------------------------------------------------------------------------
 // Helpers: extract the value payload from StdLogosResult
@@ -14,55 +12,11 @@ static nlohmann::json stdLogosResultToJson(const StdLogosResult& r)
     return r.value;
 }
 
-// ---------------------------------------------------------------------------
-// LogosProviderObject overrides — trivial Qt delegates to std bridge
-// ---------------------------------------------------------------------------
-
-QString CoreServiceImpl::providerName() const
-{
-    return QString::fromStdString(name());
-}
-
-QString CoreServiceImpl::providerVersion() const
-{
-    return QString::fromStdString(version());
-}
-
-QVariant CoreServiceImpl::callMethod(const QString& methodName, const QVariantList& args)
-{
-    return callMethodStdBridge(methodName, args);
-}
-
-QJsonArray CoreServiceImpl::getMethods()
-{
-    return getMethodsStdBridge();
-}
-
-void CoreServiceImpl::setEventListener(EventCallback callback)
-{
-    m_eventCallback = callback;
-    setEventListenerStdBridge(callback);
-}
-
-bool CoreServiceImpl::informModuleToken(const QString& /*moduleName*/, const QString& /*token*/)
-{
-    return false;
-}
-
-void CoreServiceImpl::init(void* apiInstance)
-{
-    onInit(static_cast<LogosAPI*>(apiInstance));
-}
-
-// ---------------------------------------------------------------------------
-// Universal interface — Qt-free dispatch
-// ---------------------------------------------------------------------------
-
 nlohmann::json CoreServiceImpl::callMethodStd(const std::string& methodName,
                                                const nlohmann::json& args)
 {
   // args[i].get<std::string>() throws type_error on a non-string arg; without
-  // this catch the exception escapes the event loop and kills the daemon, so a
+  // this catch the exception escapes the provider callback and kills the daemon, so a
   // malformed RPC becomes a structured error instead of a crash.
   try {
     if (methodName == "loadModule" && args.size() >= 1)
@@ -131,17 +85,9 @@ nlohmann::json CoreServiceImpl::callMethodStd(const std::string& methodName,
   }
 }
 
-void CoreServiceImpl::setEventListenerStd(UniversalEventCallback callback)
+nlohmann::json CoreServiceImpl::getMethodsStd()
 {
-    emitEvent = [callback](const std::string& eventName, const std::string& data) {
-        if (callback)
-            callback(eventName, data);
-    };
-}
-
-std::vector<LogosMethodMetadata> CoreServiceImpl::getMethodsStd()
-{
-    std::vector<LogosMethodMetadata> methods;
+    nlohmann::json methods = nlohmann::json::array();
 
     auto mkParam = [](const std::string& name, const std::string& type) {
         nlohmann::json p;
@@ -152,11 +98,13 @@ std::vector<LogosMethodMetadata> CoreServiceImpl::getMethodsStd()
 
     auto mkMethod = [&](const std::string& name, const nlohmann::json& params,
                         const std::string& ret) {
-        LogosMethodMetadata m;
-        m.name = name;
-        m.returnType = ret;
-        m.parameters = params;
-        methods.push_back(std::move(m));
+        methods.push_back(nlohmann::json{
+            {"type", "method"},
+            {"name", name},
+            {"returnType", ret},
+            {"isInvokable", true},
+            {"parameters", params},
+        });
     };
 
     mkMethod("loadModule",

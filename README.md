@@ -5,6 +5,16 @@ application platform. It loads Logos modules — Qt plugins and Qt-free
 `universal` / `cdylib` ones alike — and lets you call their methods from the
 command line, no GUI needed.
 
+The `logoscore` and `logosctl` processes are plain C++ and do not link Qt.
+Their local RPC endpoint uses `qt_remote_plain`, a Qt-free implementation of
+the current Qt Remote Objects wire protocol. Existing modules built with
+`qt_remote` therefore continue to interoperate. Qt is loaded only by the
+separate `logos_host_qt` compatibility process when a Qt plugin is inspected
+or run; modules built with `qt_remote_plain` use `logos_host_plain` instead.
+
+The Qt-free protocol runtime also supports `tcp` and `tcp_ssl` for daemon
+listeners and client connections.
+
 This repo is one of two frontends for [logos-liblogos](https://github.com/logos-co/logos-liblogos):
 - **logos-logoscore-cli** (this repo) — headless CLI runtime for scripting, testing, and headless deployments
 - **[logos-basecamp](https://github.com/logos-co/logos-basecamp)** — the desktop GUI application shell

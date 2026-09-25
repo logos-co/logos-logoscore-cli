@@ -1,5 +1,4 @@
 #include <CLI/CLI.hpp>
-#include <QCoreApplication>
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cctype>
@@ -22,6 +21,7 @@
 #include <vector>
 
 #include "config.h"
+#include "utf8_args.h"
 #include "paths.h"
 #include "platform_compat.h"
 #include "daemon/daemon.h"
@@ -198,35 +198,6 @@ bool spawnDetached(const std::string& exePath,
 }  // namespace
 #endif  // _WIN32
 
-static void messageHandler(QtMsgType type, const QMessageLogContext &context, const QString &msg) {
-    QByteArray localMsg = msg.toLocal8Bit();
-    const char *file = context.file ? context.file : "";
-    const char *function = context.function ? context.function : "";
-
-    switch (type) {
-    case QtDebugMsg:
-        if (!g_verbose) return;
-        fprintf(stderr, "Debug: %s\n", localMsg.constData());
-        break;
-    case QtInfoMsg:
-        if (!g_verbose) return;
-        fprintf(stderr, "Info: %s\n", localMsg.constData());
-        break;
-    case QtWarningMsg:
-        if (!g_verbose) return;
-        fprintf(stderr, "Warning: %s\n", localMsg.constData());
-        break;
-    case QtCriticalMsg:
-        fprintf(stderr, "Critical: %s (%s:%d, %s)\n", localMsg.constData(), file, context.line, function);
-        break;
-    case QtFatalMsg:
-        fprintf(stderr, "Fatal: %s (%s:%d, %s)\n", localMsg.constData(), file, context.line, function);
-        fflush(stderr);
-        abort();
-    }
-    fflush(stderr);
-}
-
 // Pre-scan argv for `--config-dir` so we can apply the override (and
 // resolve the corresponding `<configDir>/config.json` path) *before*
 // CLI11 parses anything else. Returns the override path or empty if
@@ -324,6 +295,8 @@ static std::vector<std::string> normalizeGroupVerbs(int argc, char* argv[])
 
 int main(int argc, char *argv[])
 {
+    logosctl::Utf8Args utf8Args(argc, argv);
+
     // This binary is logosctl: new surface, own session directory,
     // YAML config. Set before any Config::* call.
     Config::setFlavor(Config::Flavor::Modern);
@@ -502,17 +475,13 @@ int main(int argc, char *argv[])
     app.require_subcommand(0, 1);  // 0 or 1 subcommand
 
     // ── Parse ────────────────────────────────────────────────────────────────
-    // Parse the normalized argv (group verbs collapsed). The original argc/argv
-    // are still handed to QCoreApplication below, which only cares about Qt's
-    // own switches.
+    // Parse the normalized argv (group verbs collapsed).
     std::vector<std::string> normalized = normalizeGroupVerbs(argc, argv);
     std::vector<char*> normalizedArgv;
     normalizedArgv.reserve(normalized.size());
     for (auto& a : normalized) normalizedArgv.push_back(a.data());
     const int normalizedArgc = static_cast<int>(normalizedArgv.size());
     CLI11_PARSE(app, normalizedArgc, normalizedArgv.data());
-
-    qInstallMessageHandler(messageHandler);
 
     // Apply --config-dir (if passed) before any Config::* call so the daemon,
     // client, connection_file, and any forked logos_host all see the same
@@ -549,9 +518,6 @@ int main(int argc, char *argv[])
                 else if (r == "--quiet" || r == "-q")         quiet = true;
                 else                                          extras.push_back(r);
             }
-            QCoreApplication qapp(argc, argv);
-            qapp.setApplicationName("logosctl");
-            qapp.setApplicationVersion(QString::fromStdString(logosctl_version::version()));
             Output output(jsonMode);
             if (humanMode) output.setHumanMode(true);
             RpcClient rpcClient;
@@ -807,9 +773,6 @@ int main(int argc, char *argv[])
             return 1;
         }
 
-        QCoreApplication qapp(argc, argv);
-        qapp.setApplicationName("logosctl");
-        qapp.setApplicationVersion(QString::fromStdString(logosctl_version::version()));
 
         // Plaintext-TCP guard: a `tcp` listener on a non-loopback host
         // sends tokens in cleartext. Refuse to start unless the
@@ -860,7 +823,7 @@ int main(int argc, char *argv[])
         //      `--module-transport my_module=tcp,...`), a lot of
         //      intra-daemon code paths (capability_module's
         //      requestModule → core_service handshake; the daemon's
-        //      own auto-`requestModule` flow inside LogosAPIClient;
+        //      own capability-module discovery flow;
         //      cross-module outbound `getClient(name)` calls) default
         //      to LocalSocket and have no plumbing to discover the
         //      operator's chosen TCP endpoint. Forcing a local listener
@@ -974,9 +937,6 @@ int main(int argc, char *argv[])
         if (!sub->parsed())
             continue;
 
-        QCoreApplication qapp(argc, argv);
-        qapp.setApplicationName("logosctl");
-        qapp.setApplicationVersion(QString::fromStdString(logosctl_version::version()));
 
         // Collect remaining args from the subcommand, extracting global flags
         // (global flags placed after the subcommand end up in remaining())

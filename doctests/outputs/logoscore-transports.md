@@ -15,16 +15,19 @@ supports:
 We drive everything on a single host over the loopback interface
 (`127.0.0.1`) so the doc-test is self-contained and needs no second machine,
 but the moving parts — a per-module network listener on the daemon, a
-hand-written `client/config.json` dial spec, and a copied auth token — are
+hand-written `client/config.json` dial spec, and an issued auth token — are
 exactly the ones a real remote client uses.
 
 > ⚠️ **Remote operation is under active development.** The transport flags,
 > the `client/config.json` schema, and the auth model may change between
-> releases. Local same-host use is the stable path. In particular, this
-> walkthrough authenticates the network client with the daemon's
-> **auto-emitted token** (`client/auto.json`), which is the credential the
-> daemon registers for itself at boot — operator-issued `issue-token`
-> credentials are not yet honored for `core_service` calls over the network.
+> releases. Local same-host use is the stable path.
+>
+> A network client authenticates with an **operator-issued token**
+> (`logoscore issue-token --name alice`): it is named, can carry an
+> `--expires` deadline, and can be revoked while the node keeps running. The
+> daemon's own boot token (`client/auto.json`) is accepted on the local
+> socket only, so copying it to another machine does not work, and neither
+> does a token issued `--local-only`.
 
 **What you'll learn:**
 
@@ -33,7 +36,8 @@ exactly the ones a real remote client uses.
 - Why both `core_service` and `capability_module` must be exposed, not just one
 - How the plaintext-TCP guard protects you from leaking tokens on the wire
 - How to write a `client/config.json` dial spec and point a client at it with `--config-dir`
-- How to copy the daemon's auth token into the client config directory
+- How to issue a named, expiring token for a network client
+- Why the daemon's boot token is refused over the network
 - How to drive the daemon (`status`, `load-module`, `call`, …) over TCP
 - How to switch the same setup to `tcp_ssl` with a self-signed certificate
 - How TLS peer verification fails closed when the client has no CA to trust
@@ -66,7 +70,7 @@ here `test_basic_module` from logos-test-modules.
 ### 1.1 Build the CLI
 
 ```bash
-nix build 'github:logos-co/logos-logoscore-cli/0a26e6ceebcd74a6fe1ab07c57a785dcf60b3dfe' --out-link ./logos
+nix build 'github:logos-co/logos-logoscore-cli' --out-link ./logos
 ```
 
 The build produces `logos/bin/logoscore` plus a `logos/modules/`
@@ -182,24 +186,26 @@ The directory layout the client expects:
 client-home/            ← pass this to --config-dir
 └── client/
     ├── config.json     ← the dial spec
-    └── auto.json       ← the auth token referenced by token_file
+    └── remote.json     ← the auth token referenced by token_file
 ```
 
-### 3.1 Copy the daemon's auth token
+### 3.1 Issue a token for the client
 
-At boot the daemon emits its own token to
-`client/auto.json` under its config dir. Copy that into the client's
-`client/` directory — it's the credential the client will present:
+On the daemon's host, issue a named token with an expiry. The daemon
+checks presented tokens against the hash in `daemon/tokens.json`, and
+writes the raw token to `daemon/tokens/remote.json`. Copy that file
+into the client's `client/` directory — it's the credential the
+client will present:
 
 ```bash
-mkdir -p ./client-home/client
-cp ./daemon-home/client/auto.json ./client-home/client/auto.json
-
+logoscore issue-token --name remote --expires 1h
+cp ~/.logoscore/daemon/tokens/remote.json ./client-home/client/remote.json
 ```
 
 > On a real remote host you'd `scp` this file across instead of
 > copying it locally. Treat it as a secret: anything holding it can
-> drive the daemon.
+> drive the daemon until it expires or you run
+> `logoscore revoke-token remote`.
 
 ### 3.2 Write the dial spec
 
@@ -212,7 +218,7 @@ daemon bound. Both `core_service` and `capability_module` are required:
 cat > ./client-home/client/config.json <<'JSON'
 {
     "version": 2,
-    "token_file": "auto.json",
+    "token_file": "remote.json",
     "daemon": {
         "core_service":      { "transport": "tcp", "host": "127.0.0.1", "port": 6000 },
         "capability_module": { "transport": "tcp", "host": "127.0.0.1", "port": 6001 }
@@ -247,7 +253,18 @@ logoscore --config-dir ./client-home load-module test_basic_module
 logoscore --config-dir ./client-home call test_basic_module addInts 2 3
 ```
 
-### 3.5 Stop the daemon
+### 3.5 The boot token stays on this host
+
+Present the daemon's boot token over the same connection instead
+(`$LOGOSCORE_TOKEN` overrides the token file). The daemon refuses it
+over TCP, and the client says so rather than reporting the daemon
+down (the `|| true` lets the doc-test assert on the failure):
+
+```bash
+LOGOSCORE_TOKEN=<boot token> logoscore --config-dir ./client-home status
+```
+
+### 3.6 Stop the daemon
 
 Shut the TCP daemon down before moving on to the TLS variant:
 
@@ -311,15 +328,16 @@ sleep 4
 
 The client config is the same shape as before, but `transport` becomes
 `tcp_ssl` and each module entry gains `ca` (the certificate to trust)
-and `verify_peer: true`:
+and `verify_peer: true`. The TLS daemon issues its own token:
 
 ```bash
+./logos/bin/logoscore --config-dir ./tls-daemon-home issue-token --name remote --expires 1h
 mkdir -p ./tls-client-home/client
-cp ./tls-daemon-home/client/auto.json ./tls-client-home/client/auto.json
+cp ./tls-daemon-home/daemon/tokens/remote.json ./tls-client-home/client/remote.json
 cat > ./tls-client-home/client/config.json <<JSON
 {
     "version": 2,
-    "token_file": "auto.json",
+    "token_file": "remote.json",
     "daemon": {
         "core_service":      { "transport": "tcp_ssl", "host": "127.0.0.1", "port": 6443, "ca": "$PWD/tls/ca.pem", "verify_peer": true },
         "capability_module": { "transport": "tcp_ssl", "host": "127.0.0.1", "port": 6444, "ca": "$PWD/tls/ca.pem", "verify_peer": true }

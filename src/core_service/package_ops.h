@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-class LogosAPI;
+namespace logosctl { class PlainRpcContext; }
 
 // Daemon-side orchestration for the mutating package operations.
 //
@@ -46,7 +46,7 @@ struct Options {
 // `action` is one of install | installed | reinstall | upgrade, the same
 // classification basecamp's confirmation dialog shows. `affected_loaded` is
 // the set of currently-loaded modules the operation will stop and restart.
-LogosMap plan(LogosAPI* api, Op op,
+LogosMap plan(logosctl::PlainRpcContext* api, Op op,
               const std::vector<std::string>& names,
               const Options& opts);
 
@@ -57,7 +57,7 @@ LogosMap plan(LogosAPI* api, Op op,
 // Newly installed packages are deliberately NOT loaded — installing puts
 // files on disk, loading is a separate explicit act. Only modules that were
 // already running before the operation are restarted afterwards.
-LogosMap apply(LogosAPI* api, Op op,
+LogosMap apply(logosctl::PlainRpcContext* api, Op op,
                const std::vector<std::string>& names,
                const Options& opts);
 
@@ -76,7 +76,7 @@ LogosMap apply(LogosAPI* api, Op op,
 // than silently writing somewhere else.
 //
 // Shape: { status, result: { name, version, path, repository, ... } }
-LogosMap download(LogosAPI* api, const std::string& name,
+LogosMap download(logosctl::PlainRpcContext* api, const std::string& name,
                   const Options& opts, const std::string& destDir);
 
 } // namespace package_ops

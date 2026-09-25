@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "test_platform.h"
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -6,7 +7,6 @@
 #include <optional>
 #include <sstream>
 #include <string>
-#include <unistd.h>
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "client/client_state.h"
@@ -24,29 +24,29 @@ protected:
     std::string testDir;
 
     void SetUp() override {
-        testDir = (fs::temp_directory_path() / ("logosctl_test_state_" + std::to_string(getpid()))).string();
+        testDir = (fs::temp_directory_path() / ("logosctl_test_state_" + std::to_string(logosctl_test::currentPid()))).string();
         fs::create_directories(testDir + "/.logosctl");
 
         // Cover all three layers Config::configDir() consults so the
         // tests can never escape into the user's real ~/.logosctl.
-        const char* home = std::getenv("HOME");
+        const char* home = std::getenv(logosctl_test::homeVar());
         origHome = home ? home : "";
-        setenv("HOME", testDir.c_str(), 1);
+        logosctl_test::setEnv(logosctl_test::homeVar(), testDir);
 
         const char* cd = std::getenv("LOGOSCTL_CONFIG_DIR");
         origConfigDirSet = cd != nullptr;
         origConfigDir = origConfigDirSet ? cd : "";
-        unsetenv("LOGOSCTL_CONFIG_DIR");
+        logosctl_test::unsetEnv("LOGOSCTL_CONFIG_DIR");
 
         Config::setConfigDir("");
     }
 
     void TearDown() override {
-        setenv("HOME", origHome.c_str(), 1);
+        logosctl_test::setEnv(logosctl_test::homeVar(), origHome);
         if (origConfigDirSet)
-            setenv("LOGOSCTL_CONFIG_DIR", origConfigDir.c_str(), 1);
+            logosctl_test::setEnv("LOGOSCTL_CONFIG_DIR", origConfigDir);
         else
-            unsetenv("LOGOSCTL_CONFIG_DIR");
+            logosctl_test::unsetEnv("LOGOSCTL_CONFIG_DIR");
         Config::setConfigDir("");
         std::error_code ec;
         fs::remove_all(testDir, ec);
@@ -60,7 +60,7 @@ DaemonRuntimeState minimalState(const std::string& instanceId,
 {
     DaemonRuntimeState s;
     s.instanceId  = instanceId;
-    s.pid         = getpid();
+    s.pid         = logosctl_test::currentPid();
     s.startedAt   = currentUtcIso8601();
     s.resolved.modulesDirs = dirs;
     return s;
@@ -120,7 +120,7 @@ TEST_F(DaemonStateTest, RuntimeState_RoundTripsResolvedFields)
     EXPECT_TRUE(got.fileOk);
     EXPECT_EQ(got.schemaVersion, kDaemonRuntimeStateSchemaVersion);
     EXPECT_EQ(got.instanceId, "inst123");
-    EXPECT_EQ(got.pid, getpid());
+    EXPECT_EQ(got.pid, logosctl_test::currentPid());
     EXPECT_EQ(got.configSource, "cli");
     EXPECT_EQ(got.resolved.modulesDirs.size(), 2u);
     EXPECT_EQ(got.resolved.modulesDirs[0], "/path/a");
@@ -517,6 +517,9 @@ TEST_F(DaemonStateTest, ClientArtifacts_NeverClobbersOperatorRemoteConfig)
     EXPECT_EQ(body.find("inst-Z"), std::string::npos);
 }
 
+#ifndef _WIN32
+// POSIX mode bits and groups. On Windows the files take their directory's ACL;
+// chmodPosix documents that loss.
 TEST_F(DaemonStateTest, ClientArtifacts_OwnerOnlyByDefault)
 {
     ASSERT_TRUE(writeArtifacts("inst-A"));
@@ -544,6 +547,7 @@ TEST_F(DaemonStateTest, ClientArtifacts_GroupReadableWithAccessGroup)
     EXPECT_EQ(tokSt.st_mode & 07777, 0640u);
     EXPECT_EQ(tokSt.st_gid, ::getegid());
 }
+#endif
 
 // ── tcp_ssl cert/key ─────────────────────────────────────────────────────────
 //

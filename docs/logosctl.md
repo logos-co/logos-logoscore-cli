@@ -15,6 +15,11 @@ Build instructions, flake outputs and test targets are in the
 binary; the package commands need a **portable** build, because that is what
 the public catalog ships.
 
+`logosctl` itself is Qt-free. Local RPC uses `qt_remote_plain`, which speaks
+the same wire protocol as current modules built with `qt_remote`; those modules
+run unchanged in the separate `logos_host_qt` compatibility process. The
+Qt-free runtime also supports `tcp` and `tcp_ssl` listeners and clients.
+
 ## Usage
 
 `logosctl` runs as a **daemon** (long-running process) that you drive with **client commands** to load modules and call methods.
@@ -164,118 +169,48 @@ got a string.` rather than being ignored, half-applied, or fatal.
 
 ```yaml
 # node.yaml
-insecure_tcp: false
-dirs:                        # optional; each defaults to <session>/<name>
+dirs:
   keyring: ~/.config/logos/trusted-keys
-access_group: logos          # share the daemon with an OS group (see below)
-signature_policy: warn       # none | warn | require
-modules_dirs:                # extra read-only module directories to scan
+  cache: /var/cache/logos
+access_group: logos
+signature_policy: warn
+modules_dirs:
   - /opt/logos/modules
-ssl:                         # default TLS material for every tcp_ssl listener
-  cert: /etc/logos/tls/server.pem
-  key:  /etc/logos/tls/server.key
-modules:
-  core_service:
-    - protocol: tcp_ssl
-      host: 0.0.0.0
-      port: 8645
-      codec: json            # json | cbor
-  capability_module:
-    - protocol: tcp_ssl
-      host: 0.0.0.0
-      port: 8646
-      cert: /etc/logos/tls/other.pem   # overrides the ssl: block for this one
-      key:  /etc/logos/tls/other.key
 ```
 
-Per-listener keys are `protocol`, `host`, `port`, `codec`, `cert`, `key`,
-`ca_file` and `verify_peer`. **`cert`, `key` and `ca_file` are opened as
-written** — unlike `dirs:`, a relative one resolves against the daemon
-process's working directory, not the session, so the same config started from
-a different directory silently fails its TLS handshake
-(`use_certificate_chain_file: No such file or directory`). Give them absolute
-paths.
+The Qt-free runtime accepts local `qt_remote_plain`, `tcp`, and `tcp_ssl`
+listeners. The daemon writes the local client dial spec and token into the
+session on every boot; remote clients can configure the advertised network
+endpoints separately.
 
-The top-level `ssl: { cert, key, ca }` block is the **default** for every
-`tcp_ssl` listener in the document — the usual case, where one certificate
-covers the whole node. A listener that names its own `cert:`/`key:`/`ca_file:`
-keeps it; the merge is per field, so a listener that names only a `cert:` still
-inherits the block's `key:`. A `tcp_ssl` listener left with no certificate from
-either source is refused at startup rather than bound: it would accept
-connections and fail every handshake with `no shared cipher`, which reads like
-a client fault.
+#### Reaching a daemon over tcp or tls
 
-`signature_policy:` is handed to the session's package manager at daemon start
-and decides what `logosctl package install` does with an unsigned package or
-one signed by a key that is not in the session's `keyring/`: `none` skips the
-check, `warn` (the default when the key is absent) installs and prints a
-warning, `require` refuses the install. It takes effect on the next daemon
-start, like everything else in this file.
-
-If the value cannot be delivered to the package manager at startup — the module
-did not load, or its object could not be acquired — the daemon unloads the
-package manager rather than leave it enforcing its own `warn` default while
-this file, `logosctl config get` and `state.json` all still say `require`.
-Package commands are unavailable for that session, and the reason is on stderr.
-A failure to set the *directories* is not treated the same way: every directory
-fails closed on its own (an install refuses with `User modules directory is not
-set`), so that case warns and leaves the manager up.
-
-A `local` listener is always added to every module, so same-host clients and the
-daemon's own cross-module calls keep working whatever else you configure. Any
-`tcp`/`tcp_ssl` entries are additional, outward-facing listeners.
-
-**Remote clients need `capability_module` exposed too, not just `core_service`.**
-Before its first RPC a client performs a `requestModule` handshake against
-`capability_module`. On the same host that rides the free local listener; from
-another host it has to reach `capability_module` over the network. Exposing only
-`core_service` is the single most common remote-setup mistake — client commands
-hang at connect time because the handshake never completes.
-
-Plaintext `tcp` on a non-loopback host puts tokens on the wire in cleartext. The
-daemon refuses to bind that unless `insecure_tcp: true` is set. Prefer
-`tcp_ssl`, or a TLS terminator in front.
-
-The client side is symmetric:
+The boot token the daemon writes to `client/auto.json` is accepted over the
+local socket only, so copying it to another machine no longer works: the
+daemon refuses it over `tcp` and `tcp_ssl`, and the client says so with
+`UNAUTHORIZED`. Issue a named token for each remote client instead, with an
+expiry, on the daemon's host:
 
 ```bash
-logosctl client config set ./client.yaml
-logosctl client config show
+logosctl token issue --name laptop --expires 30d --json   # prints the raw token once
 ```
+
+On the client, `client/config.yaml` names the network listener (its port is in
+the daemon's `daemon/state.json`) and the file holding that token:
 
 ```yaml
-# client.yaml — only needed to reach a daemon on another host
 version: 2
-token_file: alice.json       # a bare filename, read from <session>/client/
+token_file: laptop.json          # client/laptop.json: {"token": "<raw token>"}
 daemon:
-  core_service:      { transport: tcp_ssl, host: node.example, port: 8645, ca: /etc/logos/tls/ca.pem, verify_peer: true }
-  capability_module: { transport: tcp_ssl, host: node.example, port: 8646, ca: /etc/logos/tls/ca.pem, verify_peer: true }
+  core_service:
+    transport: tcp_ssl           # or tcp
+    host: node.example.org
+    port: 6443
+    ca: /path/to/ca.pem          # tcp_ssl only
 ```
 
-The accepted top-level keys are exactly `version`, `daemon`, `token_file` and
-`instance_id`. `token_file` must be a plain filename — anything containing a
-separator or `..` is refused and the client fails closed with "token file not
-found". `ca` is opened as written, so give it an absolute path for the same
-reason `cert`/`key` need one on the daemon side.
-
-The two documents describe different ends of the same connection, and their key
-names were never unified. Per listener:
-
-| | Daemon (`modules:`) | Client (`daemon:`) |
-|---|---|---|
-| which protocol | `protocol:` | `transport:` |
-| where | `host:`, `port:`, `codec:` | `host:`, `port:`, `codec:` |
-| CA to trust | `ca_file:` | `ca:` |
-| verify the peer | `verify_peer:` | `verify_peer:` |
-| own certificate | `cert:`, `key:` | — (no client counterpart) |
-
-So `ca` is the *client's* spelling of the daemon's `ca_file`, and `cert`/`key`
-are the daemon's server certificate — a client config has no equivalent. The
-validator names the key it expected, so a mix-up fails at `config set` rather
-than at connect time.
-
-For same-host use you do not need this at all: the daemon writes a working
-`client/config.yaml` and `client/auto.json` into the session on every boot.
+`$LOGOSCTL_TOKEN` overrides the token file. `logosctl token revoke laptop`
+withdraws it at once; the expiry bounds a token nobody revoked.
 
 > The two documents are kept separate on purpose: the daemon never reads
 > `client/`, and the client never reads `daemon/`. Only the files above are
@@ -294,10 +229,6 @@ logosctl daemon stop                 # graceful shutdown
 logosctl daemon status               # health, uptime, module summary
 logosctl daemon config set FILE      # install/replace the daemon config
 logosctl daemon config show          # print it, and where it lives
-
-# Client dial settings (only needed to reach a daemon on another host)
-logosctl client config set FILE
-logosctl client config show
 
 # Modules — what is running right now
 logosctl module ls [--loaded]        # list known / loaded modules

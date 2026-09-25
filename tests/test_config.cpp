@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "test_platform.h"
 #include <cstdlib>
 #include <filesystem>
 #include <string>
@@ -6,9 +7,7 @@
 
 static std::string getTempDir()
 {
-    const char* tmp = std::getenv("TMPDIR");
-    if (!tmp || !*tmp) tmp = "/tmp";
-    return std::string(tmp);
+    return std::filesystem::temp_directory_path().string();
 }
 
 class ConfigTest : public ::testing::Test {
@@ -21,21 +20,21 @@ protected:
         // Legacy so that anything which forgets to set it behaves like the
         // tool that exists today, so say which one we mean.
         Config::setFlavor(Config::Flavor::Modern);
-        testDir = getTempDir() + "/logosctl_test_config_" + std::to_string(getpid());
+        testDir = getTempDir() + "/logosctl_test_config_" + std::to_string(logosctl_test::currentPid());
         std::filesystem::create_directories(testDir + "/.logosctl");
 
-        const char* h = std::getenv("HOME");
+        const char* h = std::getenv(logosctl_test::homeVar());
         origHome = h ? std::string(h) : "";
-        setenv("HOME", testDir.c_str(), 1);
+        logosctl_test::setEnv(logosctl_test::homeVar(), testDir);
 
-        unsetenv("LOGOSCTL_TOKEN");
-        unsetenv("LOGOSCTL_CONFIG_DIR");
+        logosctl_test::unsetEnv("LOGOSCTL_TOKEN");
+        logosctl_test::unsetEnv("LOGOSCTL_CONFIG_DIR");
         Config::setConfigDir("");
     }
 
     void TearDown() override {
-        setenv("HOME", origHome.c_str(), 1);
-        unsetenv("LOGOSCTL_CONFIG_DIR");
+        logosctl_test::setEnv(logosctl_test::homeVar(), origHome);
+        logosctl_test::unsetEnv("LOGOSCTL_CONFIG_DIR");
         Config::setConfigDir("");
         std::filesystem::remove_all(testDir);
     }
@@ -55,7 +54,7 @@ TEST_F(ConfigTest, ConfigDir_ReturnsHomeLogosctl)
 
 TEST_F(ConfigTest, GetToken_EnvVarReturned)
 {
-    setenv("LOGOSCTL_TOKEN", "env-token", 1);
+    logosctl_test::setEnv("LOGOSCTL_TOKEN", "env-token");
     EXPECT_EQ(Config::getToken(), "env-token");
 }
 
@@ -124,7 +123,7 @@ TEST_F(ConfigTest, ConfigDir_EnvVarOverridesHome)
 {
     const std::string alt = testDir + "/alt-config";
     std::filesystem::create_directories(alt);
-    setenv("LOGOSCTL_CONFIG_DIR", alt.c_str(), 1);
+    logosctl_test::setEnv("LOGOSCTL_CONFIG_DIR", alt);
 
     EXPECT_EQ(Config::configDir(), alt);
     EXPECT_EQ(Config::daemonConfigPath().substr(0, alt.size()), alt);
@@ -138,7 +137,7 @@ TEST_F(ConfigTest, ConfigDir_SetterOverridesEnvVar)
     std::filesystem::create_directories(envDir);
     std::filesystem::create_directories(setterDir);
 
-    setenv("LOGOSCTL_CONFIG_DIR", envDir.c_str(), 1);
+    logosctl_test::setEnv("LOGOSCTL_CONFIG_DIR", envDir);
     Config::setConfigDir(setterDir);
 
     EXPECT_EQ(Config::configDir(), setterDir)
@@ -152,7 +151,7 @@ TEST_F(ConfigTest, ConfigDir_ClearingSetterFallsBackToEnv)
     std::filesystem::create_directories(envDir);
     std::filesystem::create_directories(setterDir);
 
-    setenv("LOGOSCTL_CONFIG_DIR", envDir.c_str(), 1);
+    logosctl_test::setEnv("LOGOSCTL_CONFIG_DIR", envDir);
     Config::setConfigDir(setterDir);
     ASSERT_EQ(Config::configDir(), setterDir);
 
@@ -224,7 +223,7 @@ TEST_F(ConfigTest, SessionDirOverrideResolvesByForm)
 
     // `~` is natural to write in a config file and would otherwise be taken
     // as a relative path, producing <configDir>/~/... which exists nowhere.
-    if (const char* home = std::getenv("HOME")) {
+    if (const char* home = std::getenv(logosctl_test::homeVar())) {
         Config::setSessionDirOverride(Config::SessionDir::Cache, "~/lgx-cache");
         EXPECT_EQ(Config::cacheDir(), std::string(home) + "/lgx-cache");
     }

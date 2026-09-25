@@ -26,7 +26,7 @@ The CLI follows a daemon + client architecture. A long-running daemon process ho
                     │  │ (in-process module)│  │
                     │  └─────────▲──────────┘  │
                     │            │             │
-                    │     Qt Remote Objects    │
+                    │ qt_remote_plain RPC wire │
                     │            │             │
                     └────────────┼─────────────┘
                                │
@@ -41,7 +41,7 @@ The CLI follows a daemon + client architecture. A long-running daemon process ho
 ```
 
 **Daemon** (`logosctl daemon start`):
-- Starts the Logos Core runtime and Qt event loop.
+- Starts the Logos Core runtime and the plain RPC workers.
 - Discovers modules in configured directories.
 - Writes `~/.logosctl/daemon/state.json` (live runtime state — instance_id, pid, started_at, resolved transports) on startup, removed on clean shutdown.
 - Maintains `~/.logosctl/daemon/tokens.json` (hashed-at-rest accepted-token list — survives restarts).
@@ -74,85 +74,18 @@ logosctl [global-flags] <command> [command-flags] [args...]
 | `--help` | `-h` | Show help. |
 | `--version` | | Show version. |
 
-#### Daemon-side transport flags
+#### Transport
 
-The daemon defaults to a local Unix socket only for each well-known module
-(`core_service`, `capability_module`). To expose either over the network,
-pass one or more `--module-transport` flags; each opens an additional
-listener that gets advertised in `daemon/state.json`'s `resolved` block.
+The daemon and client use local `qt_remote_plain`. This Qt-free transport is
+wire-compatible with `qt_remote` in current Qt modules. Those modules remain
+inside `logos_host_qt`; the CLI process does not load Qt.
 
-**Local is always present.** Every module the operator configures (and
-the two well-known ones) implicitly gets a LocalSocket listener
-prepended to its resolved transport set, in addition to whatever the
-operator named via `--module-transport`. The operator's TCP / TCP+SSL
-flags add *additional* outside-facing surfaces; they don't replace the
-same-host LocalSocket. This keeps the same-host code paths (the
-parent's capability_module handshake, the SDK's auto-`requestModule`
-flow inside `LogosAPIClient`, cross-module `getClient(name)` calls)
-working over LocalSocket regardless of which network transport the
-operator chose. `daemon/state.json`'s `resolved.modules.<name>.transports[]`
-always lists the LocalSocket entry first, followed by operator-named
-entries in the order they were typed.
+The same Qt-free C ABI also supports `tcp` and `tcp_ssl` listeners and
+clients. The daemon emits the local client dial spec by default; remote
+clients can configure a network endpoint and TLS verification separately.
 
-| Flag | Applies to | Description |
-|------|------------|-------------|
-| `--module-transport NAME=PROTOCOL[,k=v...]` | daemon | Repeatable. `NAME` is any module the daemon will load (well-known or user-configured). `PROTOCOL` is `local`, `tcp`, or `tcp_ssl`. Each occurrence adds one listener to the named module. If the flag is omitted entirely, every well-known module gets a single `local` listener; if it's passed without a `local` entry for `NAME`, a `local` listener is added implicitly so same-host callers always work. |
-| `--insecure-tcp` | daemon | Allow `tcp` (plaintext) listeners on a non-loopback host. Without this flag, the daemon refuses to bind such a listener because tokens travel in cleartext. |
-
-The `k=v` pairs after the protocol configure the listener:
-
-| Key | Used by | Description |
-|-----|---------|-------------|
-| `host` | tcp, tcp_ssl | Bind address. Defaults to `127.0.0.1` for `tcp`. |
-| `port` | tcp, tcp_ssl | Port (`0` = auto-assign). |
-| `codec` | tcp, tcp_ssl | Wire codec: `json` (default, debuggable) or `cbor` (compact). |
-| `cert` | tcp_ssl | Server cert PEM file. |
-| `key` | tcp_ssl | Server private key PEM file. |
-| `ca` | tcp_ssl | CA cert PEM file. |
-| `verify_peer` | tcp_ssl | `true` / `false` — require client cert verification. |
-
-Each well-known module needs its own listener so the host-side client
-can dial each. Examples:
-
-```
-# TCP — plaintext, good for localhost or trusted networks. Local
-# listeners are added implicitly; just name the TCP one for each
-# module that needs an outside-facing surface.
---module-transport core_service=tcp,host=127.0.0.1,port=6000
---module-transport capability_module=tcp,host=127.0.0.1,port=6001
-
-# TCP + TLS — wire-encrypted; cert + key required, CA optional. Local
-# listeners are still added implicitly.
---module-transport "core_service=tcp_ssl,host=0.0.0.0,port=6443,cert=/p/c.pem,key=/p/k.pem,ca=/p/ca.pem"
---module-transport "capability_module=tcp_ssl,host=0.0.0.0,port=6444,cert=/p/c.pem,key=/p/k.pem,ca=/p/ca.pem"
-
-# Per-module: applies to user modules too. The operator's TCP listener
-# is the additional outside-facing surface; same-host callers still
-# reach `my_module` over LocalSocket without extra configuration.
---module-transport my_module=tcp,host=127.0.0.1,port=6010
-```
-
-#### Client-side dial spec
-
-Client commands never read daemon-only files (`daemon/config.json`,
-`daemon/tokens.json`). They read `<configDir>/client/config.json`,
-which holds the dial spec (`endpoint`, `host`, `port`, `codec`,
-`cert`/`key`/`ca`/`verify_peer` for TLS) and a `token_file` pointing
-at the raw-token file alongside. (`status` consults
-`daemon/state.json` for a fast same-host liveness check via
-`kill(pid, 0)`, but never opens daemon-only secrets.)
-
-The daemon auto-emits `client/config.json` + `client/auto.json` for the
-local same-host case on the first boot into an empty config dir — local
-clients work out of the box with no manual setup. Subsequent boots leave
-an existing `client/config.json` alone (so an operator-written
-remote-client config isn't clobbered). For remote clients
-(port-forwarded containers, NAT, SSH tunnels) hand-write
-`client/config.json` with the right host:port for each module and
-reference a `token_file` whose contents was copied from a
-`daemon/tokens/<name>.json` on the daemon host.
-
----
+The daemon emits the local client dial spec and boot token automatically.
+Client commands need no manual transport setup.
 
 ## Commands
 
@@ -345,18 +278,18 @@ existing token with the same name so a stale credential isn't silently
 invalidated; pass `--replace` to rotate.
 
 `--expires <dur>` sets a TTL after which the daemon rejects the token (e.g.
-`30d`, `12h`). `--local-only` marks the token as valid only over LocalSocket,
-so even a compromised TCP listener can't replay it.
+`30d`, `12h`). `--local-only` marks the token as valid only over the local
+transport.
 
-After copying `daemon/tokens/<name>.json` to the client host (typically into
-the client's `<configDir>/client/`), the operator may delete the daemon-side
+After copying `daemon/tokens/<name>.json` to another local client session, the
+operator may delete the daemon-side
 raw file — the daemon validates against the in-memory map seeded from
 `tokens.json["tokens"]`'s hashes, not the raw file. Distribute the raw file
 the way you'd distribute a private key; do not commit it to version control.
 
 This command operates directly on the config dir on disk; it doesn't need the
-daemon to be running. Operator-issued tokens take effect on the next daemon
-restart (SIGHUP-driven reload is a follow-up).
+daemon to be running. The provider validates the persisted store on demand, so
+issue, revoke, and expiry take effect immediately.
 
 ### `revoke-token <name>`
 
@@ -412,10 +345,10 @@ The CLI needs a token to authenticate with the daemon's `core_service`. This tok
    → `core_service` validates the token's hash against tokens.json["tokens"]
    → Request authorized, module loads
 
-3. REMOTE / PROGRAMMATIC ACCESS
+3. EXPLICIT / PROGRAMMATIC TOKEN
    LOGOSCTL_TOKEN=<token> logosctl module load waku
    → Token from env var overrides the one in client/config.json's token_file
-   → Useful when client/ isn't writable (remote, containers, CI)
+   → Useful when client/ is read-only or in CI
 ```
 
 ### Token Resolution Order
@@ -429,7 +362,7 @@ When a client command runs, the token is resolved in this order (first match win
 
 A named token issued by `logosctl token issue --name alice` produces
 `<configDir>/daemon/tokens/alice.json` on the daemon host. To use it as a
-client on a different machine, copy the file into the client host's
+separate same-host client session, copy the file into that session's
 `<configDir>/client/` and reference it via `token_file` in `client/config.json`.
 Once copied, the operator may delete the daemon-side raw file — validation
 keeps working because the hash is what the daemon checks.
@@ -437,13 +370,12 @@ keeps working because the hash is what the daemon checks.
 ### Obtaining a Token
 
 **Local usage (same machine):** No manual token management needed. At boot
-the daemon auto-issues an `auto` token (with `local_only=true`, so it can't
-be used over TCP), writes the hash into `daemon/tokens.json["tokens"]`, and
+the daemon auto-issues an `auto` token with `local_only=true`, writes the hash
+into `daemon/tokens.json["tokens"]`, and
 emits the raw value into `client/auto.json` alongside a local-default
 `client/config.json`. Local client commands just work.
 
-**Remote or programmatic usage:** Issue a named token on the daemon host and
-move it to the client host:
+**Explicit or programmatic usage:** Issue a named token and install it in another local client session:
 
 ```bash
 # On the machine running the daemon:
@@ -451,13 +383,13 @@ logosctl token issue --name alice
 cat ~/.logosctl/daemon/tokens/alice.json
 # Output: 550e8400-e29b-41d4-a716-446655440000
 
-# On the remote machine or in a script:
+# In another local session or script:
 export LOGOSCTL_TOKEN=550e8400-e29b-41d4-a716-446655440000
 logosctl module ls --json
 
 # Or persist by copying the file alongside a hand-written client/config.json:
 mkdir -p ~/.logosctl/client
-scp daemon-host:~/.logosctl/daemon/tokens/alice.json ~/.logosctl/client/alice.json
+cp ~/.logosctl/daemon/tokens/alice.json /path/to/session/client/alice.json
 # then edit ~/.logosctl/client/config.json so token_file = "alice.json"
 ```
 
@@ -493,17 +425,12 @@ The daemon dir splits by lifetime into three files:
     "modules": {
       "core_service": {
         "transports": [
-          { "protocol": "local" },
-          { "protocol": "tcp",     "host": "0.0.0.0", "port": 6000, "codec": "json" },
-          { "protocol": "tcp_ssl", "host": "0.0.0.0", "port": 6443,
-            "codec": "cbor", "ca_file": "/etc/logosctl/ca.pem",
-            "verify_peer": true }
+          { "protocol": "local" }
         ]
       },
       "capability_module": {
         "transports": [
-          { "protocol": "local" },
-          { "protocol": "tcp", "host": "127.0.0.1", "port": 6001, "codec": "json" }
+          { "protocol": "local" }
         ]
       }
     },
@@ -904,10 +831,9 @@ serialised as:
 {"success": <bool>, "value": <any>, "error": <any>}
 ```
 
-`value` is whatever the method stuffed in on success; `error` is whatever it
-stuffed in on failure; the unused side is `null`. Same shape regardless of
-whether the daemon-module hop went over the local socket (QRO), TCP, or
-TCP+SSL — pick the transport you like, assertions stay identical.
+`value` is whatever the method stored on success; `error` is whatever it
+stored on failure; the unused side is `null`. The Qt-free client preserves the
+same shape used by current Qt modules.
 
 ```
 $ logosctl call account create_account --json
@@ -1089,13 +1015,10 @@ $ logosctl module ls --json
 Both are exit 2, and both are immediate.
 
 Cases that deliberately fall through to a normal dial rather than being
-refused: a `tcp` / `tcp_ssl` dial (no local socket to look for, and no local
-pid either), a dial spec with no `instance_id`, a `daemon/state.json` whose
+refused include a dial spec with no `instance_id`, a `daemon/state.json` whose
 `instance_id` does not match the client's, and a socket that accepts the
-connection. The `instance_id` ones are what keep a *remote* client working when
-a co-resident daemon has left its own state file behind — that pid says nothing
-about the daemon at the far end of a TCP connection, and a remote dial spec
-carries no `instance_id`, so it never matches.
+connection. The preflight rejects only evidence that proves this local endpoint
+is absent.
 
 `status` asks the same question and answers it as a status report instead of an
 error — `{"daemon":{"status":"not_running","reason":"stale state file: pid
@@ -1405,7 +1328,6 @@ kill $WATCH_PID
    → Exits
 
    Alternatively: Ctrl+C / kill <pid> / SIGTERM
-   → Signal handler triggers QCoreApplication::quit()
+   → Signal handler wakes the daemon's shutdown condition variable
    → Same cleanup as above
 ```
-

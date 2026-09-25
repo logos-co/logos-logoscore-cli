@@ -4,12 +4,6 @@ project(LogosctlCLI LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Find Qt packages
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core RemoteObjects)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core RemoteObjects)
-
-set(CMAKE_AUTOMOC ON)
-
 # Set output directories
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
@@ -75,40 +69,19 @@ else()
     )
 endif()
 
-# ── SDK stack (imported targets) ──────────────────────────────────────────────
-# logos-qt-host (from logos-plugin-qt) is the Qt HOST RUNTIME: LogosAPI,
-# LogosAPIProvider and the LogosProviderObject base the in-process core
-# service derives. It chains logos-protocol (transports, bridge helpers,
-# logos::transportSetToJsonString). The Qt-free logos-cpp-sdk is header-only.
-#
-# This used to be logos-qt-sdk::logos_qt_sdk. The host runtime moved out of
-# logos-qt-sdk into logos-plugin-qt; nothing else logos-qt-sdk ships (the Qt
-# consumer emitter, the LpBridge headers, LogosUiPluginContext) is used here,
-# so logos-qt-sdk is not a dependency of this repo at all any more.
+# ── Plain protocol runtime ────────────────────────────────────────────────────
 if(NOT DEFINED LOGOS_PROTOCOL_ROOT AND DEFINED ENV{LOGOS_PROTOCOL_ROOT})
     set(LOGOS_PROTOCOL_ROOT "$ENV{LOGOS_PROTOCOL_ROOT}")
 endif()
-if(NOT DEFINED LOGOS_QT_HOST_ROOT AND DEFINED ENV{LOGOS_QT_HOST_ROOT})
-    set(LOGOS_QT_HOST_ROOT "$ENV{LOGOS_QT_HOST_ROOT}")
-endif()
-# Fail loudly rather than letting find_package fall through to a system
-# prefix (or, worse, silently skipping a target-guarded block later on).
-if(NOT DEFINED LOGOS_QT_HOST_ROOT OR LOGOS_QT_HOST_ROOT STREQUAL "")
+if(NOT DEFINED LOGOS_PROTOCOL_ROOT OR LOGOS_PROTOCOL_ROOT STREQUAL "")
     message(FATAL_ERROR
-        "LOGOS_QT_HOST_ROOT is not set. Pass -DLOGOS_QT_HOST_ROOT=<path to the "
-        "logos-qt-host prefix from logos-plugin-qt>, or set it in the environment.")
+        "LOGOS_PROTOCOL_ROOT is not set. Pass -DLOGOS_PROTOCOL_ROOT=<path>.")
 endif()
 find_package(logos-protocol REQUIRED
     PATHS "${LOGOS_PROTOCOL_ROOT}/lib/cmake/logos-protocol" NO_DEFAULT_PATH)
-find_package(logos-qt-host REQUIRED
-    PATHS "${LOGOS_QT_HOST_ROOT}/lib/cmake/logos-qt-host" NO_DEFAULT_PATH)
-if(NOT TARGET logos-qt-host::logos_qt_host_shared)
+if(NOT TARGET logos-protocol::logos_protocol_plain_shared)
     message(FATAL_ERROR
-        "find_package(logos-qt-host) succeeded but did not define "
-        "logos-qt-host::logos_qt_host_shared — refusing to build a logoscore "
-        "without it. That target arrives with logos-plugin-qt#22; building "
-        "against an older Qt host runtime would silently fall back to the "
-        "static archive and give this image its own TokenManager.")
+        "The selected logos-protocol does not provide the shared plain runtime.")
 endif()
 
 # ── nlohmann_json (header-only) ───────────────────────────────────────────────
@@ -164,6 +137,7 @@ endif()
 set(SHARED_SOURCES
     src/config.cpp
     src/paths.cpp
+    src/plain_rpc.cpp
     src/yaml_json.cpp
 
     # Daemon path
@@ -221,46 +195,20 @@ target_link_libraries(${_tgt} PRIVATE
     fmt::fmt
     yaml-cpp::yaml-cpp
     spdlog::spdlog
-    Qt${QT_VERSION_MAJOR}::Core
-    Qt${QT_VERSION_MAJOR}::RemoteObjects
+    logos-protocol::logos_protocol_plain_shared
 )
-
-# Link the Qt host runtime (provides LogosAPI, LogosAPIProvider,
-# LogosProviderObject). It PUBLIC-links logos-protocol, which is where the
-# bridge helpers and logos::transportSetToJsonString come from. Both
-# front-ends need it: the shared core_service is what derives from
-# LogosProviderObject.
-target_link_libraries(${_tgt} PRIVATE logos-qt-host::logos_qt_host_shared)
-
-# The SHARED Qt host runtime, not the static archive.
-#
-# This binary used to empty the static archives and take the runtime from
-# liblogos_core, which had absorbed both of them (cmake/LogosSharedFromDll.cmake,
-# now deleted). It links the libraries that OWN those types instead:
-# logos_qt_host_shared owns LogosAPI and PUBLIC-links logos_protocol_shared,
-# which owns TokenManager and LogosAPIClient.
-#
-# LOGOS_SHARED_USE_DLL is gone with the shim. It made this image declare the
-# runtime types __declspec(dllimport) so ld would not pull the archive member
-# that redefines them -- necessary while the definitions sat in an archive this
-# image also linked. There is no second static copy left, so the import is what
-# the link naturally produces.
-#
-# The invariant is unchanged and is asserted directly rather than through a
-# compile flag: see nix/symbol-gate.nix.
 
 if(WIN32)
     # PortAllocator's probe socket. Winsock is not in the default link set the
     # way libc's sockets are on POSIX, so without this the build fails at link
     # with undefined `socket`/`bind`/`getsockname`/`WSAStartup`.
-    target_link_libraries(${_tgt} PRIVATE ws2_32)
+    # shell32: CommandLineToArgvW, for UTF-8 arguments (utf8_args.h).
+    target_link_libraries(${_tgt} PRIVATE ws2_32 shell32)
 endif()
 
 target_include_directories(${_tgt} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${LOGOS_CPP_SDK_ROOT}/include/cpp
-    ${LOGOS_QT_HOST_ROOT}/include
-    ${LOGOS_QT_HOST_ROOT}/include/cpp
     ${LOGOS_PROTOCOL_ROOT}/include
     ${LOGOS_PROTOCOL_ROOT}/include/cpp
     ${LOGOS_LIBLOGOS_ROOT}/include
@@ -274,14 +222,8 @@ target_include_directories(${_tgt} PRIVATE
 if(WIN32)
     # nothing to do
 elseif(APPLE)
-    set(_rpath "@loader_path/../lib")
-    if(DEFINED Qt${QT_VERSION_MAJOR}_DIR)
-        get_filename_component(_qt_lib_dir "${Qt${QT_VERSION_MAJOR}_DIR}/../.." REALPATH)
-        list(APPEND _rpath "${_qt_lib_dir}")
-    endif()
-    list(REMOVE_DUPLICATES _rpath)
     set_target_properties(${_tgt} PROPERTIES
-        INSTALL_RPATH "${_rpath}"
+        INSTALL_RPATH "@loader_path/../lib"
         BUILD_WITH_INSTALL_RPATH TRUE)
 else()
     set_target_properties(${_tgt} PROPERTIES
@@ -293,17 +235,18 @@ endforeach()
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 #
-# Not built for a Windows host. The suites are POSIX by construction, not by
-# accident: test_integration.cpp drives the daemon over AF_UNIX (sys/un.h) and
-# reaps it with fork/waitpid, and test_cli.cpp shells out through
-# popen/WEXITSTATUS. There is nothing to gate at the case level -- the
-# translation units do not compile.
+# Off by default for a Windows host, where only the Windows test package
+# builds them: there, all but logoscore's copies build -- see tests/CMakeLists.txt.
 #
-# Skipping the whole block (rather than just the test targets) is deliberate
-# for a second reason: `find_package(GTest)` falling through to the
-# FetchContent branch would try to DOWNLOAD googletest, which in a Nix sandbox
-# fails as an opaque "downloading ... failed" long after the real cause.
-if(NOT WIN32)
+# The gate wraps the GTest lookup too: `find_package(GTest)` falling through to
+# the FetchContent branch would try to DOWNLOAD googletest, which in a Nix
+# sandbox fails as an opaque "downloading ... failed" long after the real cause.
+if(WIN32)
+    option(LOGOS_BUILD_TESTS "Build the test suites" OFF)
+else()
+    option(LOGOS_BUILD_TESTS "Build the test suites" ON)
+endif()
+if(LOGOS_BUILD_TESTS)
     find_package(GTest QUIET)
 
     if(NOT GTest_FOUND)

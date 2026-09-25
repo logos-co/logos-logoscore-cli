@@ -12,6 +12,7 @@
 //     degrading to "no policy" (which would look exactly like flag-off)
 // =============================================================================
 #include <gtest/gtest.h>
+#include "test_platform.h"
 
 #include "daemon/access_policy_arg.h"
 
@@ -22,7 +23,6 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
-#include <unistd.h>
 
 namespace fs = std::filesystem;
 using logoscore::resolveAccessPolicyArg;
@@ -35,7 +35,7 @@ class TempDir {
 public:
     TempDir() {
         base = fs::temp_directory_path() /
-               ("logoscore_ap_" + std::to_string(::getpid()) + "_" +
+               ("logoscore_ap_" + std::to_string(logosctl_test::currentPid()) + "_" +
                 std::to_string(reinterpret_cast<uintptr_t>(this)));
         fs::create_directories(base);
     }

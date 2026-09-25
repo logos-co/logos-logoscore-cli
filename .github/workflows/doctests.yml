@@ -159,7 +159,12 @@ jobs:
     uses: logos-co/logos-windows-ci/.github/workflows/windows-ci.yml@v1
     secrets: inherit
     with:
-      targets: ctl
+      targets: ctl tests
+      # The suites the Windows `tests` package declares.
+      tests: true
+      # The integration suite's modules import Qt, which ships in ctl/bin beside
+      # the logos_host that loads them.
+      assemble: '{"tests":["ctl/bin"]}'
       doctest-spec: doctests/logosctl-modules-bundle.test.yaml
       doctest-artifact: doctest-report
       # Default is 30, and a dependency bump that shifts the closure lands just

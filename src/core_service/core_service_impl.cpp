@@ -1,25 +1,14 @@
 #include "core_service_impl.h"
 #include "package_ops.h"
 #include "call_envelope.h"
+#include "rpc_deadlines.h"
 #include "logos_core.h"
-#include <logos_api.h>
-#include <logos_api_client.h>
-#include <logos_call_error.h>
-#include <logos_json_convert.h>
-
-#include <QCoreApplication>
-#include <QEventLoop>
-#include <QTimer>
+#include "../daemon/daemon.h"
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <unistd.h>
 #include <unordered_set>
-
-void CoreServiceImpl::onInit(LogosAPI* api)
-{
-    m_api = api;
-}
 
 // ---------------------------------------------------------------------------
 // Helpers to convert C API char** to std::vector<std::string>
@@ -240,7 +229,7 @@ LogosMap CoreServiceImpl::planPackageOperation(const std::string& op,
     if (!parsed)
         return LogosMap{{"status", "error"}, {"code", "INVALID_ARGS"},
                         {"message", "Unknown package operation: " + op}};
-    return package_ops::plan(m_api, *parsed, toNames(names), toOptions(opts));
+    return package_ops::plan(&m_rpc, *parsed, toNames(names), toOptions(opts));
 }
 
 LogosMap CoreServiceImpl::applyPackageOperation(const std::string& op,
@@ -251,7 +240,7 @@ LogosMap CoreServiceImpl::applyPackageOperation(const std::string& op,
     if (!parsed)
         return LogosMap{{"status", "error"}, {"code", "INVALID_ARGS"},
                         {"message", "Unknown package operation: " + op}};
-    return package_ops::apply(m_api, *parsed, toNames(names), toOptions(opts));
+    return package_ops::apply(&m_rpc, *parsed, toNames(names), toOptions(opts));
 }
 
 LogosMap CoreServiceImpl::downloadPackage(const std::string& name,
@@ -260,7 +249,7 @@ LogosMap CoreServiceImpl::downloadPackage(const std::string& name,
     const std::string dest = opts.is_object()
         ? opts.value("output", std::string{})
         : std::string{};
-    return package_ops::download(m_api, name, toOptions(opts), dest);
+    return package_ops::download(&m_rpc, name, toOptions(opts), dest);
 }
 
 LogosMap CoreServiceImpl::refreshModules()
@@ -412,8 +401,7 @@ LogosMap CoreServiceImpl::getModuleInfo(const std::string& name)
         if (uptime >= 0)
             info["uptime_seconds"] = uptime;
 
-        if (m_api) {
-            // Use the nlohmann::json overload — no QJson types needed here.
+        {
             //
             // These two are SHAPE checks, not the failure-from-null inference
             // that callModuleMethod carried: `methods`/`events` are optional
@@ -423,15 +411,14 @@ LogosMap CoreServiceImpl::getModuleInfo(const std::string& name)
             // report either way. The error channel would let module-info say
             // WHY it has nothing, but that is a change to this envelope and
             // deliberately not made here.
-            LogosAPIClient* moduleClient = m_api->getClient(QString::fromStdString(name));
+            logosctl::PlainRpcClient* moduleClient = m_rpc.client(name);
             if (moduleClient) {
-                nlohmann::json methods = moduleClient->invokeRemoteMethod(
-                    name, "getPluginMethods", nlohmann::json::array());
+                nlohmann::json methods = moduleClient->methods();
                 if (methods.is_array())
                     info["methods"] = methods;
 
-                nlohmann::json events = moduleClient->invokeRemoteMethod(
-                    name, "getPluginEvents", nlohmann::json::array());
+                nlohmann::json events = moduleClient->invoke(
+                    "getPluginEvents", nlohmann::json::array());
                 if (events.is_array())
                     info["events"] = events;
             }
@@ -468,16 +455,11 @@ namespace {
 // (see call_envelope.cpp), so the extra round-trip is paid on a null return and
 // nowhere else. Returns empty when introspection itself failed — the caller
 // must then not claim the method is missing, because it does not know.
-std::vector<std::string> exposedMethodNames(LogosAPIClient* client,
-                                            const std::string& module)
+std::vector<std::string> exposedMethodNames(logosctl::PlainRpcClient* client)
 {
     std::vector<std::string> names;
-    logos::CallError err;
-    const nlohmann::json methods = logos::qvariantToNlohmann(
-        client->invokeRemoteMethod(QString::fromStdString(module),
-                                   QStringLiteral("getPluginMethods"),
-                                   QVariantList(), Timeout(), &err));
-    if (!err.ok() || !methods.is_array()) return names;
+    const nlohmann::json methods = client->methods();
+    if (!methods.is_array()) return names;
     for (const auto& m : methods) {
         if (m.is_object()) {
             auto n = m.find("name");
@@ -497,13 +479,6 @@ StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
 {
     LogosMap result;
 
-    if (!m_api) {
-        result["status"]  = "error";
-        result["code"]    = "INTERNAL_ERROR";
-        result["message"] = "core_service not initialized.";
-        return {false, result, "core_service not initialized."};
-    }
-
     // LOADED, not merely known -- the same line watchModuleEvents draws below.
     // Without it an absent module cost a 20s acquire that raced the CLI client's
     // own 20s deadline, so the error code was a coin flip.
@@ -518,7 +493,7 @@ StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
         return {false, result, "Module '" + module + "' is not loaded."};
     }
 
-    LogosAPIClient* moduleClient = m_api->getClient(QString::fromStdString(module));
+    logosctl::PlainRpcClient* moduleClient = m_rpc.client(module);
     if (!moduleClient) {
         // Unreachable (getClient never returns null) but we deref it below.
         // INTERNAL_ERROR, not MODULE_NOT_LOADED: the gate above said it IS loaded.
@@ -528,26 +503,14 @@ StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
         return {false, result, "Could not obtain a client for loaded module '" + module + "'."};
     }
 
-    // Take the overload that carries an error OUT-CHANNEL, and do the
-    // json<->QVariant conversion here.
-    //
-    // The convenient nlohmann::json overload cannot be used: it forwards to this
-    // very call with the logos::CallError* argument simply dropped
-    // (logos_api_client.cpp), leaving its caller nothing but the value. That is
-    // why this function used to read failure out of a null RESULT — and why
-    // that was wrong: lp_invoke branches on callErr.ok() and NEVER on the value,
-    // so a failed call and a method returning null were already distinct
-    // everywhere else on this surface. Only here did they collapse.
-    logos::CallError err;
-    const QVariant qret = moduleClient->invokeRemoteMethod(
-        QString::fromStdString(module), QString::fromStdString(method),
-        logos::nlohmannArgsToQVariantList(args), Timeout(), &err);
-    const nlohmann::json ret = logos::qvariantToNlohmann(qret);
+    logosctl::PlainRpcError err;
+    const nlohmann::json ret =
+        moduleClient->invoke(method, args, rpc_deadlines::kModuleCallMs, &err);
 
     result = core_service::callEnvelope(
         module, method, ret,
         core_service::CallFailure{err.code, err.message, err.origin},
-        [&]() { return exposedMethodNames(moduleClient, module); });
+        [&]() { return exposedMethodNames(moduleClient); });
 
     const bool ok = result.value("status", std::string{}) == "ok";
     if (!ok)
@@ -562,10 +525,7 @@ StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
 bool CoreServiceImpl::watchModuleEvents(const std::string& module,
                                         const std::string& eventName)
 {
-    if (!m_api)
-        return false;
-
-    LogosAPIClient* moduleClient = m_api->getClient(QString::fromStdString(module));
+    logosctl::PlainRpcClient* moduleClient = m_rpc.client(module);
     if (!moduleClient)
         return false;
 
@@ -585,41 +545,28 @@ bool CoreServiceImpl::watchModuleEvents(const std::string& module,
     if (std::find(loaded.begin(), loaded.end(), module) == loaded.end())
         return false;
 
-    auto forward = [this, module](const QString& event, const QVariantList& data) {
+    auto forward = [this, module](const std::string& event,
+                                  const nlohmann::json& data) {
         nlohmann::json forwardData = nlohmann::json::array();
         forwardData.push_back(module);
-        forwardData.push_back(event.toStdString());
-        for (const QVariant& v : data)
-            forwardData.push_back(logos::qvariantToNlohmann(v));
+        forwardData.push_back(event);
+        for (const auto& value : data)
+            forwardData.push_back(value);
         if (emitEvent)
             emitEvent("module_event", forwardData.dump());
     };
 
     // Deferred on purpose, and this is what makes "loaded => succeeds" true.
     //
-    // requestObject() + onEvent() is ONE-SHOT, and LogosAPIConsumer::
-    // requestObject refuses outright while the module's registry socket has no
-    // listener yet -- which is exactly the state a LOADED module is in for the
-    // stretch after `load-module` RETURNS: the host reports it loaded once the
-    // plugin is in, and the module publishes its object afterwards. Cold, that
-    // gap is seconds. Because nothing retried, `watch` refused a module the
-    // host had just called loaded, and since the failure went unchecked the
-    // rest of the script ran green while observing nothing.
-    //
-    // onEventWhenAvailable holds the subscription instead, arms it the moment
-    // the object appears, and re-arms it across a reconnect -- so the gap is
-    // covered without this call ever blocking or failing.
+    // The C ABI keeps a deferred subscription, arms it when the object appears,
+    // and re-arms it across reconnects. That covers the gap between the host
+    // reporting a module loaded and the module publishing its object.
     //
     // The wildcard form (`watch <module>` with no --event) goes through the
     // SAME call: an empty eventName means "every event on this object", which
-    // is what LogosObject::onEvent has always understood it to mean. It used to
-    // need a detour through whenObjectAvailable() + requestObject() + onEvent()
-    // because onEventWhenAvailable refused an empty name -- one guard rejecting
-    // three unrelated arguments at once. logos-protocol#74 removed that, so
-    // both forms are one line and neither can be silently the odd one out.
-    return moduleClient->onEventWhenAvailable(QString::fromStdString(module),
-                                              QString::fromStdString(eventName),
-                                              forward) != 0;
+    // is part of the lp_subscribe contract. Both filtered and wildcard watches
+    // therefore take the same path.
+    return moduleClient->subscribe(eventName, std::move(forward));
 }
 
 // ---------------------------------------------------------------------------
@@ -628,8 +575,9 @@ bool CoreServiceImpl::watchModuleEvents(const std::string& module,
 
 // Milliseconds between answering a `shutdown` RPC and leaving the event loop.
 //
-// This is a courtesy margin, not the mechanism that gets the reply out --
-// see the drain in shutdown() below. It exists so that anything the transport
+// This is a courtesy margin, not the mechanism that gets the reply out:
+// lp_provider_destroy lets a call it is running answer before it closes the
+// connection. It exists so that anything the transport
 // wants to do on its own schedule (heartbeats, a second in-flight call) still
 // gets a turn. $LOGOSCTL_SHUTDOWN_GRACE_MS overrides it; the daemon-stop
 // integration test pins it to 0, which is the hostile setting that used to
@@ -648,48 +596,15 @@ static int shutdownGraceMs()
     return ms;
 }
 
-// Upper bound on the drain pass. processEvents() returns as soon as the queue
-// is empty, so this is only reached if something keeps re-arming work; the
-// point is that a busy daemon cannot turn "flush the reply" into "never exit".
-static constexpr int kShutdownDrainMs = 2000;
-
 LogosMap CoreServiceImpl::shutdown()
 {
     LogosMap result;
     result["status"] = "ok";
     result["message"] = "Daemon shutting down.";
 
-    // `result` is not on the wire yet. The transport serialises it *after*
-    // this function returns and hands the bytes to the socket, which only
-    // pushes them out when the event loop next services that socket's write
-    // notifier. So whatever ends the event loop must run after that, or the
-    // reply dies buffered inside a process that no longer exists.
-    //
-    // The previous shape -- a detached std::thread that slept 200ms and then
-    // called QCoreApplication::quit() -- could not guarantee that, for two
-    // reasons that compound:
-    //
-    //   * quit() is not a queued event. QCoreApplication::exit() reaches into
-    //     the main thread's QThreadData, flags every event loop as exiting and
-    //     interrupts the dispatcher. The loop then returns WITHOUT another
-    //     pass, so a write notifier that had not fired yet never fires.
-    //   * the sleep is wall clock and the flush is not. If the daemon's main
-    //     thread was descheduled for longer than the grace period -- routine
-    //     on a loaded CI runner -- the timer won.
-    //
-    // The client saw no transport error at all (QtRO reports none: the source
-    // simply stopped talking), sat until its RPC deadline, and reported
-    // RPC_FAILED for a shutdown that had in fact succeeded.
-    //
-    // A main-thread timer cannot fire until the loop is running again, and the
-    // explicit drain below pushes the pending write out before the loop is
-    // torn down. Neither depends on how long the main thread was away, nor on
-    // whether a given platform's dispatcher happens to service socket
-    // notifiers before timers.
-    QTimer::singleShot(shutdownGraceMs(), qApp, []() {
-        QCoreApplication::processEvents(QEventLoop::AllEvents, kShutdownDrainMs);
-        QCoreApplication::quit();
-    });
+    // The provider writes this value after the callback returns, and its
+    // teardown waits for that write, so the grace below is not what saves it.
+    Daemon::requestShutdownAfter(shutdownGraceMs());
 
     return result;
 }
