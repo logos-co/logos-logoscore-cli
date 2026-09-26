@@ -50,6 +50,8 @@
 static volatile sig_atomic_t g_shutdownRequested = 0;
 static std::mutex g_shutdownMutex;
 static std::condition_variable g_shutdownChanged;
+// The runtime went away on its own: the daemon stops, and says it failed.
+static std::atomic<bool> g_runtimeLost{false};
 
 void Daemon::signalHandler(int signal)
 {
@@ -221,40 +223,10 @@ std::vector<TransportInfo> toAdvertised(const LogosTransportSet& set)
 // can be tested without a running core. This function is only the wiring from
 // those hooks to core_service, over the daemon's shell binding, and the live
 // plain provider.
-void bootstrapPackageModules(logosctl::PlainRpcContext* api,
-                             const std::string& bundledDir,
-                             const std::string& signaturePolicy,
-                             bool verbose)
+// The session directories package_manager works in; the runtime hands them to
+// it as it loads (its setters answer only the runtime).
+package_bootstrap::Dirs packageDirs(const std::string& bundledDir)
 {
-    package_bootstrap::Hooks hooks;
-
-    hooks.loadModule = [](const std::string& name) { return shell_calls::load(name); };
-    hooks.unloadModule = [](const std::string& name) {
-        shell_calls::unload(name, /*withDependents=*/true);
-    };
-    hooks.warn = [](const std::string& line) {
-        fprintf(stderr, "%s\n", line.c_str());
-    };
-    if (verbose)
-        hooks.note = [](const std::string& line) {
-            fprintf(stderr, "%s\n", line.c_str());
-        };
-
-    // The CallError overload rather than the json one: a setter returns void,
-    // so a dispatched call and a call that never reached the module are
-    // indistinguishable in the return value. `err` is what tells them apart
-    // ("object_unavailable" when the target object cannot be acquired), and
-    // that distinction is what the signature-policy fail-closed rests on.
-    hooks.configure = [api](const std::string& method,
-                            const std::vector<std::string>& args) {
-        logosctl::PlainRpcClient* pm =
-            api ? api->client(package_bootstrap::kPackageManager) : nullptr;
-        if (!pm) return false;
-        logosctl::PlainRpcError err;
-        pm->invoke(method, args, 0, &err);
-        return err.ok();
-    };
-
     package_bootstrap::Dirs dirs;
     // bundledDir is <bin>/../modules; its plugins sibling is alongside it.
     if (!bundledDir.empty()) {
@@ -265,8 +237,38 @@ void bootstrapPackageModules(logosctl::PlainRpcContext* api,
     dirs.userModules   = Config::modulesDir();
     dirs.userUiPlugins = Config::pluginsDir();
     dirs.keyring       = Config::keyringDir();
+    return dirs;
+}
 
-    package_bootstrap::run(hooks, dirs, signaturePolicy);
+void bootstrapPackageModules(logosctl::PlainRpcContext* api,
+                             const std::string& bundledDir,
+                             const std::string& signaturePolicy,
+                             bool verbose)
+{
+    package_bootstrap::Hooks hooks;
+
+    hooks.loadModule = [](const std::string& name) { return shell_calls::load(name); };
+    hooks.warn = [](const std::string& line) {
+        fprintf(stderr, "%s\n", line.c_str());
+    };
+    if (verbose)
+        hooks.note = [](const std::string& line) {
+            fprintf(stderr, "%s\n", line.c_str());
+        };
+
+    // The CallError overload rather than the json one: the call returns void,
+    // so only `err` tells a dispatched call from one that never reached it.
+    hooks.call = [api](const std::string& method,
+                       const std::vector<std::string>& args) {
+        logosctl::PlainRpcClient* pm =
+            api ? api->client(package_bootstrap::kPackageManager) : nullptr;
+        if (!pm) return false;
+        logosctl::PlainRpcError err;
+        pm->invoke(method, args, 0, &err);
+        return err.ok();
+    };
+
+    package_bootstrap::run(hooks, packageDirs(bundledDir), signaturePolicy);
 }
 
 char* copyForProtocol(const std::string& value)
@@ -277,8 +279,9 @@ char* copyForProtocol(const std::string& value)
     return result;
 }
 
-// core_service runs in liblogos; the daemon names its operators, handles its
-// shutdown and adds the package operations.
+// core_service runs in the runtime's process; the daemon names its operators,
+// handles its shutdown and adds the package operations, which the runtime
+// forwards here over its private pipe.
 char* resolveOperator(const char* token, const char* transport, void*)
 {
     if (!token || !transport) return nullptr;
@@ -416,8 +419,8 @@ int Daemon::start(int argc, char* argv[],
     // client-artifact policy agree: a typo'd group name is rejected in both
     // places (rather than exporting env vars for a group that
     // writeLocalClientArtifacts would then decline). When known-good, export
-    // LOGOS_SOCKET_GROUP + LOGOS_SOCKET_MODE=0660 BEFORE logos_core_init so
-    // every module subprocess (logos_host) and its children inherit it and
+    // LOGOS_SOCKET_GROUP + LOGOS_SOCKET_MODE=0660 BEFORE the runtime starts so
+    // it, every module host it starts and their children inherit it and
     // apply the policy to the local socket they bind (see logos-protocol's
     // applySocketPerms) — 0660 grants the write permission an AF_UNIX connect()
     // requires. `effectiveAccessGroup` (empty when unset or invalid) is what
@@ -456,7 +459,7 @@ int Daemon::start(int argc, char* argv[],
 
     // Refuse to start if a live daemon already owns this config-dir — two would
     // clobber the shared state.json and re-issue the auto-token. Checked before
-    // logos_core_init so it fails fast. A stale file from a crashed daemon (pid
+    // the runtime starts so it fails fast. A stale file from a crashed daemon (pid
     // gone) is not a live owner and is overwritten below.
     {
         const DaemonRuntimeState existing = DaemonRuntimeStateFile::read();
@@ -480,8 +483,8 @@ int Daemon::start(int argc, char* argv[],
     // it those files accumulate in the temp dir forever, one per module per
     // boot.
     //
-    // Deliberately placed AFTER the already-running check and BEFORE
-    // logos_core_init: at this point no socket of ours exists yet, so the
+    // Deliberately placed AFTER the already-running check and BEFORE the
+    // runtime starts: at this point no socket of ours exists yet, so the
     // reaper cannot race its own endpoints. A *co-resident* node's sockets are
     // live, and logos::isSocketDead fails closed — it unlinks only an S_ISSOCK
     // inode that we own and whose connect() is refused — so a second daemon
@@ -498,23 +501,28 @@ int Daemon::start(int argc, char* argv[],
                     reaped, tempPath.c_str());
     }
 
-    // 2. Initialize logos core
-    logos_core_init(argc, argv);
+    // 2. What the runtime is started with. It runs in a process of its own
+    //    (logos_runtime), so the token authority and every module's credential
+    //    stay out of this one; the daemon is its shell.
+    (void)argc;
+    (void)argv;
+    nlohmann::json runtimeConfig = {{"shell", "logoscore"}};
+    nlohmann::json modulesDirList = nlohmann::json::array();
 
     // 3. Add plugin directories — user-specified and bundled
     //    Resolve to absolute paths: logos_core cannot load plugin metadata from relative paths.
     for (const std::string& dir : modulesDirs) {
         std::error_code ec;
         std::string absDir = std::filesystem::absolute(dir, ec).string();
-        const char* resolved = ec ? dir.c_str() : absDir.c_str();
+        const std::string resolved = ec ? dir : absDir;
         if (verbose)
-            fprintf(stderr, "Added plugins directory: %s\n", resolved);
-        logos_core_add_modules_dir(resolved);
+            fprintf(stderr, "Added plugins directory: %s\n", resolved.c_str());
+        modulesDirList.push_back(resolved);
     }
 
     std::string bundledDir = paths::bundledModulesDir();
     if (!bundledDir.empty()) {
-        logos_core_add_modules_dir(bundledDir.c_str());
+        modulesDirList.push_back(bundledDir);
         if (verbose)
             fprintf(stderr, "Added bundled modules directory: %s\n", bundledDir.c_str());
     }
@@ -531,12 +539,12 @@ int Daemon::start(int argc, char* argv[],
                                        Config::keyringDir(), Config::cacheDir()}) {
             std::filesystem::create_directories(dir, ec);
         }
-        logos_core_add_modules_dir(Config::modulesDir().c_str());
+        modulesDirList.push_back(Config::modulesDir());
         // The bundled package modules live in their own directory so that
         // logoscore's module list is byte-identical to what it reports today.
         const std::string pkgDir = paths::bundledPackageModulesDir();
         if (!pkgDir.empty())
-            logos_core_add_modules_dir(pkgDir.c_str());
+            modulesDirList.push_back(pkgDir);
         if (verbose)
             fprintf(stderr, "Added session modules directory: %s\n",
                     Config::modulesDir().c_str());
@@ -546,16 +554,13 @@ int Daemon::start(int argc, char* argv[],
     // Config::dataDir() already reflects dirs.data, and the loader folds the
     // older persistence_path spelling into it, so there is nothing to choose
     // between here.
-    std::string persistenceBase = Config::dataDir();
-    logos_core_set_persistence_base_path(persistenceBase.c_str());
+    runtimeConfig["persistence_base_path"] = Config::dataDir();
 
-    // 4b. Install the access policy before any module loads. Empty =>
-    //     NULL (clear). Runtime side is currently a no-op.
-    logos_core_set_access_policy(
-        cfg.accessPolicy.empty() ? nullptr : cfg.accessPolicy.c_str());
+    // 4b. The access policy, before any module loads. Empty => none.
+    if (!cfg.accessPolicy.empty()) runtimeConfig["access_policy"] = cfg.accessPolicy;
 
-    // 5. Materialize per-module transport sets BEFORE logos_core_start()
-    //    so capability_module (loaded inside logos_core_start) gets the
+    // 5. Materialize per-module transport sets BEFORE the runtime starts
+    //    so capability_module (loaded as it starts) gets the
     //    listeners the operator asked for, with ephemeral ports already
     //    allocated. Each module's transports come from the
     //    `--module-transport` CLI flags, fully decoupled — nothing about
@@ -589,41 +594,34 @@ int Daemon::start(int argc, char* argv[],
     }
     LogosTransportSet capabilityTransports = std::move(*capabilityTransportsOpt);
 
-    // Register capability_module's transports with the runtime BEFORE
-    // logos_core_start launches the child subprocess. The child reads
-    // the JSON via --transport-set in its argv and binds the requested child
-    // provider listeners.
-    {
-        std::string capJson = logos::transportSetToJsonString(capabilityTransports);
-        logos_core_set_module_transports("capability_module", capJson.c_str());
-    }
+    // capability_module's listeners, which the runtime binds as it starts.
+    runtimeConfig["module_transports"] = {
+        {"capability_module", logos::transportSetToJsonString(capabilityTransports)}};
 
     // 5b. core_service is liblogos': the daemon is its shell ("logoscore") and
     //     hands it what only the daemon knows. The bundled directories are what
     //     ships beside the binary, so a reserved module name resolves only there.
-    std::vector<std::string> bundledDirs;
+    nlohmann::json bundledDirs = nlohmann::json::array();
     if (!bundledDir.empty()) bundledDirs.push_back(bundledDir);
     if (modern && !paths::bundledPackageModulesDir().empty())
         bundledDirs.push_back(paths::bundledPackageModulesDir());
     for (const std::string& dir : cfg.bundledModulesDirs) {
-        logos_core_add_modules_dir(dir.c_str());
+        modulesDirList.push_back(dir);
         bundledDirs.push_back(dir);
     }
-    std::vector<const char*> bundledList;
-    for (const std::string& dir : bundledDirs) bundledList.push_back(dir.c_str());
-    bundledList.push_back(nullptr);
-    logos_core_set_bundled_modules_dirs(bundledList.data());
-    if (!cfg.placement.empty() && logos_core_set_placement_policy(cfg.placement.c_str()) != 0) {
-        fprintf(stderr, "Invalid placement policy: %s\n", cfg.placement.c_str());
-        logos_core_cleanup();
-        return 1;
-    }
-    logos_core_set_shell_identity("logoscore");
-    {
-        const std::string network =
-            logos::transportSetToJsonString(networkTransports(coreTransports));
-        logos_core_set_core_service_transports(network.c_str());
-    }
+    runtimeConfig["modules_dirs"] = modulesDirList;
+    runtimeConfig["bundled_modules_dirs"] = bundledDirs;
+    if (!cfg.placement.empty()) runtimeConfig["placement_policy"] = cfg.placement;
+    runtimeConfig["core_service_transports"] =
+        logos::transportSetToJsonString(networkTransports(coreTransports));
+    // package_manager's settings answer only the runtime, which applies these
+    // as it loads it; a signature policy that does not land fails that load.
+    if (modern)
+        runtimeConfig["package_config"] = package_bootstrap::packageConfig(
+            packageDirs(paths::bundledPackageModulesDir()), cfg.signaturePolicy);
+
+    // What the runtime forwards here: operators' tokens, shutdown, and the
+    // package operations, which run in this process as "logoscore".
     logos_core_set_operator_resolver(&resolveOperator, nullptr);
     logos_core_set_shutdown_handler(&requestShutdownFromCoreService, nullptr);
     auto* packages = new PackageService();
@@ -631,26 +629,32 @@ int Daemon::start(int argc, char* argv[],
         const std::string methods = PackageService::methods().dump();
         logos_core_set_core_service_extension(&extendCoreService, methods.c_str(), packages);
     }
+    // -v reaches the runtime's log too.
+    if (verbose && !std::getenv("LOGOS_LOG_LEVEL")) logosctl::setEnvVar("LOGOS_LOG_LEVEL", "debug");
 
-    // 6. Start core (discover plugins, launch logos_host in remote mode).
-    //    capability_module loads now, with the transport set we just
-    //    registered.
-    logos_core_start();
-
-    // 6b. The shell binding: every lifecycle call the daemon makes goes through
-    //     core_service as "logoscore". Without it there is no token authority,
-    //     and nothing could load.
-    logos_consumer* shell = logos_core_take_shell_binding();
-    if (!shell) {
+    // 6. Start the runtime. capability_module loads there now, with the
+    //    transport set above, and the runtime answers with this shell's
+    //    binding: every lifecycle call the daemon makes goes through
+    //    core_service as "logoscore". Without its token authority it does not
+    //    start, and nothing could load.
+    char* spawnError = nullptr;
+    logos_runtime* runtime = logos_runtime_spawn(runtimeConfig.dump().c_str(), &spawnError);
+    if (!runtime) {
         fprintf(stderr,
-                "Daemon startup aborted: no token authority. capability_module must be "
-                "among the bundled modules (%s) and run in-process.\n",
+                "Daemon startup aborted: %s. capability_module must be among the bundled "
+                "modules (%s).\n",
+                spawnError ? spawnError : "the runtime did not start",
                 bundledDir.empty() ? "none found beside the binary" : bundledDir.c_str());
-        logos_core_cleanup();
+        logos_consumer_string_free(spawnError);
         delete packages;
         return 1;
     }
-    shell_calls::install(shell);
+    logos_runtime_on_exit(runtime, [](const char* reason, void*) {
+        spdlog::error("The runtime stopped: {}", reason ? reason : "");
+        g_runtimeLost = true;
+        Daemon::requestShutdown();
+    }, nullptr);
+    shell_calls::install(logos_runtime_binding(runtime));
 
     // -v has to reach spdlog, and it has to be set HERE.
     //
@@ -660,10 +664,10 @@ int Daemon::start(int argc, char* argv[],
     // spdlog's default is `info`, so a module's debug output was read, parsed,
     // classified -- and dropped at the last step.
     //
-    // Ordering matters and cost a wrong fix: setting the level before
-    // logos_core_start() is silently undone, because liblogos installs its own
-    // `logos` logger during startup and that becomes the default. Set it after
-    // and it sticks.
+    // Ordering matters and cost a wrong fix: setting the level before the
+    // runtime starts is silently undone, because liblogos installs its own
+    // `logos` logger as it starts one and that becomes the default. Set it
+    // after and it sticks.
     spdlog::set_level(verbose ? spdlog::level::debug : spdlog::level::info);
 
     // 8. Auto-issue a fresh `auto` token for this boot.
@@ -681,11 +685,10 @@ int Daemon::start(int argc, char* argv[],
     if (autoTokenOutcome.status != TokenStore::IssueStatus::Ok) {
         fprintf(stderr, "Failed to auto-issue local client token (status=%d)\n",
                 static_cast<int>(autoTokenOutcome.status));
-        // logos_core_start() already launched the module subprocesses; leaving
-        // without cleanup strands them. Every other exit from this function
-        // runs logos_core_cleanup() below.
+        // The runtime already started its modules; leaving without stopping it
+        // strands them. Every other exit from this function stops it below.
         shell_calls::release();
-        logos_core_cleanup();
+        logos_runtime_stop(runtime);
         delete packages;
         return 1;
     }
@@ -695,7 +698,7 @@ int Daemon::start(int argc, char* argv[],
     //     session's directories.
     //
     //     These are loaded unconditionally, like basecamp does after
-    //     logos_core_start (app/main.cpp), because every package command is
+    //     starting its runtime (app/main.cpp), because every package command is
     //     an RPC into them — a client that had to load them first would pay
     //     the cost on its first `package` command and race any concurrent
     //     client doing the same.
@@ -712,7 +715,7 @@ int Daemon::start(int argc, char* argv[],
     //     modules, and refusing to boot would turn a missing optional module
     //     into total unavailability.
     if (modern) {
-        logosctl::PlainRpcContext bootstrapRpc("core");
+        logosctl::PlainRpcContext bootstrapRpc("logoscore");
         bootstrapPackageModules(&bootstrapRpc, paths::bundledPackageModulesDir(),
                                 cfg.signaturePolicy, verbose);
     }
@@ -741,11 +744,10 @@ int Daemon::start(int argc, char* argv[],
     if (!DaemonRuntimeStateFile::write(state)) {
         fprintf(stderr, "Failed to write daemon state file: %s\n",
                 DaemonRuntimeStateFile::filePath().c_str());
-        // logos_core_start() already launched the module subprocesses; leaving
-        // without cleanup strands them. Every other exit from this function
-        // runs logos_core_cleanup() below.
+        // The runtime already started its modules; leaving without stopping it
+        // strands them. Every other exit from this function stops it below.
         shell_calls::release();
-        logos_core_cleanup();
+        logos_runtime_stop(runtime);
         delete packages;
         return 1;
     }
@@ -810,12 +812,13 @@ int Daemon::start(int argc, char* argv[],
 
     DaemonRuntimeStateFile::remove();
     shell_calls::release();
-    logos_core_cleanup();
+    // Unloads the runtime's modules in order and ends its process.
+    logos_runtime_stop(runtime);
     delete packages;
     LogSink::instance().stop();
 
     fprintf(stdout, "Logosctl daemon stopped.\n");
     fflush(stdout);
 
-    return 0;
+    return g_runtimeLost ? 1 : 0;
 }

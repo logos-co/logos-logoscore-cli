@@ -1,8 +1,8 @@
 #ifndef PACKAGE_SERVICE_H
 #define PACKAGE_SERVICE_H
 
-// The daemon's own methods on core_service, which liblogos runs: package
-// operations, reached through logos_core_set_core_service_extension.
+// The daemon's own methods on core_service, which the runtime forwards here:
+// package operations, reached through logos_core_set_core_service_extension.
 
 #include "../plain_rpc.h"
 
@@ -26,8 +26,9 @@ public:
     static bool owns(const std::string& method);
 
 private:
-    // The package modules take their settings from the runtime only.
-    logosctl::PlainRpcContext m_rpc{"core"};
+    // As the shell: the install flow is open to it, and only package_manager's
+    // settings are the runtime's.
+    logosctl::PlainRpcContext m_rpc{"logoscore"};
 };
 
 #endif

@@ -16,8 +16,7 @@ struct BundledModule {
 };
 
 // Order here is presentation only. Each entry is loaded independently, so a
-// failing first entry cannot suppress a second one that would have loaded
-// fine — and neither failure may skip the configuration that follows.
+// failing first entry cannot suppress a second one that would have loaded fine.
 constexpr BundledModule kBundled[] = {
     {kPackageManager,
      "`package install`, `package ls`, `package rm` and `package info` will be "
@@ -29,15 +28,39 @@ constexpr BundledModule kBundled[] = {
 
 } // namespace
 
-Outcome run(const Hooks& hooks, const Dirs& dirs,
-            const std::string& signaturePolicy)
+nlohmann::json packageConfig(const Dirs& dirs, const std::string& signaturePolicy)
+{
+    // Trust is per-session: the keyring lives inside the config dir, so copying
+    // a session carries its trust assumptions with it.
+    nlohmann::json config = {
+        {"user_modules_dir", dirs.userModules},
+        {"user_ui_plugins_dir", dirs.userUiPlugins},
+        {"keyring_dir", dirs.keyring},
+    };
+    // Embedded (read-only, ships with the binary) vs user (writable, this
+    // session): the manager scans both, and the user copy wins a name clash.
+    if (!dirs.embeddedModules.empty()) {
+        config["embedded_modules_dirs"] = nlohmann::json::array({dirs.embeddedModules});
+        config["embedded_ui_plugins_dirs"] = nlohmann::json::array({dirs.embeddedUiPlugins});
+    }
+    // Unset is left to the module; anything else must land, or the runtime
+    // does not load package_manager at all.
+    if (!signaturePolicy.empty()) config["signature_policy"] = signaturePolicy;
+    return config;
+}
+
+Outcome run(const Hooks& hooks, const Dirs& dirs, const std::string& signaturePolicy)
 {
     Outcome out;
 
     for (const auto& m : kBundled) {
         if (!hooks.loadModule(m.name)) {
-            hooks.warn(std::string("Warning: failed to load bundled module '")
-                       + m.name + "'. " + m.lostCapability + ".");
+            std::string line = std::string("Warning: failed to load bundled module '") + m.name
+                + "'. " + m.lostCapability + ".";
+            if (std::string_view(m.name) == kPackageManager && !signaturePolicy.empty())
+                line += " The runtime does not load a package_manager that refuses signature_policy='"
+                    + signaturePolicy + "'; its log says why.";
+            hooks.warn(line);
             continue;
         }
         if (std::string_view(m.name) == kPackageManager) out.managerLoaded    = true;
@@ -46,92 +69,21 @@ Outcome run(const Hooks& hooks, const Dirs& dirs,
             hooks.note(std::string("Loaded bundled module: ") + m.name);
     }
 
-    // Nothing loaded to configure. Not a half-configured state: an absent
-    // package_manager enforces nothing and answers nothing.
+    // Nothing loaded to clear. An absent package_manager enforces nothing and
+    // answers nothing.
     if (!out.managerLoaded)
         return out;
-
-    bool allDelivered = true;
-    auto set = [&](const char* method, std::vector<std::string> args) {
-        const bool ok = hooks.configure(method, std::move(args));
-        if (!ok) allDelivered = false;
-        return ok;
-    };
-
-    // Embedded (read-only, ships with the binary) vs user (writable, this
-    // session). The manager scans both and lets the user copy win on a name
-    // collision, which is how a session can override a bundled module.
-    if (!dirs.embeddedModules.empty()) {
-        set("setEmbeddedModulesDirectory",   {dirs.embeddedModules});
-        set("setEmbeddedUiPluginsDirectory", {dirs.embeddedUiPlugins});
-    }
-    set("setUserModulesDirectory",   {dirs.userModules});
-    set("setUserUiPluginsDirectory", {dirs.userUiPlugins});
-
-    // Trust is per-session: the keyring lives inside the config dir so that
-    // copying a session carries its trust assumptions with it, and two
-    // sessions can disagree about which signers they accept.
-    set("setKeyringDirectory", {dirs.keyring});
-
-    // ...and so is the policy applied to what those keys say about a package.
-    // The module defaults to `warn`, so an unset `signature_policy:` is left
-    // alone rather than restated; anything else is the operator asking for a
-    // different answer and has to reach the module, or `require` would be a
-    // setting that reads back correctly and enforces nothing.
-    // The value is allowlisted by the config reader, so by here it is one of
-    // none | warn | require.
-    bool policyDelivered = true;
-    if (!signaturePolicy.empty())
-        policyDelivered = set("setSignaturePolicy", {signaturePolicy});
-
-    out.directoriesSet = allDelivered;
-    out.policyArmed    = !signaturePolicy.empty() && policyDelivered;
-
-    // Fail closed when an explicitly configured policy did not land.
-    //
-    // The module's own default is `warn`: it prints a line for an unsigned
-    // package and installs it anyway, and it accepts one signed by a key the
-    // keyring does not trust. An operator who wrote `signature_policy:
-    // require` gets neither rejection — while `logosctl config get` and
-    // state.json keep reporting `require`, because that is what the file says.
-    // A manager that enforces less than the session advertises is worse than
-    // no manager, so take it out of the session rather than leave that gap
-    // open behind a truthful-looking config.
-    if (!signaturePolicy.empty() && !policyDelivered) {
-        hooks.warn("Warning: could not deliver signature_policy='"
-                   + signaturePolicy + "' to package_manager. Unloading it: "
-                   "leaving it up would enforce the module default ('warn') "
-                   "while this session's config advertises '" + signaturePolicy
-                   + "'. Package commands are unavailable until the next "
-                     "daemon start.");
-        if (hooks.unloadModule) hooks.unloadModule(kPackageManager);
-        out.managerLoaded   = false;
-        out.managerDisabled = true;
-        return out;
-    }
-
-    // A directory call that went missing is not a silent downgrade: every
-    // directory in the module fails closed when unset — installs refuse with
-    // "User modules directory is not set" and a scan of an unset tree returns
-    // nothing. Loud, but not dangerous, so it warns instead of unloading.
-    if (!allDelivered)
-        hooks.warn("Warning: one or more package_manager directory settings did "
-                   "not reach the module. `package ls` may report an empty "
-                   "session and installs will refuse until the daemon is "
-                   "restarted.");
 
     // A crash mid-dialog in a previous run can leave the module's single
     // gated-operation slot occupied, which would reject every subsequent
     // install. Basecamp clears it at startup for the same reason.
-    hooks.configure("resetPendingAction", {});
+    out.pendingCleared = hooks.call("resetPendingAction", {});
 
     if (hooks.note)
-        hooks.note("Configured package_manager: user=" + dirs.userModules
-                   + " embedded=" + dirs.embeddedModules
-                   + " keyring=" + dirs.keyring
-                   + " signature_policy="
-                   + (signaturePolicy.empty() ? "(module default)"
-                                              : signaturePolicy));
+        hooks.note("package_manager takes this session's settings from the runtime: user="
+                   + dirs.userModules + " embedded=" + dirs.embeddedModules
+                   + " keyring=" + dirs.keyring + " signature_policy="
+                   + (signaturePolicy.empty() ? "(module default)" : signaturePolicy));
 
     return out;
 }

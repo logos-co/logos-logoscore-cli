@@ -1,16 +1,22 @@
 #pragma once
 
+#include <nlohmann/json.hpp>
+
 #include <functional>
 #include <string>
 #include <vector>
 
-// Bringing up the two bundled package modules and pointing package_manager at
-// this session's directories.
+// Bringing up the two bundled package modules for this session.
 //
-// The decision logic lives here, behind injected hooks, rather than inline in
-// daemon.cpp: what a load failure skips — and what it must NOT skip — is the
-// part that has been wrong, and it is not reachable from a test through a live
-// core_service and socket.
+// package_manager's settings (its directories, keyring and signature policy)
+// answer the runtime only, so the daemon hands them over as the runtime's
+// package config: liblogos applies it as package_manager loads, and refuses the
+// load when a configured signature policy does not land. What stays here runs
+// as the shell: loading both modules, and clearing an operation a crash left
+// pending.
+//
+// The sequencing lives here, behind injected hooks, rather than inline in
+// daemon.cpp, so what a load failure skips is testable without a runtime.
 namespace package_bootstrap {
 
 inline constexpr const char* kPackageManager    = "package_manager";
@@ -21,16 +27,10 @@ struct Hooks {
     // core_service.loadModule(name, "required_and_optional"), as the shell.
     std::function<bool(const std::string& module)> loadModule;
 
-    // core_service.unloadModule(name, true), as the shell. Called only to
-    // fail closed — see the signature-policy handling in run().
-    std::function<void(const std::string& module)> unloadModule;
-
-    // One configuration call into package_manager. Returns false when the
-    // call demonstrably did not reach the module (no client for it, or the
-    // remote object could not be acquired); true when it dispatched. Every
-    // method used here takes zero or one string argument.
+    // One call into package_manager, as the shell. False when it did not reach
+    // the module.
     std::function<bool(const std::string& method,
-                       const std::vector<std::string>& args)> configure;
+                       const std::vector<std::string>& args)> call;
 
     // Operator-visible warning, one line, no trailing newline.
     std::function<void(const std::string& line)> warn;
@@ -50,20 +50,19 @@ struct Dirs {
     std::string keyring;
 };
 
+// The runtime's package config for this session (logos_runtime_spawn's
+// "package_config"). `signaturePolicy` is the operator's `signature_policy:`,
+// empty when unset, which leaves the module's own default (warn).
+nlohmann::json packageConfig(const Dirs& dirs, const std::string& signaturePolicy);
+
 // What actually happened. Returned for tests and for the caller's log; the
-// daemon does not branch on it, since nothing here is allowed to abort
-// startup.
+// daemon does not branch on it, since nothing here may abort startup.
 struct Outcome {
-    bool managerLoaded     = false;  // package_manager is up and usable
-    bool downloaderLoaded  = false;  // package_downloader is up
-    bool directoriesSet    = false;  // every directory call was delivered
-    bool policyArmed       = false;  // an explicit policy was configured AND delivered
-    bool managerDisabled   = false;  // loaded, then unloaded to fail closed
+    bool managerLoaded    = false;  // package_manager is up, configured by the runtime
+    bool downloaderLoaded = false;  // package_downloader is up
+    bool pendingCleared   = false;  // resetPendingAction reached the manager
 };
 
-// `signaturePolicy` is the operator's `signature_policy:` — empty when unset,
-// otherwise one of none | warn | require (the config reader allowlists it).
-Outcome run(const Hooks& hooks, const Dirs& dirs,
-            const std::string& signaturePolicy);
+Outcome run(const Hooks& hooks, const Dirs& dirs, const std::string& signaturePolicy);
 
 } // namespace package_bootstrap
