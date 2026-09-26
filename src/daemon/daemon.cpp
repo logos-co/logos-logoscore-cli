@@ -349,6 +349,22 @@ LogosTransportSet networkTransports(const LogosTransportSet& all)
     return network;
 }
 
+// A same-user app finds the local invite at <config dir>/peering/local-invite
+// unless the config names a path.
+void localInviteDefault(nlohmann::json& peering)
+{
+    auto control = peering.find("control");
+    if (control == peering.end() || !control->is_object()) return;
+    auto local = control->find("local_invite");
+    if (local == control->end()) return;
+    if (local->is_boolean() && local->get<bool>()) *local = nlohmann::json::object();
+    if (!local->is_object() || local->contains("path")) return;
+    const std::filesystem::path given = std::filesystem::u8path(Config::configDir());
+    std::error_code ec;
+    const std::filesystem::path dir = std::filesystem::absolute(given, ec);
+    (*local)["path"] = ((ec ? given : dir) / "peering" / "local-invite").u8string();
+}
+
 } // namespace
 
 int Daemon::start(int argc, char* argv[],
@@ -614,11 +630,12 @@ int Daemon::start(int argc, char* argv[],
     if (!cfg.placement.empty()) runtimeConfig["placement_policy"] = cfg.placement;
     runtimeConfig["core_service_transports"] =
         logos::transportSetToJsonString(networkTransports(coreTransports));
-    // peering_module lets this shell, and named operators, manage it.
+    // peering_module lets this shell, and local operators, manage it.
     if (!cfg.peering.empty()) {
         nlohmann::json peering = nlohmann::json::parse(cfg.peering, nullptr, false);
         if (peering.is_object()) {
             peering["shell"] = "logoscore";
+            localInviteDefault(peering);
             runtimeConfig["peering_config"] = std::move(peering);
         }
     }
