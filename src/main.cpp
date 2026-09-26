@@ -457,6 +457,8 @@ int main(int argc, char *argv[])
         "Manage the package catalogs this session pulls from");
     auto* keySub           = app.add_subcommand("key",
         "Manage trusted package-signing keys");
+    auto* peerSub          = app.add_subcommand("peer",
+        "Link with other Logos runtimes: status | ls | pair | invite | redeem | export | import | ...");
     // Declared so `--help` lists them; their verbs are collapsed in argv by
     // normalizeGroupVerbs before CLI11 ever sees them, so reaching these
     // means the user typed a group with a missing or unknown verb.
@@ -492,7 +494,7 @@ int main(int argc, char *argv[])
                       listModulesSub, moduleInfoSub, infoSub, callSub,
                       watchSub, statsSub, stopSub,
                       issueTokenSub, revokeTokenSub, listTokensSub,
-                      packageSub, catalogSub, keySub, installSub, searchSub}) {
+                      packageSub, catalogSub, keySub, peerSub, installSub, searchSub}) {
         sub->allow_extras();
     }
 
@@ -982,6 +984,7 @@ int main(int argc, char *argv[])
         {packageSub,      "package"},
         {catalogSub,      "catalog"},
         {keySub,          "key"},
+        {peerSub,         "peer"},
         {installSub,      "install"},
         {searchSub,       "search"},
     };

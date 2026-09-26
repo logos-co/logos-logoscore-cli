@@ -168,6 +168,7 @@ set(SHARED_SOURCES
     src/client/commands/revoke_token_command.cpp
     src/client/commands/list_tokens_command.cpp
     src/client/commands/package_command.cpp
+    src/client/commands/peer_command.cpp
     src/client/commands/catalog_command.cpp
     src/client/commands/config_command.cpp
 
