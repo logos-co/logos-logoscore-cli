@@ -48,9 +48,12 @@
     nix-bundle-logos-module-install.inputs.nix-bundle-lgx.follows = "nix-bundle-lgx";
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
+    # peering_module, peering_identity and the facade host, logos_host_remote.
+    logos-peering.url = "github:logos-co/logos-peering";
+    logos-peering.inputs.logos-nix.follows = "logos-nix";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-liblogos, logos-package-manager, logos-capability-module, logos-modules-state-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules-src, nix-bundle-logos-module-install, nix-bundle-lgx, nix-bundle-dir, nix-bundle-appimage }:
+  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-liblogos, logos-package-manager, logos-capability-module, logos-modules-state-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules-src, nix-bundle-logos-module-install, nix-bundle-lgx, nix-bundle-dir, nix-bundle-appimage, logos-peering }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       # Build info baked into the logosctl binary so `--version` reports the
@@ -209,7 +212,11 @@
           # read-only "embedded" directory (paths::bundledModulesDir(),
           # <bin>/../modules). Mirrors logos-basecamp/flake.nix so the CLI
           # and the GUI drive the same module surface.
-          bundledInstallsDev = map installDev [ capabilityModuleLib modulesStateModuleLib ];
+          # Links with other runtimes: bundled like capability_module. No Windows build yet.
+          peering = if isWindows then null else logos-peering.packages.${system};
+          peeringLibs = if peering == null then [ ]
+            else [ peering.peering_identity-lib peering.peering_module-lib ];
+          bundledInstallsDev = map installDev ([ capabilityModuleLib modulesStateModuleLib ] ++ peeringLibs);
           # Kept out of modules/ deliberately: logoscore scans that directory, so
           # anything extra there changes what it reports by default. (The doc-tests
           # assert CONTAINMENT -- expect_contains, never an exact list -- so adding a
@@ -329,6 +336,9 @@
                 [ -f "$host" ] || continue
                 cp -L "$host" $out/bin/
               done
+              ${pkgs.lib.optionalString (peering != null) ''
+                cp -L ${peering.logos_host_remote}/bin/logos_host_remote $out/bin/
+              ''}
               chmod -R +w $out/bin
 
               # Copy liblogos_core so logosctl can link at runtime
@@ -634,7 +644,7 @@ ${pkgs.lib.optionalString withPkgModules ''
           # manager ships a distinct `lib-portable`; the other two are
           # variant-agnostic and rely on installPortable to make the bundle
           # self-contained (same split logos-basecamp uses).
-          bundledInstallsPortable = map installPortable [ capabilityModuleLib modulesStateModuleLib ];
+          bundledInstallsPortable = map installPortable ([ capabilityModuleLib modulesStateModuleLib ] ++ peeringLibs);
           pkgInstallsPortable = map installPortable [
             packageManagerModuleLibPortable
             packageDownloaderModuleLib
