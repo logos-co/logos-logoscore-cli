@@ -614,6 +614,14 @@ int Daemon::start(int argc, char* argv[],
     if (!cfg.placement.empty()) runtimeConfig["placement_policy"] = cfg.placement;
     runtimeConfig["core_service_transports"] =
         logos::transportSetToJsonString(networkTransports(coreTransports));
+    // peering_module lets this shell, and named operators, manage it.
+    if (!cfg.peering.empty()) {
+        nlohmann::json peering = nlohmann::json::parse(cfg.peering, nullptr, false);
+        if (peering.is_object()) {
+            peering["shell"] = "logoscore";
+            runtimeConfig["peering_config"] = std::move(peering);
+        }
+    }
     // package_manager's settings answer only the runtime, which applies these
     // as it loads it; a signature policy that does not land fails that load.
     if (modern)
