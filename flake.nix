@@ -50,7 +50,7 @@
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
     # peering_module, peering_identity and the facade host, logos_host_remote.
-    logos-peering.url = "github:logos-co/logos-peering";
+    logos-peering.url = "github:logos-co/logos-peering/feat/standalone-apps";
     logos-peering.inputs.logos-nix.follows = "logos-nix";
   };
 
