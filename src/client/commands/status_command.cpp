@@ -5,7 +5,8 @@ int StatusCommand::execute(const std::vector<std::string>& args)
 {
     (void)args;
 
-    if (!ClientStateFile::read().fileOk) {
+    const bool remote = client().isRemote();
+    if (!remote && !ClientStateFile::read().fileOk) {
         LogosMap result{{"daemon", LogosMap{{"status","not_configured"}}}};
         output().printStatus(result);
         return 1;
@@ -14,7 +15,7 @@ int StatusCommand::execute(const std::vector<std::string>& args)
     // The same guard ensureConnected() applies, one step earlier and reported
     // differently: "no daemon" is an answer to `status`, not an error, so this
     // prints a status report and exits 1 rather than NO_DAEMON and 2.
-    if (const std::optional<StaleSession> stale = detectStaleSession()) {
+    if (const std::optional<StaleSession> stale = remote ? std::nullopt : detectStaleSession()) {
         LogosMap result{{"daemon", LogosMap{
             {"status", "not_running"},
             {"reason", stale->reason},
@@ -30,7 +31,7 @@ int StatusCommand::execute(const std::vector<std::string>& args)
     // documents on stdout for one command, which no `jq` invocation survives.
     if (!client().isConnected() && !client().connect()) {
         LogosMap result{{"daemon", LogosMap{
-            {"status", "not_running"},
+            {"status", remote ? "unreachable" : "not_running"},
             {"reason", client().lastError()},
         }}};
         output().printStatus(result);

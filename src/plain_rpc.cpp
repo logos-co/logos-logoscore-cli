@@ -50,6 +50,26 @@ PlainRpcClient::PlainRpcClient(std::string target, std::string origin,
                                 capabilityTransport.c_str());
 }
 
+bool PlainRpcClient::useSession(const std::string& chainPem, const std::string& keyPem,
+                                const nlohmann::json& dial, const nlohmann::json& hello)
+{
+    if (!m_client) return false;
+    m_session = std::make_unique<Session>(Session{dial.dump(), hello.dump()});
+    return lp_client_set_tls_credential(m_client, chainPem.c_str(), keyPem.c_str()) == LP_OK
+        && lp_client_set_session_hook(m_client, &PlainRpcClient::onDial, &PlainRpcClient::onHello,
+                                      m_session.get()) == LP_OK;
+}
+
+char* PlainRpcClient::onDial(const char*, void* userData)
+{
+    return lp_string_copy(static_cast<Session*>(userData)->dial.c_str());
+}
+
+char* PlainRpcClient::onHello(const char*, void* userData)
+{
+    return lp_string_copy(static_cast<Session*>(userData)->hello.c_str());
+}
+
 PlainRpcClient::~PlainRpcClient()
 {
     // Subscriptions must be gone before their owner. lp_unsubscribe guarantees

@@ -171,6 +171,7 @@ json daemonConfigToJson(const DaemonConfig& cfg, bool includeSecrets)
     // policy, so emitting one would produce a document that fails its own
     // reader on the next load.
     if (!cfg.signaturePolicy.empty()) obj["signature_policy"] = cfg.signaturePolicy;
+    if (!cfg.peering.empty()) obj["peering"] = json::parse(cfg.peering, nullptr, false);
     return obj;
 }
 
@@ -281,6 +282,7 @@ std::optional<DaemonConfig> daemonConfigFromJson(const json& obj,
     cfg.placement    = r.str("placement");
     cfg.bundledModulesDirs = r.stringList("bundled_modules_dirs");
     cfg.accessGroup  = r.str("access_group");
+    if (const json* peering = r.mapping("peering")) cfg.peering = peering->dump();
 
     // Strict allowlist, same reasoning as the transport `protocol` field: the
     // value is handed to package_manager, which ignores what it doesn't

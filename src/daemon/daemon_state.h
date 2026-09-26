@@ -127,6 +127,10 @@ struct DaemonConfig {
     // the group can drive the daemon. Empty means owner-only (the default).
     // Persisted across launches.
     std::string accessGroup;
+    // Links with other runtimes (the `peering` section) as JSON text, handed to
+    // peering_module unchanged, which refuses what it does not know. Empty
+    // when absent. Persisted across launches.
+    std::string peering;
 };
 
 // Live-instance runtime state. Written to daemon/state.json on every

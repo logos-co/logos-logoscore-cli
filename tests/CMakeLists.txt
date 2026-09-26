@@ -28,6 +28,9 @@ set(TEST_LIB_SOURCES
     ${CMAKE_SOURCE_DIR}/src/client/commands/revoke_token_command.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/list_tokens_command.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/package_command.cpp
+    ${CMAKE_SOURCE_DIR}/src/client/commands/peer_command.cpp
+    ${CMAKE_SOURCE_DIR}/src/client/commands/remote_command.cpp
+    ${CMAKE_SOURCE_DIR}/src/client/remote.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/catalog_command.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/config_command.cpp
 )

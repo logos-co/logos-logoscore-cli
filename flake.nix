@@ -4,10 +4,10 @@
   inputs = {
     logos-nix.url = "github:logos-co/logos-nix";
     nixpkgs.follows = "logos-nix/nixpkgs";
-    # On the runtime-control branches (logos-liblogos#227 and the PRs under it) until they merge.
-    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk/feat/runtime-delegate-export";
-    logos-protocol.url = "github:logos-co/logos-protocol/feat/drop-legacy-mode";
-    logos-liblogos.url = "github:logos-co/logos-liblogos/feat/runtime-process";
+    # On the peering branches (logos-liblogos#230 and the PRs under it) until they merge.
+    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk/feat/peering";
+    logos-protocol.url = "github:logos-co/logos-protocol/feat/peering";
+    logos-liblogos.url = "github:logos-co/logos-liblogos/feat/peering";
     # liblogos and the CLI must share one instance of the plain protocol
     # runtime: that library owns the process-wide credential registry.
     logos-cpp-sdk.inputs.logos-protocol.follows = "logos-protocol";
@@ -35,7 +35,8 @@
     logos-liblogos.inputs.logos-package-manager.follows = "logos-package-manager";
     logos-package-manager-module.inputs.logos-package-manager.follows = "logos-package-manager";
     nix-bundle-logos-module-install.inputs.logos-package-manager.follows = "logos-package-manager";
-    logos-capability-module.url = "github:logos-co/logos-capability-module/feat/drop-legacy-mode";
+    # Decides peering's routes and scopes each import's facade (engine entries on feat/peering).
+    logos-capability-module.url = "github:logos-co/logos-capability-module/feat/peering";
     logos-modules-state-module.url = "github:logos-co/logos-modules-state-module/feat/drop-legacy-mode";
     logos-package-manager-module.url = "github:logos-co/logos-package-manager-module/feat/drop-legacy-mode";
     logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module/feat/drop-legacy-mode";
@@ -48,9 +49,12 @@
     nix-bundle-logos-module-install.inputs.nix-bundle-lgx.follows = "nix-bundle-lgx";
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
+    # peering_module, peering_identity and the facade host, logos_host_remote.
+    logos-peering.url = "github:logos-co/logos-peering";
+    logos-peering.inputs.logos-nix.follows = "logos-nix";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-liblogos, logos-package-manager, logos-capability-module, logos-modules-state-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules-src, nix-bundle-logos-module-install, nix-bundle-lgx, nix-bundle-dir, nix-bundle-appimage }:
+  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-liblogos, logos-package-manager, logos-capability-module, logos-modules-state-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules-src, nix-bundle-logos-module-install, nix-bundle-lgx, nix-bundle-dir, nix-bundle-appimage, logos-peering }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       # Build info baked into the logosctl binary so `--version` reports the
@@ -126,6 +130,9 @@
             else import nixpkgs { inherit system; };
           cppSdk = logos-cpp-sdk.packages.${system}.logos-cpp-include;
           protocolPkg = logos-protocol.packages.${system}.logos-protocol-plain;
+          # Remote Runtime Control (`logosctl --remote`); logos-peering has no Windows build yet.
+          peeringLib = if system == "x86_64-windows" then null
+            else logos-peering.packages.${system}.libpeering;
           liblogos = logos-liblogos.packages.${system}.logos-liblogos;
           liblogosLib = logos-liblogos.packages.${system}.logos-liblogos-lib;
           liblogosPortable = logos-liblogos.packages.${system}.portable;
@@ -174,7 +181,7 @@
       in [ basic extlib ipcNewApi ];
     in
     {
-      packages = forAllTargets ({ pkgs, system, cppSdk, protocolPkg, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, modulesStateModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, installDev, installPortable, dirBundler, appBundler }:
+      packages = forAllTargets ({ pkgs, system, cppSdk, protocolPkg, peeringLib, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, modulesStateModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, installDev, installPortable, dirBundler, appBundler }:
         let
           pname = "logos-logoscore-cli";
           # VERSION is only present on release branches; dev branches use a placeholder.
@@ -209,7 +216,11 @@
           # read-only "embedded" directory (paths::bundledModulesDir(),
           # <bin>/../modules). Mirrors logos-basecamp/flake.nix so the CLI
           # and the GUI drive the same module surface.
-          bundledInstallsDev = map installDev [ capabilityModuleLib modulesStateModuleLib ];
+          # Links with other runtimes: bundled like capability_module. No Windows build yet.
+          peering = if isWindows then null else logos-peering.packages.${system};
+          peeringLibs = if peering == null then [ ]
+            else [ peering.peering_identity-lib peering.peering_module-lib ];
+          bundledInstallsDev = map installDev ([ capabilityModuleLib modulesStateModuleLib ] ++ peeringLibs);
           # Kept out of modules/ deliberately: logoscore scans that directory, so
           # anything extra there changes what it reports by default. (The doc-tests
           # assert CONTAINMENT -- expect_contains, never an exact list -- so adding a
@@ -269,6 +280,7 @@
               pkgs.yaml-cpp
               pkgs.spdlog
             ]
+            ++ pkgs.lib.optional (peeringLib != null) peeringLib
             # CMakeLists.txt skips the whole test block for a Windows host, so
             # gtest is dead weight there -- and cross-building it is a real
             # cost, not a free one.
@@ -316,7 +328,8 @@
               pkgs.spdlog
               protocolPkg
               liblogosLib
-            ];
+            ]
+            ++ pkgs.lib.optional (peeringLib != null) peeringLib;
 
             installPhase = ''
               runHook preInstall
@@ -329,6 +342,9 @@
                 [ -f "$host" ] || continue
                 cp -L "$host" $out/bin/
               done
+              ${pkgs.lib.optionalString (peering != null) ''
+                cp -L ${peering.logos_host_remote}/bin/logos_host_remote $out/bin/
+              ''}
               chmod -R +w $out/bin
 
               # Copy liblogos_core so logosctl can link at runtime
@@ -582,7 +598,8 @@ ${pkgs.lib.optionalString withPkgModules ''
               liblogosLib
               cppSdk
               protocolPkg
-            ];
+            ]
+            ++ pkgs.lib.optional (peeringLib != null) peeringLib;
 
             cmakeFlags = [
               "-GNinja"
@@ -634,7 +651,7 @@ ${pkgs.lib.optionalString withPkgModules ''
           # manager ships a distinct `lib-portable`; the other two are
           # variant-agnostic and rely on installPortable to make the bundle
           # self-contained (same split logos-basecamp uses).
-          bundledInstallsPortable = map installPortable [ capabilityModuleLib modulesStateModuleLib ];
+          bundledInstallsPortable = map installPortable ([ capabilityModuleLib modulesStateModuleLib ] ++ peeringLibs);
           pkgInstallsPortable = map installPortable [
             packageManagerModuleLibPortable
             packageDownloaderModuleLib
@@ -690,7 +707,8 @@ ${pkgs.lib.optionalString withPkgModules ''
               pkgs.fmt
               pkgs.yaml-cpp
               pkgs.spdlog
-            ];
+            ]
+            ++ pkgs.lib.optional (peeringLib != null) peeringLib;
 
             cmakeFlags = [
               "-GNinja"
@@ -725,7 +743,8 @@ ${pkgs.lib.optionalString withPkgModules ''
               pkgs.spdlog
               protocolPkg
               liblogosLib
-            ];
+            ]
+            ++ pkgs.lib.optional (peeringLib != null) peeringLib;
 
             passthru = {
               extraDirs = [ "modules" ] ++ pkgs.lib.optional withPkgModules "modules-pkg";
