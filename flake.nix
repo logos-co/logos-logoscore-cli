@@ -4,10 +4,10 @@
   inputs = {
     logos-nix.url = "github:logos-co/logos-nix";
     nixpkgs.follows = "logos-nix/nixpkgs";
-    # On the runtime-control branches (logos-liblogos#227 and the PRs under it) until they merge.
-    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk/feat/runtime-delegate-export";
-    logos-protocol.url = "github:logos-co/logos-protocol/feat/drop-legacy-mode";
-    logos-liblogos.url = "github:logos-co/logos-liblogos/feat/runtime-process";
+    # On the peering branches (logos-liblogos#230 and the PRs under it) until they merge.
+    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk/feat/peering";
+    logos-protocol.url = "github:logos-co/logos-protocol/feat/peering";
+    logos-liblogos.url = "github:logos-co/logos-liblogos/feat/peering";
     # liblogos and the CLI must share one instance of the plain protocol
     # runtime: that library owns the process-wide credential registry.
     logos-cpp-sdk.inputs.logos-protocol.follows = "logos-protocol";

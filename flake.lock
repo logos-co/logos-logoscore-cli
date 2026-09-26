@@ -56,16 +56,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1790348854,
-        "narHash": "sha256-9HK2YSxYiRUrgnm9OojEg9ZpePnK4vMkdeDzhQtnfz8=",
+        "lastModified": 1790392868,
+        "narHash": "sha256-eitPzplcJkrMfv13YVnZXj6txi+8AuUZNdwBPOgpumY=",
         "owner": "logos-co",
         "repo": "logos-module-loader-qt",
-        "rev": "4f21025356189e79517e489a2e63870cbd9d7464",
+        "rev": "7baf0dde10a6877e3524e35cfbd65d8872102e03",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
-        "ref": "feat/drop-legacy-mode",
+        "ref": "feat/peering",
         "repo": "logos-module-loader-qt",
         "type": "github"
       }
@@ -558,16 +558,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1790307393,
-        "narHash": "sha256-6X9i+ZHZVPUoiJfzgtyBrUOHe2RK8lPmHeKJEFP1oi8=",
+        "lastModified": 1790392904,
+        "narHash": "sha256-OdqQUO6jUc83xQZSHQ1HzlUMX/+Dtsf2Pul4UoDs5B0=",
         "owner": "logos-co",
         "repo": "logos-cpp-sdk",
-        "rev": "4e5f8c8ba4d9ff096c02614a37ad9a52dac27cd9",
+        "rev": "a49b01d139e47d54f1bbaba176df838ea276417f",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
-        "ref": "feat/runtime-delegate-export",
+        "ref": "feat/peering",
         "repo": "logos-cpp-sdk",
         "type": "github"
       }
@@ -668,16 +668,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1790307393,
-        "narHash": "sha256-6X9i+ZHZVPUoiJfzgtyBrUOHe2RK8lPmHeKJEFP1oi8=",
+        "lastModified": 1790392904,
+        "narHash": "sha256-OdqQUO6jUc83xQZSHQ1HzlUMX/+Dtsf2Pul4UoDs5B0=",
         "owner": "logos-co",
         "repo": "logos-cpp-sdk",
-        "rev": "4e5f8c8ba4d9ff096c02614a37ad9a52dac27cd9",
+        "rev": "a49b01d139e47d54f1bbaba176df838ea276417f",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
-        "ref": "feat/runtime-delegate-export",
+        "ref": "feat/peering",
         "repo": "logos-cpp-sdk",
         "type": "github"
       }
@@ -998,16 +998,16 @@
         "process-stats": "process-stats"
       },
       "locked": {
-        "lastModified": 1790395336,
-        "narHash": "sha256-ml2yKvTdvGPrvL/vQ1b6yMdkOFzzEVruaTweKFYwjWA=",
+        "lastModified": 1790393882,
+        "narHash": "sha256-EfGKO/35UW9jNhhQBB0sKxbS+I/bbIqgmsbu168+Sno=",
         "owner": "logos-co",
         "repo": "logos-liblogos",
-        "rev": "9aad01cec48eecef7ddc894a382c318ccf0d35c1",
+        "rev": "b7b4c1a2b58b1de5f8f77234a616ab275200da22",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
-        "ref": "feat/runtime-process",
+        "ref": "feat/peering",
         "repo": "logos-liblogos",
         "type": "github"
       }
@@ -7959,16 +7959,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1790348415,
-        "narHash": "sha256-vGfOzue4HJjnMmSsPY01OizzZEKBdDHjmpKg9LpWHL0=",
+        "lastModified": 1790392908,
+        "narHash": "sha256-vEnAcfL6hWNYQ/6SFbXErO/dCQFr3zVOrNrn9HO3298=",
         "owner": "logos-co",
         "repo": "logos-plugin-qt",
-        "rev": "4f7bccee0366ea3f9c0044ac1a2f7cefa48ef319",
+        "rev": "8742ee5ca8c2431ec94b3a716630461c7af16be8",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
-        "ref": "feat/drop-legacy-mode",
+        "ref": "feat/peering",
         "repo": "logos-plugin-qt",
         "type": "github"
       }
@@ -9143,16 +9143,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1790348792,
-        "narHash": "sha256-BViWI8U+v0MNyOpsMv09Zs2lKiwA0LpeRPCUV6kvmVA=",
+        "lastModified": 1790392057,
+        "narHash": "sha256-u9oPT4iXKcHQ0PhDQWqDuPrmSeGhFWQwHF2Mc264OJY=",
         "owner": "logos-co",
         "repo": "logos-protocol",
-        "rev": "23684fd95d4fb2c863f32f7f747254399ba319a8",
+        "rev": "653a4f7bfeae4b489e9d7e9be8b8d5f88dda493b",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
-        "ref": "feat/drop-legacy-mode",
+        "ref": "feat/peering",
         "repo": "logos-protocol",
         "type": "github"
       }
