@@ -35,7 +35,8 @@
     logos-liblogos.inputs.logos-package-manager.follows = "logos-package-manager";
     logos-package-manager-module.inputs.logos-package-manager.follows = "logos-package-manager";
     nix-bundle-logos-module-install.inputs.logos-package-manager.follows = "logos-package-manager";
-    logos-capability-module.url = "github:logos-co/logos-capability-module/feat/drop-legacy-mode";
+    # Decides peering's routes and scopes each import's facade (engine entries on feat/peering).
+    logos-capability-module.url = "github:logos-co/logos-capability-module/feat/peering";
     logos-modules-state-module.url = "github:logos-co/logos-modules-state-module/feat/drop-legacy-mode";
     logos-package-manager-module.url = "github:logos-co/logos-package-manager-module/feat/drop-legacy-mode";
     logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module/feat/drop-legacy-mode";
