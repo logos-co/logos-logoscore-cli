@@ -15629,15 +15629,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1790437540,
-        "narHash": "sha256-E6JEJ37+gT5dpVtiMO9g3NQOZYBk22bRAFyOlHSPbsM=",
+        "lastModified": 1790438827,
+        "narHash": "sha256-gb8nvYhWBYB5D1a0spAK+JH3B5gnw+sqhBmcY/YowB0=",
         "owner": "logos-co",
         "repo": "logos-peering",
-        "rev": "e386dc8000d23f4b57d41c77633b94b4a6fb3b4e",
+        "rev": "3a3f17ca5e5aa168d7a4e2eaee5860fd7c14428d",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
+        "ref": "feat/standalone-apps",
         "repo": "logos-peering",
         "type": "github"
       }
