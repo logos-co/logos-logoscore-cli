@@ -1,4 +1,5 @@
 #include "peer_command.h"
+#include "../remote.h"
 #include "../../string_utils.h"
 
 #include <fmt/format.h>
@@ -158,7 +159,7 @@ int PeerCommand::execute(const std::vector<std::string>& args)
             std::ifstream file(rest[0]);
             read = file.is_open() && readAll(file, text);
         }
-        text = strutil::trim(text);
+        text = logosctl::remote::inviteText(strutil::trim(text));
         if (!read || text.empty()) {
             output().printError("INVALID_ARGS", "No invite to redeem");
             return 1;
