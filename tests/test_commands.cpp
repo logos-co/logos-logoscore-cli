@@ -24,6 +24,7 @@
 #include "client/commands/command.h"
 #include "client/commands/package_command.h"
 #include "client/commands/watch_command.h"
+#include "client/remote.h"
 #include "config.h"
 #include "daemon/daemon_state.h"
 
@@ -273,6 +274,7 @@ TEST_F(CommandTest, CreateCommand_KnownCommands)
     EXPECT_NE(createCommand("issue-token",   mockClient, output), nullptr);
     EXPECT_NE(createCommand("revoke-token",  mockClient, output), nullptr);
     EXPECT_NE(createCommand("list-tokens",   mockClient, output), nullptr);
+    EXPECT_NE(createCommand("remote",        mockClient, output), nullptr);
 }
 
 TEST_F(CommandTest, CreateCommand_Unknown_ReturnsNull)
@@ -303,6 +305,28 @@ TEST_F(CommandTest, KnownSubcommands_ContainsExpected)
     EXPECT_TRUE(has("issue-token"));
     EXPECT_TRUE(has("revoke-token"));
     EXPECT_TRUE(has("list-tokens"));
+    EXPECT_TRUE(has("remote"));
+}
+
+// ── Remote Runtime Control ──────────────────────────────────────────────────
+
+TEST_F(CommandTest, Remote_AnInviteMayBeBareOrWhatPeerInvitePrints)
+{
+    EXPECT_EQ(logosctl::remote::inviteText(R"({"invite":"logos-pair:v1:a"})"), "logos-pair:v1:a");
+    EXPECT_EQ(logosctl::remote::inviteText("logos-pair:v1:b"), "logos-pair:v1:b");
+    EXPECT_EQ(logosctl::remote::inviteText(R"({"other":1})"), R"({"other":1})");
+}
+
+// These tests build without libpeering: remote mode says so rather than failing late.
+TEST_F(CommandTest, Remote_WithoutLibpeeringSaysSo)
+{
+    std::string error;
+    EXPECT_FALSE(logosctl::remote::available());
+    EXPECT_FALSE(logosctl::remote::route("node", &error).has_value());
+    EXPECT_NE(error.find("libpeering"), std::string::npos) << error;
+    auto cmd = createCommand("remote", mockClient, output);
+    ASSERT_NE(cmd, nullptr);
+    EXPECT_EQ(cmd->execute({"ls"}), 1);
 }
 
 // ── Connection Error Handling ────────────────────────────────────────────────

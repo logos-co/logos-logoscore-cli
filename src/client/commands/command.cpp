@@ -14,6 +14,7 @@
 #include "list_tokens_command.h"
 #include "package_command.h"
 #include "peer_command.h"
+#include "remote_command.h"
 #include "catalog_command.h"
 #include "config_command.h"
 
@@ -97,7 +98,9 @@ int Command::ensureConnected()
     // in milliseconds instead of twenty seconds is strictly what it already
     // meant to do. Give it a retry loop and it should skip this guard
     // explicitly and poll `detectStaleSession()` instead.
-    if (const std::optional<StaleSession> stale = detectStaleSession()) {
+    // A remote daemon is not this session's: there is no local state to judge it by.
+    if (const std::optional<StaleSession> stale =
+            m_client.isRemote() ? std::nullopt : detectStaleSession()) {
         m_output.printError(
             "NO_DAEMON",
             fmt::format("No daemon running ({}).", stale->reason));
@@ -120,7 +123,7 @@ std::vector<std::string> knownSubcommands()
         "call", "module",  // "module" for verbose call syntax
         "watch", "stats", "stop",
         "issue-token", "revoke-token", "list-tokens",
-        "package", "catalog", "key", "peer",
+        "package", "catalog", "key", "peer", "remote",
         "daemon-config", "client-config", "client"
     };
 }
@@ -161,6 +164,8 @@ std::unique_ptr<Command> createCommand(const std::string& name, Client& client, 
         return std::make_unique<KeyCommand>(client, output);
     if (name == "peer")
         return std::make_unique<PeerCommand>(client, output);
+    if (name == "remote")
+        return std::make_unique<RemoteCommand>(client, output);
     if (name == "daemon-config")
         return std::make_unique<ConfigCommand>(client, output, /*daemonSide=*/true);
     if (name == "client-config" || name == "client")

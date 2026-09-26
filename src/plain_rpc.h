@@ -35,6 +35,10 @@ public:
     PlainRpcClient& operator=(const PlainRpcClient&) = delete;
 
     bool valid() const { return m_client != nullptr; }
+    // A tls_tcp session instead of a local dial: this credential, and the dial
+    // answer and Hello a route gave (logosctl --remote).
+    bool useSession(const std::string& chainPem, const std::string& keyPem,
+                    const nlohmann::json& dial, const nlohmann::json& hello);
     nlohmann::json invoke(const std::string& method,
                           const nlohmann::json& args = nlohmann::json::array(),
                           int timeoutMs = 0,
@@ -48,8 +52,15 @@ public:
 
 private:
     struct Subscription;
+    struct Session {
+        std::string dial;
+        std::string hello;
+    };
     static void onEvent(const char* name, const char* dataJson, void* userData);
+    static char* onDial(const char* request, void* userData);
+    static char* onHello(const char* request, void* userData);
 
+    std::unique_ptr<Session> m_session;
     lp_client* m_client = nullptr;
     mutable std::mutex m_subscriptionsMutex;
     std::vector<std::unique_ptr<Subscription>> m_subscriptions;

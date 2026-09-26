@@ -152,6 +152,7 @@ set(SHARED_SOURCES
     # Client path
     src/client/client.cpp
     src/client/client_state.cpp
+    src/client/remote.cpp
     src/client/output.cpp
     src/client/commands/command.cpp
     src/client/commands/status_command.cpp
@@ -169,6 +170,7 @@ set(SHARED_SOURCES
     src/client/commands/list_tokens_command.cpp
     src/client/commands/package_command.cpp
     src/client/commands/peer_command.cpp
+    src/client/commands/remote_command.cpp
     src/client/commands/catalog_command.cpp
     src/client/commands/config_command.cpp
 
@@ -184,6 +186,17 @@ set(SHARED_SOURCES
 # everything below src/daemon, src/client and src/core_service is shared.
 add_executable(logosctl  src/main.cpp        ${SHARED_SOURCES})
 add_executable(logoscore src/main_legacy.cpp ${SHARED_SOURCES})
+
+# Remote Runtime Control (`logosctl remote`, `--remote PEER`) needs libpeering;
+# without it those say so.
+find_package(logos_peering CONFIG QUIET)
+if(logos_peering_FOUND)
+    message(STATUS "Remote Runtime Control: on (libpeering)")
+    foreach(_tgt logosctl logoscore)
+        target_link_libraries(${_tgt} PRIVATE logos::peering)
+        target_compile_definitions(${_tgt} PRIVATE LOGOSCTL_HAS_REMOTE=1)
+    endforeach()
+endif()
 
 foreach(_tgt logosctl logoscore)
 target_link_libraries(${_tgt} PRIVATE

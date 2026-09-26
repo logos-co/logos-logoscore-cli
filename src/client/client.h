@@ -26,6 +26,8 @@ public:
     virtual std::string lastError() const = 0;
     // The last call was answered with a refusal of our token, not unanswered.
     virtual bool tokenRefused() const { return false; }
+    // The daemon is a paired one reached over tls_tcp (`--remote`), not this session's.
+    virtual bool isRemote() const { return false; }
 
     // Module lifecycle
     virtual LogosMap loadModule(const std::string& name) = 0;
@@ -112,6 +114,9 @@ public:
                            const std::string& eventName,
                            std::function<void(const LogosMap&)> callback) override;
     bool tokenRefused() const override;
+    bool isRemote() const override { return !m_remote.empty(); }
+    // `logosctl --remote PEER`: connect() routes to that paired daemon instead.
+    void setRemote(std::string peer) { m_remote = std::move(peer); }
 
 private:
     // Answer "is the daemon actually gone?" from evidence, after a shutdown
@@ -119,11 +124,13 @@ private:
     // comment on RpcClient::shutdown for why a missing reply is normal there
     // and nowhere else.
     bool confirmDaemonStopped(long long pid, std::string& how);
+    bool connectRemote();
 
     struct Impl;
     Impl* d;
     bool m_connected = false;
     std::string m_lastError;
+    std::string m_remote;
 };
 
 #endif // CLIENT_H

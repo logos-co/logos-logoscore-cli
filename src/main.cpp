@@ -372,6 +372,12 @@ int main(int argc, char *argv[])
     //
     // --config-dir is the one survivor, and it is not configuration: it
     // selects *which* session to act on, so it cannot itself live inside one.
+    // Remote Runtime Control: the command goes to a paired daemon's core_service
+    // over tls_tcp instead of this session's local socket (`logosctl remote pair`).
+    std::string remotePeer;
+    app.add_option("--remote", remotePeer,
+        "Run the command on a daemon this client is paired with as an operator");
+
     std::string configDirStr;
     app.add_option("--config-dir", configDirStr,
         "Session directory to use (default: ~/.logosctl; also LOGOSCTL_CONFIG_DIR). "
@@ -435,6 +441,8 @@ int main(int argc, char *argv[])
         "Manage trusted package-signing keys");
     auto* peerSub          = app.add_subcommand("peer",
         "Link with other Logos runtimes: status | ls | pair | invite | redeem | export | import | ...");
+    auto* remoteSub        = app.add_subcommand("remote",
+        "Pair with daemons to operate them remotely: pair | ls | remove");
     // Declared so `--help` lists them; their verbs are collapsed in argv by
     // normalizeGroupVerbs before CLI11 ever sees them, so reaching these
     // means the user typed a group with a missing or unknown verb.
@@ -470,7 +478,7 @@ int main(int argc, char *argv[])
                       listModulesSub, moduleInfoSub, infoSub, callSub,
                       watchSub, statsSub, stopSub,
                       issueTokenSub, revokeTokenSub, listTokensSub,
-                      packageSub, catalogSub, keySub, peerSub, installSub, searchSub}) {
+                      packageSub, catalogSub, keySub, peerSub, remoteSub, installSub, searchSub}) {
         sub->allow_extras();
     }
 
@@ -932,6 +940,7 @@ int main(int argc, char *argv[])
         {catalogSub,      "catalog"},
         {keySub,          "key"},
         {peerSub,         "peer"},
+        {remoteSub,       "remote"},
         {installSub,      "install"},
         {searchSub,       "search"},
     };
@@ -945,13 +954,19 @@ int main(int argc, char *argv[])
         // (global flags placed after the subcommand end up in remaining())
         std::vector<std::string> cmdArgs;
 
-        for (const auto& r : sub->remaining()) {
+        const std::vector<std::string> remaining = sub->remaining();
+        for (std::size_t i = 0; i < remaining.size(); ++i) {
+            const std::string& r = remaining[i];
             if (r == "--json" || r == "-j") {
                 jsonMode = true;
             } else if (r == "--no-json" || r == "--human") {
                 humanMode = true;
             } else if (r == "--quiet" || r == "-q") {
                 quiet = true;
+            } else if (r == "--remote" && i + 1 < remaining.size()) {
+                remotePeer = remaining[++i];
+            } else if (r.rfind("--remote=", 0) == 0) {
+                remotePeer = r.substr(9);
             } else {
                 cmdArgs.push_back(r);
             }
@@ -972,6 +987,7 @@ int main(int argc, char *argv[])
         if (humanMode)
             output.setHumanMode(true);
         RpcClient rpcClient;
+        if (!remotePeer.empty()) rpcClient.setRemote(remotePeer);
 
         auto cmd = createCommand(commandName, rpcClient, output);
         if (!cmd) {

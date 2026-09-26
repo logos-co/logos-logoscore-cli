@@ -129,6 +129,9 @@
             else import nixpkgs { inherit system; };
           cppSdk = logos-cpp-sdk.packages.${system}.logos-cpp-include;
           protocolPkg = logos-protocol.packages.${system}.logos-protocol-plain;
+          # Remote Runtime Control (`logosctl --remote`); logos-peering has no Windows build yet.
+          peeringLib = if system == "x86_64-windows" then null
+            else logos-peering.packages.${system}.libpeering;
           liblogos = logos-liblogos.packages.${system}.logos-liblogos;
           liblogosLib = logos-liblogos.packages.${system}.logos-liblogos-lib;
           liblogosPortable = logos-liblogos.packages.${system}.portable;
@@ -177,7 +180,7 @@
       in [ basic extlib ipcNewApi ];
     in
     {
-      packages = forAllTargets ({ pkgs, system, cppSdk, protocolPkg, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, modulesStateModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, installDev, installPortable, dirBundler, appBundler }:
+      packages = forAllTargets ({ pkgs, system, cppSdk, protocolPkg, peeringLib, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, modulesStateModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, installDev, installPortable, dirBundler, appBundler }:
         let
           pname = "logos-logoscore-cli";
           # VERSION is only present on release branches; dev branches use a placeholder.
@@ -276,6 +279,7 @@
               pkgs.yaml-cpp
               pkgs.spdlog
             ]
+            ++ pkgs.lib.optional (peeringLib != null) peeringLib
             # CMakeLists.txt skips the whole test block for a Windows host, so
             # gtest is dead weight there -- and cross-building it is a real
             # cost, not a free one.
@@ -323,7 +327,8 @@
               pkgs.spdlog
               protocolPkg
               liblogosLib
-            ];
+            ]
+            ++ pkgs.lib.optional (peeringLib != null) peeringLib;
 
             installPhase = ''
               runHook preInstall
@@ -592,7 +597,8 @@ ${pkgs.lib.optionalString withPkgModules ''
               liblogosLib
               cppSdk
               protocolPkg
-            ];
+            ]
+            ++ pkgs.lib.optional (peeringLib != null) peeringLib;
 
             cmakeFlags = [
               "-GNinja"
@@ -700,7 +706,8 @@ ${pkgs.lib.optionalString withPkgModules ''
               pkgs.fmt
               pkgs.yaml-cpp
               pkgs.spdlog
-            ];
+            ]
+            ++ pkgs.lib.optional (peeringLib != null) peeringLib;
 
             cmakeFlags = [
               "-GNinja"
@@ -735,7 +742,8 @@ ${pkgs.lib.optionalString withPkgModules ''
               pkgs.spdlog
               protocolPkg
               liblogosLib
-            ];
+            ]
+            ++ pkgs.lib.optional (peeringLib != null) peeringLib;
 
             passthru = {
               extraDirs = [ "modules" ] ++ pkgs.lib.optional withPkgModules "modules-pkg";
