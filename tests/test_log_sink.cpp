@@ -6,6 +6,8 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
@@ -186,6 +188,53 @@ TEST_F(LogSinkTest, RetentionPrunesAcrossSessions)
     EXPECT_TRUE(fs::exists(fs::read_symlink(link).is_absolute()
                                ? fs::read_symlink(link)
                                : fs::path(dir) / fs::read_symlink(link)));
+}
+
+// Detached, stdout/stderr are the --detach startup file, which the parent
+// deletes: the sink must not hold it open, mirror into it, or restore it.
+TEST_F(LogSinkTest, DetachedHoldsNoHandleOnTheOriginalStdio)
+{
+    const std::string startup = dir + "/startup.err";
+    const int fd = ::open(startup.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    ASSERT_GE(fd, 0);
+    struct stat target{};
+    ASSERT_EQ(::fstat(fd, &target), 0);
+    std::fflush(stdout);
+    std::fflush(stderr);
+    const int savedOut = ::dup(fileno(stdout));
+    const int savedErr = ::dup(fileno(stderr));
+    ::dup2(fd, fileno(stdout));
+    ::dup2(fd, fileno(stderr));
+    ::close(fd);
+
+    LogSink::Options o;
+    o.dir = dir;
+    o.detached = true;   // console stays true: detached must win
+    const bool started = LogSink::instance().start(o);
+    std::printf("detached-line\n");
+    std::fflush(stdout);
+    int held = 0;   // fds on the startup file while the sink runs
+    for (int f = 0; f < 1024; ++f) {
+        struct stat s{};
+        if (::fstat(f, &s) == 0 && s.st_dev == target.st_dev && s.st_ino == target.st_ino)
+            ++held;
+    }
+    LogSink::instance().stop();
+    std::printf("after-stop\n");
+    std::fflush(stdout);
+
+    // Assert only once gtest has its own stdout back.
+    ::dup2(savedOut, fileno(stdout));
+    ::dup2(savedErr, fileno(stderr));
+    ::close(savedOut);
+    ::close(savedErr);
+    ASSERT_TRUE(started);
+    EXPECT_EQ(held, 0);
+    EXPECT_EQ(fs::file_size(startup), 0u) << "the sink wrote into the startup file";
+    std::ifstream ifs(dir + "/daemon.log");
+    const std::string body((std::istreambuf_iterator<char>(ifs)),
+                            std::istreambuf_iterator<char>());
+    EXPECT_NE(body.find("detached-line"), std::string::npos);
 }
 
 // Disabled logging is a valid configuration, not an error, and must leave
