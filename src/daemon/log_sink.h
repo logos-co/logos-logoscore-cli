@@ -40,9 +40,11 @@ public:
         // (the live one plus maxFiles-1 older). 0 disables rotation.
         std::size_t maxSizeMb = 10;
         std::size_t maxFiles  = 5;
-        // Mirror to the terminal as well. Pointless once detached, where the
-        // original stdout is /dev/null, so the daemon turns it off there.
+        // Mirror to the terminal as well.
         bool console = true;
+        // A --detach child: stdout/stderr are its startup file, which the
+        // parent deletes. Keep no handle on it; no mirroring, null on stop().
+        bool detached = false;
     };
 
     static LogSink& instance();
@@ -62,6 +64,10 @@ public:
     // before the daemon has started, which is why --detach reports this
     // rather than a filename it would have to guess the stamp for.
     static std::string stablePath(const std::string& dir, const std::string& file);
+
+    // Point stdout/stderr at the null device: where a detached daemon that
+    // runs without a sink sends them once the parent deletes its startup file.
+    static void discardStdio();
 
     LogSink(const LogSink&) = delete;
     LogSink& operator=(const LogSink&) = delete;

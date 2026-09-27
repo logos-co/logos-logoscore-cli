@@ -637,6 +637,7 @@ int main(int argc, char *argv[])
             // --config-dir, and an inherited-but-different session would be a
             // very confusing bug.
             logosctl::setEnvVar("LOGOSCTL_CONFIG_DIR", Config::configDir().c_str());
+            logosctl::setEnvVar(Daemon::kDetachedEnv, "1");
 
             const std::string statePath = Config::daemonStatePath();
             // A stale state file from a previous run would make the readiness

@@ -320,6 +320,10 @@ int Daemon::start(int argc, char* argv[],
     Config::setSessionDirOverride(Config::SessionDir::Cache,   cfg.dirs.cache);
     Config::setSessionDirOverride(Config::SessionDir::Logs,    cfg.dirs.logs);
 
+    // Consumed here so that module hosts do not inherit it.
+    const bool detached = std::getenv(kDetachedEnv) != nullptr;
+    logosctl::unsetEnvVar(kDetachedEnv);
+
     // Start capturing before anything else runs, so the log holds the whole
     // boot -- including a failure during it, which is exactly when the log is
     // worth having. Non-fatal: a daemon that cannot write a log file is still
@@ -331,10 +335,10 @@ int Daemon::start(int argc, char* argv[],
         lo.file      = cfg.logging.file;
         lo.maxSizeMb = cfg.logging.maxSizeMb;
         lo.maxFiles  = cfg.logging.maxFiles;
-        // Mirror whenever configured, pipe or terminal alike: a caller doing
-        // `daemon start > out.log` is watching that pipe. Detached, the
-        // original stdout is /dev/null, so this costs a discarded write.
+        // Mirror whenever configured: a caller doing `daemon start > out.log`
+        // is watching that pipe. A --detach child has nobody to mirror to.
         lo.console   = cfg.logging.console;
+        lo.detached  = detached;
         if (cfg.logging.enabled && !LogSink::instance().start(lo)) {
             fprintf(stderr, "Warning: could not open the log file under %s; "
                             "continuing without file logging.\n",
@@ -687,6 +691,11 @@ int Daemon::start(int argc, char* argv[],
         logos_core_cleanup();
         return 1;
     }
+
+    // The --detach parent deletes the startup file on seeing state.json; with
+    // no sink, our stdout/stderr are still that file.
+    if (detached && LogSink::instance().currentFile().empty())
+        LogSink::discardStdio();
 
     // Persist operator preferences only if asked (legacy front-end only).
     // Done after state.json is on disk so a config that fails earlier (e.g. a

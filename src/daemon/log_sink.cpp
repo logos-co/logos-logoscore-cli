@@ -37,6 +37,15 @@ int makePipe(int fds[2])
 #endif
 }
 
+int openNullDevice()
+{
+#ifdef _WIN32
+    return ::_open("NUL", _O_WRONLY | _O_BINARY | _O_NOINHERIT);
+#else
+    return ::open("/dev/null", O_WRONLY | O_CLOEXEC);
+#endif
+}
+
 // yyyymmdd_HHMMSS in local time, matching basecamp's session stamp so logs
 // from the two frontends sort and read the same way.
 std::string sessionStamp()
@@ -129,7 +138,7 @@ bool LogSink::start(const Options& opts)
     const std::string stamped = parts.stem + "_" + sessionStamp() + parts.ext;
     m_path     = (fs::path(opts.dir) / stamped).string();
     m_linkPath = stablePath(opts.dir, opts.file);
-    m_console  = opts.console;
+    m_console  = opts.console && !opts.detached;
 
     try {
         // maxSizeMb == 0 means "never rotate": spdlog has no such mode, so
@@ -174,8 +183,10 @@ bool LogSink::start(const Options& opts)
         m_path.clear();
     };
 
-    m_originalStdout = ::dup(fileno(stdout));
-    m_originalStderr = ::dup(fileno(stderr));
+    // Detached, a dup would keep the startup file open after the parent
+    // deletes it.
+    m_originalStdout = opts.detached ? openNullDevice() : ::dup(fileno(stdout));
+    m_originalStderr = opts.detached ? openNullDevice() : ::dup(fileno(stderr));
     if (m_originalStdout < 0 || m_originalStderr < 0) {
         cleanup();
         return false;
@@ -330,6 +341,26 @@ void LogSink::stop()
 std::string LogSink::stablePath(const std::string& dir, const std::string& file)
 {
     return (fs::path(dir) / file).string();
+}
+
+void LogSink::discardStdio()
+{
+    std::fflush(stdout);
+    std::fflush(stderr);
+    const int fd = openNullDevice();
+    if (fd < 0)
+        return;
+    ::dup2(fd, fileno(stdout));
+    ::dup2(fd, fileno(stderr));
+    if (fd > 2)
+        ::close(fd);
+#ifdef _WIN32
+    // As in start(): later children take the Win32 std handles, not fd 1 / 2.
+    ::SetStdHandle(STD_OUTPUT_HANDLE,
+                   reinterpret_cast<HANDLE>(::_get_osfhandle(_fileno(stdout))));
+    ::SetStdHandle(STD_ERROR_HANDLE,
+                   reinterpret_cast<HANDLE>(::_get_osfhandle(_fileno(stderr))));
+#endif
 }
 
 std::string LogSink::currentFile() const

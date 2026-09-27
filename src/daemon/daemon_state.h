@@ -73,8 +73,7 @@ struct LoggingConfig {
     // Rotate past this size, keeping maxFiles in total. 0 = never rotate.
     std::size_t maxSizeMb = 10;
     std::size_t maxFiles  = 5;
-    // Mirror to the terminal too. Ignored once detached, where the original
-    // stdout is /dev/null.
+    // Mirror to the terminal too. Ignored by a --detach daemon, which has none.
     bool console = true;
 };
 
