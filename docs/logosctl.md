@@ -94,6 +94,10 @@ transports have bound, so the next command races the boot. `--detach` returns
 only after the daemon has published `daemon/state.json`, and tells you where it
 is logging.
 
+One daemon per session: a start while one is running exits 1 with "already
+running in this config dir". `daemon stop` returns once the daemon has exited,
+so `daemon stop && daemon start --detach` restarts it.
+
 #### Logs
 
 Everything the daemon and its module subprocesses write goes to a rotating file

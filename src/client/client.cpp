@@ -67,9 +67,9 @@ constexpr int kTransferTimeoutMs = rpc_deadlines::kTransferMs;
 // fields and returns), so a reply still absent after this long is a reply that
 // is not coming; the 20s default only makes the operator wait for it.
 constexpr int kShutdownTimeoutMs = 5 * 1000;
-// Having stopped waiting for words, how long to watch for the deed. Generous:
+// How long to watch for the daemon to exit, reply or no reply. Generous:
 // a clean shutdown unloads every module, which is one subprocess apiece.
-constexpr int kShutdownConfirmMs = 15 * 1000;
+constexpr int kShutdownConfirmMs = 45 * 1000;
 // Per-probe budget when the daemon is remote and there is no pid to watch.
 constexpr int kShutdownProbeMs   = 1500;
 constexpr int kShutdownProbeGapMs = 200;
@@ -372,7 +372,18 @@ LogosMap RpcClient::shutdown()
 
     nlohmann::json ret = d->invoke("shutdown", nlohmann::json::array(),
                                    kShutdownTimeoutMs);
-    if (ret.is_object()) return ret;
+    if (ret.is_object()) {
+        // Return once the process is gone, so a following start finds the
+        // config dir free rather than a daemon still unloading its modules.
+        if (pid > 0 && ret.value("status", std::string{}) == "ok"
+            && !logosctl::waitForProcessExit(pid, kShutdownConfirmMs)) {
+            return LogosMap{{"status","error"},{"code","SHUTDOWN_TIMEOUT"},
+                            {"message", fmt::format(
+                                "the daemon (pid {}) accepted shutdown but is still "
+                                "running {}s later.", pid, kShutdownConfirmMs / 1000)}};
+        }
+        return ret;
+    }
 
     // No reply. Every other call in this file is right to read that as
     // failure; this one is not. Asking a process to die is the one request

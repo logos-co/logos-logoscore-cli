@@ -301,7 +301,7 @@ logosctl daemon stop
 
 If `daemon/state.json` records this client's daemon instance with a pid that is no longer alive, the session is stale: `stop` reports `NO_DAEMON` and exits 2 without dialing anything. This is not specific to `stop` — see [No daemon running](#no-daemon-running) — but it matters most here, because the shutdown path below reads a missing reply as a successful shutdown.
 
-Otherwise it sends a shutdown request to the daemon via `core_service`. The daemon performs a clean shutdown: unloads all modules, removes `daemon/state.json`, and exits. The client prints a confirmation message and exits.
+Otherwise it sends a shutdown request to the daemon via `core_service`. The daemon performs a clean shutdown: unloads all modules, removes `daemon/state.json`, and exits. The client waits for that exit (up to 45s, when it knows the daemon's pid), prints a confirmation message and exits, so a `daemon start` right after it does not meet the old daemon still shutting down. A daemon still running at the deadline is reported as `SHUTDOWN_TIMEOUT` with its pid.
 
 If the daemon exits before the RPC response arrives (expected behavior), the client treats the missing reply as a successful shutdown — but only after confirming that the daemon really is gone, by watching the pid recorded in `daemon/state.json` (or, for a remote daemon, by re-probing the endpoint). A daemon that neither answers nor exits is reported as an error, not quietly accepted. When the confirmation path is used, the JSON form carries an extra `"confirmed_by"` field naming the evidence (`process-exit` or `endpoint-unreachable`); when the reply arrives normally it is absent.
 

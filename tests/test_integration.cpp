@@ -1475,12 +1475,9 @@ TEST_F(AccessPolicyFixture, EnforcePolicy_StillAllowsADeclaredPair) {
 // on demand. Measured through this fixture on an idle macOS box: the pre-fix
 // daemon lost 6 replies in 100 stops, the fixed one none in 120.
 //
-// If the daemon half ever regresses, expect this to fail as `daemon stop`
-// exiting 3 with "the daemon (pid N) is still running 15s later" rather than
-// as a lostReplies count. The daemon here is this process's own child, so it
-// lingers as a zombie until reaped and the client's kill(pid, 0) confirmation
-// sees it as alive — an artifact of the harness, not of the product, where no
-// client is ever the daemon's parent.
+// If the daemon half ever regresses, expect it as a lostReplies count: the
+// client confirms by watching the pid, and counts the unreaped daemon (this
+// process's own child, a zombie until reaped) as exited.
 //
 // Not mirrored into test_integration_logoscore.cpp: both front-ends drive the
 // same CoreServiceImpl::shutdown and the same RpcClient::shutdown, so a second
@@ -1504,9 +1501,8 @@ int stopCycles()
     return 60;
 }
 
-// The daemon here is this process's own child, so kill(pid, 0) — what
-// logosctl::processAlive asks, and the right question for a client that is
-// unrelated to the daemon — reports a zombie as alive. Reap it instead.
+// The daemon here is this process's own child: reap it, which also proves it
+// exited.
 bool waitForChildExit(pid_t p, int timeoutMs)
 {
     if (p <= 0) return true;
@@ -1716,4 +1712,109 @@ TEST_F(DetachedDaemonFdTest, CallersPipeReachesEofWhileTheDaemonRuns)
     std::string status;
     EXPECT_EQ(d.run("status", &status, /*timeoutSecs=*/20), 0)
         << "the daemon should still be running\n" << status;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// One daemon per config dir, across `daemon start --detach` and `daemon stop`
+// ═══════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// A --detach daemon is not this process's child, so it is tracked by pid.
+class DetachedDaemonTest : public ::testing::Test {
+protected:
+    LogosctlDaemon d;
+    std::vector<long long> pids;   // every daemon a start reported
+
+    void SetUp() override {
+        std::string why;
+        if (!d.envReady(why)) GTEST_SKIP() << why;
+        d.prepare(::testing::UnitTest::GetInstance()->current_test_info()->name());
+    }
+
+    void TearDown() override {
+        for (long long p : pids) {
+            if (!logosctl::processAlive(p)) continue;
+            ::kill(static_cast<pid_t>(-p), SIGTERM);   // setsid: its own group
+            if (!logosctl::waitForProcessExit(p, 5000))
+                ::kill(static_cast<pid_t>(-p), SIGKILL);
+        }
+        d.shutdown();
+    }
+
+    // Runs `daemon start --detach` and records the pid it reports.
+    int startDetached(std::string* out) {
+        const int rc = d.run("daemon start --detach", out, /*timeoutSecs=*/90);
+        const std::string tag = "Daemon started (pid ";
+        const auto at = out->find(tag);
+        if (at != std::string::npos)
+            pids.push_back(std::atoll(out->c_str() + at + tag.size()));
+        return rc;
+    }
+
+    std::optional<long long> statePid() const {
+        const std::string s = slurp(d.configDir / "daemon" / "state.json");
+        try { return nlohmann::json::parse(s).at("pid").get<long long>(); }
+        catch (...) { return std::nullopt; }
+    }
+
+    std::string log() const { return slurp(d.configDir / "logs" / "daemon.log"); }
+};
+
+} // namespace
+
+TEST_F(DetachedDaemonTest, SecondStartIsRefusedAndLeavesTheFirstRunning)
+{
+    std::string out;
+    ASSERT_EQ(startDetached(&out), 0) << out << log();
+    ASSERT_EQ(pids.size(), 1u) << out;
+    ASSERT_EQ(statePid(), pids[0]);
+
+    EXPECT_EQ(startDetached(&out), 1) << out;
+    EXPECT_NE(out.find("already running in this config dir"), std::string::npos) << out;
+    EXPECT_EQ(pids.size(), 1u) << "the second start reported a daemon:\n" << out;
+
+    // The refusal must not touch the first daemon's state.json.
+    EXPECT_EQ(statePid(), pids[0]);
+    EXPECT_TRUE(logosctl::processAlive(pids[0]));
+    EXPECT_EQ(d.run("status", &out, /*timeoutSecs=*/20), 0) << out;
+}
+
+TEST_F(DetachedDaemonTest, StopReturnsOnlyOnceTheDaemonHasExited)
+{
+    std::string out;
+    ASSERT_EQ(startDetached(&out), 0) << out << log();
+    ASSERT_EQ(pids.size(), 1u) << out;
+    ASSERT_TRUE(logosctl::processAlive(pids[0]));
+
+    ASSERT_EQ(d.run("daemon stop", &out, /*timeoutSecs=*/90), 0) << out;
+    EXPECT_FALSE(logosctl::processAlive(pids[0]))
+        << "`daemon stop` returned while pid " << pids[0] << " was still running";
+}
+
+TEST_F(DetachedDaemonTest, StopThenStartKeepsExactlyOneDaemon)
+{
+    std::string out;
+    ASSERT_EQ(startDetached(&out), 0) << out << log();
+
+    for (int round = 0; round < 5; ++round) {
+        ASSERT_EQ(d.run("daemon stop", &out, /*timeoutSecs=*/90), 0)
+            << "round " << round << ": " << out;
+        const std::size_t before = pids.size();
+        ASSERT_EQ(startDetached(&out), 0) << "round " << round << ": " << out << log();
+        ASSERT_EQ(pids.size(), before + 1) << out;
+
+        // Exactly one: the new daemon owns the dir, every earlier one is gone.
+        EXPECT_EQ(statePid(), pids.back()) << "round " << round;
+        for (long long p : pids)
+            EXPECT_EQ(logosctl::processAlive(p), p == pids.back())
+                << "round " << round << ": pid " << p;
+        EXPECT_EQ(d.run("status", &out, /*timeoutSecs=*/20), 0)
+            << "round " << round << ": " << out;
+    }
+
+    ASSERT_EQ(d.run("daemon stop", &out, /*timeoutSecs=*/90), 0) << out;
+    for (long long p : pids)
+        EXPECT_FALSE(logosctl::processAlive(p)) << "pid " << p << " outlived the final stop";
+    EXPECT_FALSE(fs::exists(d.configDir / "daemon" / "state.json"));
 }
