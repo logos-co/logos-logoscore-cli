@@ -13,6 +13,8 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <sys/resource.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -49,6 +51,28 @@ static void sleepMs(unsigned ms)
     ::usleep(ms * 1000);
 #endif
 }
+
+#ifndef _WIN32
+// One past the highest fd the --detach child closes by hand: the soft limit,
+// capped because it can be RLIM_INFINITY or huge.
+static int closeFdsBound()
+{
+    constexpr rlim_t kCap = 1 << 16;
+    struct rlimit rl{};
+    if (::getrlimit(RLIMIT_NOFILE, &rl) != 0 || rl.rlim_cur == RLIM_INFINITY || rl.rlim_cur > kCap)
+        return static_cast<int>(kCap);
+    return static_cast<int>(rl.rlim_cur);
+}
+
+// Closes every fd from 3 up. Async-signal-safe, so it can run between fork and exec.
+static void closeFdsFrom3(int bound)
+{
+#ifdef SYS_close_range
+    if (::syscall(SYS_close_range, 3u, ~0u, 0u) == 0) return;
+#endif
+    for (int fd = 3; fd < bound; ++fd) ::close(fd);
+}
+#endif
 
 #ifdef _WIN32
 namespace {
@@ -655,6 +679,11 @@ int main(int argc, char *argv[])
                 ::CloseHandle(childProc.hProcess);
             };
 #else
+            // Built before fork: allocating in the child is not async-signal-safe.
+            std::vector<char*> cargv;
+            for (auto& a : childArgs) cargv.push_back(const_cast<char*>(a.c_str()));
+            cargv.push_back(nullptr);
+            const int fdBound = closeFdsBound();
             const pid_t child = fork();
             if (child < 0) {
                 perror("Error: could not fork for --detach");
@@ -680,9 +709,9 @@ int main(int argc, char *argv[])
                     ::dup2(early, STDERR_FILENO);
                     if (early > STDERR_FILENO) ::close(early);
                 }
-                std::vector<char*> cargv;
-                for (auto& a : childArgs) cargv.push_back(const_cast<char*>(a.c_str()));
-                cargv.push_back(nullptr);
+                // Drop everything else the caller left open: a pipe write end
+                // kept by the daemon stops that pipe's reader ever seeing EOF.
+                closeFdsFrom3(fdBound);
                 execv(self.c_str(), cargv.data());
                 _exit(127);  // exec failed
             }

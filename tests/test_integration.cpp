@@ -45,6 +45,7 @@
 #include <gtest/gtest.h>
 
 #include <logos_json.h>
+#include <process_util.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -58,14 +59,20 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <libproc.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -118,6 +125,12 @@ public:
     }
 
     void start(const std::string& tag) {
+        prepare(tag);
+        pid = spawnBg({"daemon", "start"}, daemonLog);
+    }
+
+    // The session and its config.yaml, with no daemon started.
+    void prepare(const std::string& tag) {
         base      = fs::temp_directory_path() / ("logosctl_it_" + tag + "_" + std::to_string(getpid()));
         configDir = base / "config";
         homeDir   = base / "home";
@@ -137,7 +150,6 @@ public:
                 << "  - \"" << modulesDir.string() << "\"\n";
             if (!extraConfig.empty()) cfg << extraConfig;
         }
-        pid = spawnBg({"daemon", "start"}, daemonLog);
     }
 
     // fork + setsid + exec a logosctl subprocess (daemon or watch) with
@@ -1578,4 +1590,130 @@ TEST(ShutdownReplyTest, StopSucceedsWithNoGracePeriod)
            "confirmed by watching the process exit. The client covered for it and the "
            "command still succeeded, but the daemon is leaving its event loop before "
            "its answer is on the wire.";
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// `daemon start --detach` keeps none of its caller's descriptors
+// ═══════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// (device, inode) of an open file or pipe; macOS gives a pipe end (0, handle).
+using FdId = std::pair<unsigned long long, unsigned long long>;
+
+FdId idOf(const struct stat& st)
+{
+    return {static_cast<std::make_unsigned_t<dev_t>>(st.st_dev),
+            static_cast<unsigned long long>(st.st_ino)};
+}
+
+// What each descriptor of `pid` refers to. On macOS this is libproc, which lsof reads too.
+std::vector<FdId> heldBy(pid_t pid)
+{
+    std::vector<FdId> ids;
+#ifdef __APPLE__
+    std::vector<proc_fdinfo> fds(4096);
+    const int bytes = ::proc_pidinfo(pid, PROC_PIDLISTFDS, 0, fds.data(),
+                                     static_cast<int>(fds.size() * sizeof(proc_fdinfo)));
+    fds.resize(bytes > 0 ? bytes / sizeof(proc_fdinfo) : 0);
+    for (const proc_fdinfo& f : fds) {
+        if (f.proc_fdtype == PROX_FDTYPE_VNODE) {
+            vnode_fdinfowithpath v{};
+            if (::proc_pidfdinfo(pid, f.proc_fd, PROC_PIDFDVNODEPATHINFO, &v, sizeof v) == sizeof v)
+                ids.emplace_back(v.pvip.vip_vi.vi_stat.vst_dev, v.pvip.vip_vi.vi_stat.vst_ino);
+        } else if (f.proc_fdtype == PROX_FDTYPE_PIPE) {
+            pipe_fdinfo p{};
+            if (::proc_pidfdinfo(pid, f.proc_fd, PROC_PIDFDPIPEINFO, &p, sizeof p) == sizeof p)
+                ids.emplace_back(0, p.pipeinfo.pipe_handle);
+        }
+    }
+#else
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator("/proc/" + std::to_string(pid) + "/fd", ec)) {
+        struct stat st{};
+        if (::stat(e.path().c_str(), &st) == 0) ids.push_back(idOf(st));
+    }
+#endif
+    return ids;
+}
+
+// The daemon is not this process's child; it is found by the pid its launcher prints.
+class DetachedDaemonFdTest : public ::testing::Test {
+protected:
+    LogosctlDaemon d;
+    long long daemonPid = -1;
+
+    void SetUp() override {
+        std::string why;
+        if (!d.envReady(why)) GTEST_SKIP() << why;
+        d.prepare(::testing::UnitTest::GetInstance()->current_test_info()->name());
+    }
+
+    void TearDown() override {
+        if (daemonPid > 0 && logosctl::processAlive(daemonPid)) {
+            ::kill(static_cast<pid_t>(-daemonPid), SIGTERM);   // setsid: its own group
+            if (!logosctl::waitForProcessExit(daemonPid, 5000))
+                ::kill(static_cast<pid_t>(-daemonPid), SIGKILL);
+        }
+        d.shutdown();
+    }
+};
+
+} // namespace
+
+TEST_F(DetachedDaemonFdTest, CallersPipeReachesEofWhileTheDaemonRuns)
+{
+    // No O_CLOEXEC and above stdio, like another thread's popen() pipe at fork time.
+    int p[2];
+    ASSERT_EQ(::pipe(p), 0);
+    struct stat rSt{}, wSt{}, nullSt{};
+    ASSERT_EQ(::fstat(p[0], &rSt), 0);
+    ASSERT_EQ(::fstat(p[1], &wSt), 0);
+    ASSERT_EQ(::stat("/dev/null", &nullSt), 0);
+
+    const fs::path outFile = d.base / "start.out";
+    const pid_t launcher = ::fork();
+    ASSERT_GE(launcher, 0);
+    if (launcher == 0) {
+        setenv("LOGOSCTL_CONFIG_DIR", d.configDir.c_str(), 1);
+        setenv("HOME", d.homeDir.c_str(), 1);
+        const int fd = ::open(outFile.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (fd >= 0) { ::dup2(fd, STDOUT_FILENO); ::dup2(fd, STDERR_FILENO); }
+        ::execl(d.binary.c_str(), d.binary.c_str(), "daemon", "start", "--detach",
+                static_cast<char*>(nullptr));
+        ::_exit(127);
+    }
+    ::close(p[1]);
+
+    int st = 0;
+    pid_t reaped = 0;
+    for (int i = 0; i < 900 && (reaped = ::waitpid(launcher, &st, WNOHANG)) == 0; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    if (reaped != launcher) { ::kill(launcher, SIGKILL); ::waitpid(launcher, nullptr, 0); }
+    const std::string out = slurp(outFile);
+    ASSERT_TRUE(reaped == launcher && WIFEXITED(st) && WEXITSTATUS(st) == 0) << out;
+    const std::string tag = "Daemon started (pid ";
+    const auto at = out.find(tag);
+    ASSERT_NE(at, std::string::npos) << out;
+    daemonPid = std::atoll(out.c_str() + at + tag.size());
+
+    // The launcher is gone, so only a daemon holding the write end can keep EOF away.
+    pollfd pfd{p[0], POLLIN, 0};
+    char byte;
+    EXPECT_TRUE(::poll(&pfd, 1, 5000) == 1 && ::read(p[0], &byte, 1) == 0)
+        << "no EOF on the caller's pipe 5 s after `daemon start --detach` returned";
+
+    // Listed while p[0] is open, so no new pipe can reuse this one's identity.
+    const std::vector<FdId> held = heldBy(static_cast<pid_t>(daemonPid));
+    ::close(p[0]);
+    const auto holds = [&held](const struct stat& s) {
+        return std::find(held.begin(), held.end(), idOf(s)) != held.end();
+    };
+    ASSERT_TRUE(holds(nullSt)) << "control: the daemon's stdin (/dev/null) was not listed";
+    EXPECT_FALSE(holds(wSt)) << "the daemon holds the caller's pipe (write end)";
+    EXPECT_FALSE(holds(rSt)) << "the daemon holds the caller's pipe (read end)";
+
+    std::string status;
+    EXPECT_EQ(d.run("status", &status, /*timeoutSecs=*/20), 0)
+        << "the daemon should still be running\n" << status;
 }
