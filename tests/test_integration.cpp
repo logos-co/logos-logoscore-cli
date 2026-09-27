@@ -1745,11 +1745,43 @@ protected:
     // Runs `daemon start --detach` and records the pid it reports.
     int startDetached(std::string* out) {
         const int rc = d.run("daemon start --detach", out, /*timeoutSecs=*/90);
-        const std::string tag = "Daemon started (pid ";
-        const auto at = out->find(tag);
-        if (at != std::string::npos)
-            pids.push_back(std::atoll(out->c_str() + at + tag.size()));
+        record(*out);
         return rc;
+    }
+
+    void record(const std::string& out) {
+        const std::string tag = "Daemon started (pid ";
+        const auto at = out.find(tag);
+        if (at != std::string::npos)
+            pids.push_back(std::atoll(out.c_str() + at + tag.size()));
+    }
+
+    // A start in the background, output to a file. Not popen() from two
+    // threads: one's pipe can leak into the other's daemon and never close.
+    pid_t spawnStart(const fs::path& out) {
+        const pid_t p = ::fork();
+        if (p == 0) {
+            setenv("LOGOSCTL_CONFIG_DIR", d.configDir.c_str(), 1);
+            setenv("HOME", d.homeDir.c_str(), 1);
+            const int fd = ::open(out.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            if (fd >= 0) { ::dup2(fd, STDOUT_FILENO); ::dup2(fd, STDERR_FILENO); }
+            ::execl(d.binary.c_str(), d.binary.c_str(), "daemon", "start", "--detach",
+                    static_cast<char*>(nullptr));
+            ::_exit(127);
+        }
+        return p;
+    }
+
+    // Exit code of a spawnStart child, or -1 if it has not exited in 90s.
+    static int exitCode(pid_t p) {
+        for (int i = 0; i < 900; ++i) {
+            int st = 0;
+            if (::waitpid(p, &st, WNOHANG) == p) return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        ::kill(p, SIGKILL);
+        ::waitpid(p, nullptr, 0);
+        return -1;
     }
 
     std::optional<long long> statePid() const {
@@ -1817,4 +1849,51 @@ TEST_F(DetachedDaemonTest, StopThenStartKeepsExactlyOneDaemon)
     for (long long p : pids)
         EXPECT_FALSE(logosctl::processAlive(p)) << "pid " << p << " outlived the final stop";
     EXPECT_FALSE(fs::exists(d.configDir / "daemon" / "state.json"));
+}
+
+TEST_F(DetachedDaemonTest, ConcurrentStartsLeaveExactlyOneDaemon)
+{
+    for (int round = 0; round < 3; ++round) {
+        const fs::path fileA = d.base / ("start_a_" + std::to_string(round));
+        const fs::path fileB = d.base / ("start_b_" + std::to_string(round));
+        const pid_t a = spawnStart(fileA);
+        const pid_t b = spawnStart(fileB);
+        const int rcA = exitCode(a), rcB = exitCode(b);
+        const std::string outA = slurp(fileA), outB = slurp(fileB);
+        const std::size_t before = pids.size();
+        record(outA);
+        record(outB);
+
+        ASSERT_EQ((rcA == 0) + (rcB == 0), 1)
+            << "round " << round << ":\n" << outA << "\n---\n" << outB;
+        EXPECT_NE((rcA == 0 ? outB : outA).find("Refusing to start a second one"),
+                  std::string::npos) << outA << "\n---\n" << outB;
+        ASSERT_EQ(pids.size(), before + 1) << outA << "\n---\n" << outB;
+        EXPECT_EQ(statePid(), pids.back()) << "round " << round;
+        for (long long p : pids)
+            EXPECT_EQ(logosctl::processAlive(p), p == pids.back())
+                << "round " << round << ": pid " << p;
+
+        std::string out;
+        ASSERT_EQ(d.run("daemon stop", &out, /*timeoutSecs=*/90), 0) << out;
+    }
+}
+
+TEST_F(DetachedDaemonTest, StartWaitsOutADaemonThatIsStillStopping)
+{
+    std::string out;
+    ASSERT_EQ(startDetached(&out), 0) << out << log();
+    const long long old = pids.back();
+
+    // Stopped without `daemon stop`: state.json goes at once, the process
+    // lingers while it unloads its modules.
+    ASSERT_EQ(::kill(static_cast<pid_t>(old), SIGTERM), 0);
+    for (int i = 0; i < 250 && fs::exists(d.configDir / "daemon" / "state.json"); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    ASSERT_EQ(startDetached(&out), 0) << out << log();
+    ASSERT_EQ(pids.size(), 2u) << out;
+    EXPECT_FALSE(logosctl::processAlive(old));
+    EXPECT_EQ(statePid(), pids.back());
+    EXPECT_TRUE(logosctl::processAlive(pids.back()));
 }

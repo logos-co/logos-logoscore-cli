@@ -32,6 +32,7 @@ picks which one (default `~/.logosctl`, also `LOGOSCTL_CONFIG_DIR`):
 <session>/
 ├── daemon/
 │   ├── config.yaml     # daemon configuration — you write this
+│   ├── daemon.lock     # held by the running daemon: one per session
 │   ├── startup.err     # transient: a --detach child's output before logging is up
 │   ├── state.json      # live instance: pid, instance id, bound ports
 │   ├── tokens.json     # hashed-at-rest accepted tokens
