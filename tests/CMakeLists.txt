@@ -7,7 +7,6 @@ set(TEST_LIB_SOURCES
     ${CMAKE_SOURCE_DIR}/src/yaml_json.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/daemon_state.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/access_policy_arg.cpp
-    ${CMAKE_SOURCE_DIR}/src/daemon/port_allocator.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/token_store.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/log_sink.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/package_bootstrap.cpp
@@ -50,10 +49,6 @@ target_link_libraries(logosctl_testlib PUBLIC
     yaml-cpp::yaml-cpp
     spdlog::spdlog
 )
-if(WIN32)
-    # port_allocator.cpp probes ports with Winsock, as logosctl does.
-    target_link_libraries(logosctl_testlib PUBLIC ws2_32)
-endif()
 
 # Unit tests
 add_executable(unit_tests
@@ -68,7 +63,6 @@ add_executable(unit_tests
     test_package_ops.cpp
     test_mode_detection.cpp
     test_token_store.cpp
-    test_port_allocator.cpp
     test_process_util.cpp
     test_local_endpoint.cpp
     test_package_bootstrap.cpp

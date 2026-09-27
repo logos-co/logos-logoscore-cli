@@ -580,21 +580,21 @@ TEST_F(CLITest, DaemonConfigSet_RejectsMalformedYaml) {
 }
 
 TEST_F(CLITest, DaemonConfigSet_RejectsUnknownKeys) {
-    // `insecureTcp` is a near-miss for `insecure_tcp`. The loader ignores
-    // unrecognised keys, so without this check the daemon would boot with the
-    // operator's intent silently dropped.
+    // `signaturePolicy` is a near-miss for `signature_policy`. The loader
+    // ignores unrecognised keys, so without this check the daemon would boot
+    // with the operator's intent silently dropped.
     const fs::path cfgDir = fs::temp_directory_path() /
         ("logosctl_cli_badkey_" + std::to_string(logosctl_test::currentPid()));
     fs::create_directories(cfgDir);
     const fs::path doc = cfgDir / "typo.yaml";
-    { std::ofstream ofs(doc, std::ios::trunc); ofs << "insecureTcp: true\n"; }
+    { std::ofstream ofs(doc, std::ios::trunc); ofs << "signaturePolicy: require\n"; }
 
     std::string output;
     int exitCode = runLogosctlWithTimeout(
         "--config-dir " + cfgDir.string() + " daemon config set " + doc.string(),
         &output, 5);
     EXPECT_EQ(exitCode, 1) << "Output:\n" << output;
-    EXPECT_NE(output.find("insecure_tcp"), std::string::npos)
+    EXPECT_NE(output.find("signature_policy"), std::string::npos)
         << "The error should name the correct spelling. Output:\n" << output;
     fs::remove_all(cfgDir);
 }
@@ -606,12 +606,9 @@ TEST_F(CLITest, DaemonConfigSet_RoundTripsThroughShow) {
     const fs::path doc = cfgDir / "node.yaml";
     {
         std::ofstream ofs(doc, std::ios::trunc);
-        ofs << "insecure_tcp: true\n"
-               "modules:\n"
-               "  core_service:\n"
-               "    - protocol: tcp\n"
-               "      host: 127.0.0.1\n"
-               "      port: 8645\n";
+        ofs << "signature_policy: require\n"
+               "logging:\n"
+               "  max_size_mb: 8645\n";
     }
 
     std::string output;
@@ -625,7 +622,7 @@ TEST_F(CLITest, DaemonConfigSet_RoundTripsThroughShow) {
         "--config-dir " + cfgDir.string() + " daemon config show --human", &shown, 5);
     EXPECT_EQ(exitCode, 0) << "Output:\n" << shown;
     EXPECT_NE(shown.find("8645"), std::string::npos) << "Output:\n" << shown;
-    EXPECT_NE(shown.find("insecure_tcp"), std::string::npos) << "Output:\n" << shown;
+    EXPECT_NE(shown.find("signature_policy"), std::string::npos) << "Output:\n" << shown;
     fs::remove_all(cfgDir);
 }
 
@@ -696,11 +693,51 @@ TEST_F(CLITest, DaemonConfigSet_RejectsUnknownSignaturePolicy) {
     fs::remove_all(cfgDir);
 }
 
-TEST_F(CLITest, DaemonStart_RefusesTlsListenerWithNoCertificate) {
-    // A tcp_ssl listener with no material binds fine and then fails every
-    // handshake with "no shared cipher", which reads like a client fault.
+// ═════════════════════════════════════════════════════════════════════════════
+// The tcp and tcp_ssl transports are gone. What configured them is refused by
+// name, at `config set` and at boot, never dropped; what every written config
+// carried by default still loads.
+// ═════════════════════════════════════════════════════════════════════════════
+
+static void expectRemovedWithTcp(const std::string& output, const std::string& key)
+{
+    EXPECT_NE(output.find("`" + key + "` was removed with the tcp and tcp_ssl transports"),
+              std::string::npos) << "Output:\n" << output;
+    EXPECT_NE(output.find("logosctl remote pair"), std::string::npos)
+        << "The refusal should point at Remote Runtime Control. Output:\n" << output;
+}
+
+TEST_F(CLITest, DaemonConfigSet_RefusesTheRemovedKeys) {
+    const std::vector<std::pair<std::string, std::string>> docs{
+        {"modules:\n  core_service:\n    - protocol: tcp\n      port: 8645\n",
+         "modules.core_service.transports[0].protocol: tcp"},
+        {"modules:\n  core_service:\n    transports:\n      - protocol: tcp_ssl\n",
+         "modules.core_service.transports[0].protocol: tcp_ssl"},
+        {"ssl:\n  cert: /etc/ssl/cert.pem\n", "ssl.cert"},
+        {"insecure_tcp: true\n", "insecure_tcp"},
+    };
+    for (const auto& [body, key] : docs) {
+        const fs::path cfgDir = fs::temp_directory_path() /
+            ("logosctl_cli_removed_" + std::to_string(logosctl_test::currentPid()));
+        fs::remove_all(cfgDir);
+        fs::create_directories(cfgDir);
+        const fs::path doc = cfgDir / "node.yaml";
+        { std::ofstream ofs(doc, std::ios::trunc); ofs << body; }
+
+        std::string output;
+        EXPECT_EQ(runLogosctlWithTimeout(
+            "--config-dir " + cfgDir.string() + " daemon config set " + doc.string(),
+            &output, 5), 1) << "Output:\n" << output;
+        expectRemovedWithTcp(output, key);
+        EXPECT_FALSE(fs::exists(cfgDir / "daemon" / "config.yaml")) << key;
+        fs::remove_all(cfgDir);
+    }
+}
+
+TEST_F(CLITest, DaemonConfigSet_AcceptsWhatOldConfigsCarried) {
+    // The defaults every persisted config and state.json resolved block held.
     const fs::path cfgDir = fs::temp_directory_path() /
-        ("logosctl_cli_nocert_" + std::to_string(logosctl_test::currentPid()));
+        ("logosctl_cli_legacy_" + std::to_string(logosctl_test::currentPid()));
     fs::remove_all(cfgDir);
     fs::create_directories(cfgDir);
     const fs::path doc = cfgDir / "node.yaml";
@@ -708,25 +745,42 @@ TEST_F(CLITest, DaemonStart_RefusesTlsListenerWithNoCertificate) {
         std::ofstream ofs(doc, std::ios::trunc);
         ofs << "modules:\n"
                "  core_service:\n"
-               "    - protocol: tcp_ssl\n"
-               "      host: 127.0.0.1\n"
-               "      port: 8645\n";
+               "    transports:\n"
+               "      - protocol: local\n"
+               "ssl: {cert: \"\", key: \"\", ca: \"\"}\n"
+               "insecure_tcp: false\n"
+               "signature_policy: warn\n";
     }
     std::string output;
-    ASSERT_EQ(runLogosctlWithTimeout(
+    EXPECT_EQ(runLogosctlWithTimeout(
         "--config-dir " + cfgDir.string() + " daemon config set " + doc.string(),
         &output, 5), 0) << "Output:\n" << output;
+    fs::remove_all(cfgDir);
+}
 
-    output.clear();
-    // 124 would mean a daemon actually started on a certificate-less listener.
-    int exitCode = runLogosctlWithTimeout(
-        "--config-dir " + cfgDir.string() + " -D", &output, 15);
-    EXPECT_EQ(exitCode, 1) << "Output:\n" << output;
-    EXPECT_NE(output.find("core_service"), std::string::npos)
-        << "The error should name the listener. Output:\n" << output;
-    EXPECT_NE(output.find("ssl:"), std::string::npos)
-        << "The error should name the top-level block as one of the two places "
-           "the material can come from. Output:\n" << output;
+TEST_F(CLITest, DaemonStart_RefusesAConfigWithARemovedKey) {
+    // Written by hand, or by `config set` before the removal: the daemon must
+    // not start on defaults and drop the rest of what the file says.
+    const fs::path cfgDir = fs::temp_directory_path() /
+        ("logosctl_cli_removedboot_" + std::to_string(logosctl_test::currentPid()));
+    fs::remove_all(cfgDir);
+    fs::create_directories(cfgDir / "daemon");
+    {
+        std::ofstream ofs(cfgDir / "daemon" / "config.yaml", std::ios::trunc);
+        ofs << "version: 2\n"
+               "modules:\n"
+               "  core_service:\n"
+               "    - protocol: tcp\n"
+               "      host: 0.0.0.0\n";
+    }
+    // 124 would mean a daemon actually started.
+    for (const char* start : {" -D", " daemon start --detach"}) {
+        std::string output;
+        EXPECT_EQ(runLogosctlWithTimeout("--config-dir " + cfgDir.string() + start,
+                                         &output, 15), 1) << start << " Output:\n" << output;
+        expectRemovedWithTcp(output, "modules.core_service.transports[0].protocol: tcp");
+        EXPECT_FALSE(fs::exists(cfgDir / "daemon" / "state.json")) << start;
+    }
     fs::remove_all(cfgDir);
 }
 
@@ -829,7 +883,7 @@ TEST_F(CLITest, DaemonConfigSet_SchemaInvalidDocumentIsNotWritten) {
 }
 
 TEST_F(CLITest, DaemonConfigSet_RejectionLeavesThePreviousConfigIntact) {
-    ConfigFixture fx("preserve", "insecure_tcp: true\n");
+    ConfigFixture fx("preserve", "signature_policy: require\n");
 
     std::string output;
     ASSERT_EQ(runLogosctlWithTimeout(
@@ -847,7 +901,7 @@ TEST_F(CLITest, DaemonConfigSet_RejectionLeavesThePreviousConfigIntact) {
     std::ifstream ifs(fx.daemonConfig());
     const std::string body((std::istreambuf_iterator<char>(ifs)),
                             std::istreambuf_iterator<char>());
-    EXPECT_NE(body.find("insecure_tcp"), std::string::npos)
+    EXPECT_NE(body.find("signature_policy"), std::string::npos)
         << "The accepted config must survive a rejected one. It now reads:\n" << body;
     EXPECT_EQ(body.find("modules_dirs"), std::string::npos)
         << "The rejected document must not have been applied. It now reads:\n" << body;
@@ -859,9 +913,7 @@ TEST_F(CLITest, ClientConfigSet_TypeMismatchIsReportedNotFatal) {
                      "token_file: auto.json\n"
                      "daemon:\n"
                      "  core_service:\n"
-                     "    transport: tcp\n"
-                     "    host: 127.0.0.1\n"
-                     "    port: \"6001\"\n");
+                     "    transport: 42\n");
 
     std::string output;
     int exitCode = runLogosctlWithTimeout(
@@ -871,8 +923,24 @@ TEST_F(CLITest, ClientConfigSet_TypeMismatchIsReportedNotFatal) {
     EXPECT_EQ(exitCode, 1)
         << "A mistyped value must be reported (exit 1), not abort the process "
            "(exit 134). Output:\n" << output;
-    EXPECT_NE(output.find("port"), std::string::npos)
+    EXPECT_NE(output.find("daemon.core_service.transport"), std::string::npos)
         << "The error must name the offending key. Output:\n" << output;
     EXPECT_FALSE(fs::exists(fx.clientConfig()))
         << "A document that cannot be understood must not be written.";
+}
+
+TEST_F(CLITest, ClientConfigSet_RefusesATcpDialSpec) {
+    ConfigFixture fx("clienttcp",
+                     "token_file: laptop.json\n"
+                     "daemon:\n"
+                     "  core_service:\n"
+                     "    transport: tcp_ssl\n"
+                     "    host: node.example.org\n");
+
+    std::string output;
+    EXPECT_EQ(runLogosctlWithTimeout(
+        "--config-dir " + fx.dir.string() + " client config set " + fx.doc.string(),
+        &output, 5), 1) << "Output:\n" << output;
+    expectRemovedWithTcp(output, "daemon.core_service.transport: tcp_ssl");
+    EXPECT_FALSE(fs::exists(fx.clientConfig()));
 }

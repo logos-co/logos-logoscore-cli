@@ -1310,13 +1310,13 @@ TEST_F(CommandTest, Stop_LiveSession_StillStops)
     EXPECT_EQ(parseJson(out)["status"].get<std::string>(), "ok");
 }
 
-TEST_F(CommandTest, Stop_StaleSessionForAnotherInstance_DoesNotBlockARemoteStop)
+TEST_F(CommandTest, Stop_StaleSessionForAnotherInstance_DoesNotBlockTheStop)
 {
-    // A remote client can have a co-resident daemon's leftovers in its own
-    // session directory. Those describe someone else's daemon -- the instance
-    // ids differ -- and must not stop it from stopping the one it dials.
+    // A dead daemon's state.json can sit beside a client config that dials a
+    // different instance. It describes someone else's daemon -- the instance
+    // ids differ -- and must not stop the client stopping the one it dials.
     DaemonRuntimeState rs;
-    rs.instanceId = "aaaaaaaaaaaa";       // the dead co-resident daemon
+    rs.instanceId = "aaaaaaaaaaaa";       // the dead daemon
     rs.pid        = kPidThatCannotExist;
     rs.startedAt  = currentUtcIso8601();
     ASSERT_TRUE(DaemonRuntimeStateFile::write(rs));
@@ -1324,7 +1324,7 @@ TEST_F(CommandTest, Stop_StaleSessionForAnotherInstance_DoesNotBlockARemoteStop)
     ClientState cs;                        // ...dialing a different one
     cs.fileOk        = true;
     cs.schemaVersion = kClientStateSchemaVersion;
-    cs.tokenFile     = "remote.json";
+    cs.tokenFile     = "alice.json";
     cs.instanceId    = "bbbbbbbbbbbb";
     ClientStateFile::setOverride(cs);
 
@@ -1468,14 +1468,14 @@ TEST_F(CommandTest, EveryRpcCommand_LiveSession_StillDials)
 
 TEST_F(CommandTest, EveryRpcCommand_StaleSessionForAnotherInstance_StillDials)
 {
-    // A remote client's session directory can hold a co-resident daemon's
-    // leftovers. They describe someone else's dead daemon; the one at the far
-    // end of its TCP connection is fine, and has no local pid to check.
+    // The session directory can hold a dead daemon's state.json while the
+    // client config dials another instance. That file says nothing about the
+    // daemon the client dials, which may well be fine.
     for (const RpcCommand& c : kRpcCommands) {
         SCOPED_TRACE(c.typed);
 
         DaemonRuntimeState rs;
-        rs.instanceId = "aaaaaaaaaaaa";           // the dead co-resident daemon
+        rs.instanceId = "aaaaaaaaaaaa";           // the dead daemon
         rs.pid        = kPidThatCannotExist;
         rs.startedAt  = currentUtcIso8601();
         ASSERT_TRUE(DaemonRuntimeStateFile::write(rs));
@@ -1483,7 +1483,7 @@ TEST_F(CommandTest, EveryRpcCommand_StaleSessionForAnotherInstance_StillDials)
         ClientState cs;                          // ...dialing a different one
         cs.fileOk        = true;
         cs.schemaVersion = kClientStateSchemaVersion;
-        cs.tokenFile     = "remote.json";
+        cs.tokenFile     = "alice.json";
         cs.instanceId    = "bbbbbbbbbbbb";
         ClientStateFile::setOverride(cs);
 
@@ -1495,23 +1495,23 @@ TEST_F(CommandTest, EveryRpcCommand_StaleSessionForAnotherInstance_StillDials)
         captureOutput([&]() { EXPECT_EQ(cmd->execute(c.args), 2); });
 
         EXPECT_EQ(mock.connectAttempts, 1)
-            << "a co-resident daemon's leftovers blocked a remote client";
+            << "a dead daemon's leftovers blocked a client dialing another instance";
     }
 }
 
 TEST_F(CommandTest, EveryRpcCommand_NoStateFileAtAll_StillDials)
 {
-    // The ordinary remote case: a hand-written dial spec, no daemon/state.json
-    // anywhere, and therefore no local pid to have an opinion about. "No
-    // evidence of a dead daemon" must not be read as "the daemon is dead".
+    // A dial spec with no daemon/state.json beside it has no local pid to
+    // have an opinion about. "No evidence of a dead daemon" must not be read
+    // as "the daemon is dead".
     for (const RpcCommand& c : kRpcCommands) {
         SCOPED_TRACE(c.typed);
 
         ClientState cs;
         cs.fileOk        = true;
         cs.schemaVersion = kClientStateSchemaVersion;
-        cs.tokenFile     = "remote.json";
-        ClientStateFile::setOverride(cs);        // no instance_id: a TCP dial
+        cs.tokenFile     = "alice.json";
+        ClientStateFile::setOverride(cs);        // no instance_id: $LOGOS_INSTANCE_ID names it
 
         MockClient mock;
         mock.shouldConnect = false;
@@ -1666,7 +1666,7 @@ TEST_F(CommandTest, Status_StaleSessionForAnotherInstance_StillDials)
     ClientState cs;
     cs.fileOk        = true;
     cs.schemaVersion = kClientStateSchemaVersion;
-    cs.tokenFile     = "remote.json";
+    cs.tokenFile     = "alice.json";
     cs.instanceId    = "bbbbbbbbbbbb";
     ClientStateFile::setOverride(cs);
 
@@ -1676,7 +1676,7 @@ TEST_F(CommandTest, Status_StaleSessionForAnotherInstance_StillDials)
     captureOutput([&]() { EXPECT_EQ(cmd->execute({}), 1); });
 
     EXPECT_EQ(mockClient.connectAttempts, 1)
-        << "a co-resident daemon's leftovers decided a remote client's status";
+        << "a dead daemon's leftovers decided the status of another instance";
 }
 
 // ── package search ──────────────────────────────────────────────────────────
