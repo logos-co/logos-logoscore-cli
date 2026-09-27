@@ -477,8 +477,11 @@ before the daemon boots; a bad path or malformed JSON aborts startup.
 }
 ```
 
-`mode` is the switch: only `"enforce"` activates gating, and `--access-policy
+`mode` is the switch: `"enforce"` activates gating, `"explicit"` gates only the
+targets the policy names, and `"off"` (or no mode) gates nothing; `--access-policy
 enforce` is shorthand for exactly `{"version":1,"mode":"enforce","restrictions":{}}`.
+A version 2 policy grants methods per caller and restricts operators too; see
+`docs/logosctl.md`.
 An entry in `restrictions` **replaces** the derived allow-list for that target
 verbatim — that is the escape hatch for a caller that legitimately cannot
 declare its target. `capability_module`, `core` and `core_service` are never
@@ -495,7 +498,8 @@ logoscore -D -m ./modules \
 
 The policy is handed to the runtime (via `logos_core_set_access_policy`)
 before any module is loaded, and is persisted with `--persist-config`
-like the other daemon flags.
+like the other daemon flags. A policy the runtime refuses (invalid JSON, a
+wrong-typed field, an unknown version or mode) keeps the daemon from starting.
 
 > **Note:** the legacy inline mode (`-c "module.method(args)"` / `--quit-on-finish`,
 > which ran calls in a single short-lived process) has been removed. Use a daemon

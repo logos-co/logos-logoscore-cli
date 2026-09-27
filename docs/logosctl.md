@@ -701,13 +701,80 @@ access_policy: |
 > Quote the JSON, or use the `|` block above.
 
 The string is handed to the runtime (via `logos_core_set_access_policy`)
-before any module is loaded.
+before any module is loaded. A document the runtime cannot use (invalid JSON,
+a field of the wrong type, an unknown version or mode) is refused, and the
+daemon does not start.
 
 > **Note:** the value must be a full policy document. The `enforce` shorthand
 > is a `logoscore` flag spelling (`--access-policy enforce`); here, write the
 > equivalent document — `{"version":1,"mode":"enforce","restrictions":{}}` —
 > which arms deny-by-default with the allow-lists derived from each module's
 > declared dependencies.
+
+`mode` is one of:
+
+- `enforce`: the entries written, plus rules derived from each module's
+  declared dependencies for every other loaded module.
+- `explicit`: only the entries written. Modules the policy does not name stay
+  open, so you can protect one module without enforcing dependencies everywhere.
+- `off`, or no mode: nothing is enforced.
+
+Under version 1, operators (the tokens `logosctl` calls with) are never
+restricted. Version 2 grants methods per caller, and restricts operators too:
+
+```yaml
+access_policy: |
+  {"version": 2, "mode": "explicit",
+   "restrictions": {
+     "keystore_module": {"allowedCallers": {
+       "evm_signer_ui":   ["pending", "acknowledge", "approve", "reject"],
+       "evm_keystore_ui": "*",
+       "*":     ["request_approval", "approval_status", "list_accounts"],
+       "@op:*": ["list_accounts"]
+     }}}}
+```
+
+- **Callers.** A module, UI plugin or shell name; `@op:<token name>` for one
+  operator token (`logosctl token issue --name`) and `@op:*` for any; `*` for
+  any other caller, never an operator.
+- **Grants.** A list means only those methods, `"*"` every method, `[]` none.
+  The list form (`"allowedCallers": ["a", "b"]`) grants every method.
+- **Resolution.** An exact caller wins, then `@op:*` for operators and `*` for
+  everyone else; otherwise the call is refused. Entries never merge.
+- **As written.** Under version 2 a caller gets only what its rule gives it.
+  That includes the daemon itself, the shell `logoscore`: `logosctl package`
+  operations run as it, so a version 2 rule for `package_manager` or
+  `package_downloader` has to grant `logoscore` what they need. The runtime
+  adds one entry of its own, `core_service` on those two, because operators'
+  calls to them (`logosctl call`, `logosctl key`) go through core_service,
+  which checks the operator's own grant first.
+
+A method outside a caller's list is refused before the module runs: `logosctl
+call` exits non-zero with `METHOD_FAILED` and `"error":{"code":"not_authorised"}`.
+A caller with no grant at all gets `FORBIDDEN`.
+
+#### Module configuration
+
+The `module_config` key gives a module its configuration: one document per
+module, written as YAML.
+
+```yaml
+module_config:
+  my_module:
+    endpoint: https://example.org
+    retries: 3
+```
+
+- The runtime hands the module its document as it starts, before
+  `onContextReady` and before anything can call it. It does so again on every
+  start: load, reload, and a start after a crash.
+- A module's document is replaced whole, never merged with an earlier one.
+- The module needs a build that takes a configuration (logos-cpp-sdk's
+  `configuration()`, or the Rust SDK's `RustModuleContext.configuration`). A
+  module that cannot take its document (an older build, or a Qt plugin module)
+  fails to load rather than starting without it.
+- Configuration never carries authority: what a module may call belongs in
+  `access_policy`.
 
 > **Note:** the legacy inline mode (`-c "module.method(args)"` / `--quit-on-finish`,
 > which ran calls in a single short-lived process) has been removed. Use a daemon

@@ -180,7 +180,9 @@
         ipcNewApi = mk "test-ipc-module-new-api" {
           flakeInputs = { test_basic_module = basic; test_extlib_module = extlib; };
         };
-      in [ basic extlib ipcNewApi ];
+        # Reports its configuration and caller: module_config and method grants.
+        probe = mk "test-probe-module-cpp" { };
+      in [ basic extlib ipcNewApi probe ];
     in
     {
       packages = forAllTargets ({ pkgs, system, cppSdk, protocolPkg, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, modulesStateModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, storageModuleLib, installDev, installPortable, dirBundler, appBundler }:
@@ -621,6 +623,9 @@ ${pkgs.lib.optionalString withPkgModules ''
               # authority, runs in-process from here, so the daemon-backed suites
               # run the path users get. Without it nothing would load.
               cp -r ${modules}/modules $out/modules
+              # The package modules too, as the package ships them, so the policy
+              # suites can reach package_manager through core_service.
+              cp -r ${modules}/modules-pkg $out/modules-pkg
 
               if [ -d ${liblogosLib}/lib ]; then
                 cp -r ${liblogosLib}/lib/* $out/lib/ || true
