@@ -17,8 +17,9 @@ the public catalog ships.
 
 `logosctl` itself is Qt-free. Local RPC uses `qt_remote_plain`, which speaks
 the same wire protocol as current modules built with `qt_remote`; those modules
-run unchanged in the separate `logos_host_qt` compatibility process. The
-Qt-free runtime also supports `tcp` and `tcp_ssl` listeners and clients.
+run unchanged in the separate `logos_host_qt` compatibility process. The daemon
+listens on its local socket only; see
+[Operating a daemon from another computer](#operating-a-daemon-from-another-computer).
 
 ## Usage
 
@@ -39,11 +40,11 @@ picks which one (default `~/.logosctl`, also `LOGOSCTL_CONFIG_DIR`):
 │   ├── config.yaml     # daemon configuration — you write this
 │   ├── daemon.lock     # held by the running daemon: one per session
 │   ├── startup.err     # transient: a --detach child's output before logging is up
-│   ├── state.json      # live instance: pid, instance id, bound ports
+│   ├── state.json      # live instance: pid, instance id
 │   ├── tokens.json     # hashed-at-rest accepted tokens
 │   └── tokens/<name>.json
 ├── client/
-│   ├── config.yaml     # dial spec + token_file — you write this for remote use
+│   ├── config.yaml     # dial spec + token_file, rewritten by the daemon each boot
 │   └── auto.json       # local token, rewritten by the daemon each boot
 ├── modules/            # core modules installed into this session
 ├── plugins/            # UI plugins installed into this session
@@ -171,11 +172,12 @@ document, through the loader the daemon itself uses, before writing anything. A
 document it rejects is never installed, so the previous config stays intact and
 the session is never left holding one the daemon would refuse to boot from.
 Unknown keys are rejected by name, because the loader ignores what it does not
-recognise and a silently-dropped `insecureTcp` (the key is `insecure_tcp`) would
-leave the daemon running with your intent missing. A key whose *value* is the
-wrong type is reported the same way — `modules_dirs: /single/path` (a scalar
-where a list belongs) fails with `modules_dirs: expected a list of strings, but
-got a string.` rather than being ignored, half-applied, or fatal.
+recognise and a silently-dropped `signaturePolicy` (the key is
+`signature_policy`) would leave the daemon running with your intent missing. A
+key whose *value* is the wrong type is reported the same way —
+`modules_dirs: /single/path` (a scalar where a list belongs) fails with
+`modules_dirs: expected a list of strings, but got a string.` rather than being
+ignored, half-applied, or fatal.
 
 ```yaml
 # node.yaml
@@ -188,10 +190,16 @@ modules_dirs:
   - /opt/logos/modules
 ```
 
-The Qt-free runtime accepts local `qt_remote_plain`, `tcp`, and `tcp_ssl`
-listeners. The daemon writes the local client dial spec and token into the
-session on every boot; remote clients can configure the advertised network
-endpoints separately.
+The daemon listens on its local socket only, and writes the client dial spec and
+token into the session on every boot. The keys that configured the removed `tcp`
+and `tcp_ssl` transports — `modules:` listeners, `ssl:`, `insecure_tcp:` — are
+refused by name, by `config set` and at boot; a config that holds only what they
+defaulted to (local listeners, empty paths, `false`) still loads.
+
+> `daemon config` and `client config` are kept separate on purpose: the daemon
+> never reads `client/`, and the client never reads `daemon/`. Only those two
+> files are YAML — everything the daemon and the modules own (`state.json`,
+> `tokens.json`, the token files, the downloader's catalog config) stays JSON.
 
 #### Where modules run
 
@@ -226,39 +234,26 @@ In-process means shared fate. A module that crashes takes the daemon down with
 it, and it has no CPU or memory figures of its own. Only bundle modules you trust
 as much as the daemon.
 
-#### Reaching a daemon over tcp or tls
+#### Operating a daemon from another computer
 
-The boot token the daemon writes to `client/auto.json` is accepted over the
-local socket only, so copying it to another machine no longer works: the
-daemon refuses it over `tcp` and `tcp_ssl`, and the client says so with
-`UNAUTHORIZED`. Issue a named token for each remote client instead, with an
-expiry, on the daemon's host:
+The daemon listens on its local socket only: the `tcp` and `tcp_ssl` transports
+are gone. Two things replace them.
 
-```bash
-logosctl token issue --name laptop --expires 30d --json   # prints the raw token once
-```
+- **Operating the daemon** — Remote Runtime Control. On the daemon's host,
+  `logosctl peer invite --runtime-control` prints a single-use invite. On the
+  other computer, `logosctl remote pair FILE` redeems it, and once the daemon's
+  operator accepts it (`logosctl peer pending`, then `logosctl peer accept ID`)
+  any command takes `--remote PEER`:
 
-On the client, `client/config.yaml` names the network listener (its port is in
-the daemon's `daemon/state.json`) and the file holding that token:
+  ```bash
+  logosctl --remote node status
+  ```
 
-```yaml
-version: 2
-token_file: laptop.json          # client/laptop.json: {"token": "<raw token>"}
-daemon:
-  core_service:
-    transport: tcp_ssl           # or tcp
-    host: node.example.org
-    port: 6443
-    ca: /path/to/ca.pem          # tcp_ssl only
-```
-
-`$LOGOSCTL_TOKEN` overrides the token file. `logosctl token revoke laptop`
-withdraws it at once; the expiry bounds a token nobody revoked.
-
-> The two documents are kept separate on purpose: the daemon never reads
-> `client/`, and the client never reads `daemon/`. Only the files above are
-> YAML — everything the daemon and the modules own (`state.json`, `tokens.json`,
-> the token files, the downloader's catalog config) stays JSON.
+  The daemon knows that client by its key rather than a token, and its remote
+  policy (`logosctl peer policy`) decides which methods it may call.
+- **Calling its modules from another runtime** — peer the two runtimes and
+  import the modules (`logosctl peer export`, `logosctl peer import`); see the
+  developer guide, §9.6.
 
 #### What a module sees when you call it
 
@@ -337,7 +332,7 @@ logosctl key add NAME --did DID [--display-name N] [--url U]
 logosctl key remove NAME
 
 # Auth tokens (offline; operates on the session dir)
-logosctl token issue --name N [--expires D] [--replace] [--local-only]
+logosctl token issue --name N [--expires D] [--replace]
 logosctl token ls
 logosctl token revoke NAME
 ```
@@ -459,7 +454,7 @@ $ logosctl module ls --json
 ```
 
 Start a daemon (`logosctl daemon start`) and both are restored; nothing needs
-cleaning up by hand. A client dialing a *remote* daemon is unaffected by either
+cleaning up by hand. A command sent with `--remote` is unaffected by either
 check.
 
 `module ls` and `stats` report an unanswered RPC as `DAEMON_UNREACHABLE`
@@ -659,8 +654,8 @@ Daemon startup options:
       --config-dir DIR  Which session to run
 ```
 
-Everything else — module directories, persistence, transports, the access
-policy — is configuration, and lives in `daemon/config.yaml`.
+Everything else — module directories, persistence, the access policy — is
+configuration, and lives in `daemon/config.yaml`.
 
 These global flags work before or after any subcommand:
 

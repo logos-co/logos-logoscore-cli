@@ -12,8 +12,10 @@ the current Qt Remote Objects wire protocol. Existing modules built with
 separate `logos_host_qt` compatibility process when a Qt plugin is inspected
 or run; modules built with `qt_remote_plain` use `logos_host_plain` instead.
 
-The Qt-free protocol runtime also supports `tcp` and `tcp_ssl` for daemon
-listeners and client connections.
+The daemon listens on its local socket only. A daemon is operated from another
+computer with Remote Runtime Control (`logosctl remote pair`, then
+`logosctl --remote PEER <command>`), and its modules are reached from another
+runtime by peering the two; see [docs/logosctl.md](docs/logosctl.md#operating-a-daemon-from-another-computer).
 
 This repo is one of two frontends for [logos-liblogos](https://github.com/logos-co/logos-liblogos):
 - **logos-logoscore-cli** (this repo) — headless CLI runtime for scripting, testing, and headless deployments

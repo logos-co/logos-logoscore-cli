@@ -30,7 +30,6 @@ logos-logoscore-cli/
 │   │   │                             # handed to logos_core_set_access_policy()
 │   │   ├── log_sink.cpp/h            # Pipe-based capture of daemon + module-host
 │   │   │                             # stdout/stderr into a rotating log file
-│   │   ├── port_allocator.cpp/h      # Legacy network-config validation support
 │   │   └── token_store.cpp/h         # Named-token table — TokensFile owns daemon/tokens.json
 │   │                                 # (hashed entries) + raw daemon/tokens/<name>.json
 │   │
@@ -72,7 +71,6 @@ logos-logoscore-cli/
 │   ├── test_token_store.cpp          # Token issue / revoke / list / persistence
 │   ├── test_config.cpp               # Token + config-dir resolution
 │   ├── test_paths.cpp                # Executable/bundle path resolution
-│   ├── test_port_allocator.cpp       # Ephemeral-port allocation
 │   ├── test_access_policy_arg.cpp    # --access-policy argument resolution
 │   ├── test_log_sink.cpp             # Log capture + rotation
 │   ├── test_cli.cpp                  # End-to-end logosctl CLI
@@ -118,7 +116,7 @@ its `logoscore` shell.
 
 | Function | Used by |
 |---|---|
-| `logos_runtime_spawn(json, &error)` | Daemon: starts the runtime with its modules directories, bundled directories (`<bin>/../modules`, the package modules' directory, `bundled_modules_dirs`), persistence path, access and placement policy (`placement` / `--placement`), capability_module's transports, core_service's `tcp` / `tcp_ssl` listeners, and package_manager's settings. Without its token authority it does not start, and the daemon exits |
+| `logos_runtime_spawn(json, &error)` | Daemon: starts the runtime with its modules directories, bundled directories (`<bin>/../modules`, the package modules' directory, `bundled_modules_dirs`), persistence path, access and placement policy (`placement` / `--placement`), and package_manager's settings. Without its token authority it does not start, and the daemon exits |
 | `logos_core_set_operator_resolver(cb)` | Daemon: names operators from `TokenStore`; the runtime forwards each lookup |
 | `logos_core_set_shutdown_handler(cb)` | Daemon: `core_service.shutdown`, forwarded by the runtime |
 | `logos_core_set_core_service_extension(cb, methods)` | Daemon: package operations, forwarded by the runtime |
@@ -173,9 +171,9 @@ plugins still run in separate `logos_host_qt` child processes. The daemon,
 core service, and client use the shared `logos_protocol_plain` runtime and do
 not load Qt.
 
-The Qt-free C ABI exposes local `qt_remote_plain` plus `tcp` and `tcp_ssl`
-providers and clients. The daemon's resolved transport set supplies listener
-addresses; the client config supplies dial addresses and TLS verification.
+The daemon and its clients speak local `qt_remote_plain` only. A client given
+`--remote` (Remote Runtime Control) opens a `tls_tcp` session with a paired
+daemon's core_service instead, authenticated by its key rather than a token.
 
 Named tokens are persisted as SHA-256 digests by `TokenStore`. liblogos'
 core_service asks the daemon's operator resolver, which consults that store on
@@ -222,8 +220,8 @@ daemon supplies what only it knows; the runtime forwards each hook to it over it
 private pipe:
 
 - **Its identity.** It is the `logoscore` shell of its runtime.
-- **Operators.** `resolveOperator` looks a presented token up in `TokenStore`
-  (on the local socket, `inproc` counts as local) and names its holder, so
+- **Operators.** `resolveOperator` looks a token presented on the local socket
+  up in `TokenStore` (`inproc` counts as local) and names its holder, so
   core_service sees `{kind: operator, name}`. A forwarded `callModuleMethod` or
   `watchModuleEvents` reaches the target as that operator; `capability_module`
   and `core_service` refuse them.
@@ -236,8 +234,6 @@ private pipe:
   `logoscore` shell: package_manager's install flow and package_downloader take
   any permitted caller, and package_manager's settings (directories, keyring,
   signature policy) are the runtime's package config, applied as it loads.
-- **Network listeners.** The `tcp` / `tcp_ssl` entries of core_service's
-  transport set.
 
 `src/core_service/metadata.json` remains a declarative identity document; nothing
 loads it as a plugin.
@@ -280,18 +276,20 @@ module directories, and the local transport advertised for `core_service`
 and `capability_module`. `daemon/config.json` retains operator intent only
 when `--persist-config` is used.
 
-The configuration schema accepts local and network transport records; the
-Qt-free daemon passes them to the matching plain protocol providers.
+The keys of the removed `tcp` and `tcp_ssl` transports (`modules`, `ssl`,
+`insecure_tcp`) still load at the defaults every older file carried, and are
+dropped; any other value is refused by name. Neither file writes them.
 
 ### TokenStore
 
 **Files:** `src/daemon/token_store.cpp/h`
 
 `TokenStore` persists issued token names, SHA-256 digests, issue times,
-expiry, and local-only policy. Raw named tokens are written separately with
-mode 0600 for distribution. The provider validator calls
-`lookupByToken()` for every credential that is not already in its in-memory
-boot-token table, so issue and revoke operations take effect immediately.
+expiry, and a `local_only` flag that no longer changes anything: every token is
+accepted on the local socket only. Raw named tokens are written separately with
+mode 0600 for distribution. The daemon's operator resolver calls
+`lookupByToken()` for every credential presented on the local socket, so issue
+and revoke operations take effect immediately.
 
 ### ClientStateFile
 
@@ -312,8 +310,9 @@ contains a `core_service` transport entry:
 }
 ```
 
-The parser keeps the prior strict schema checks. `RpcClient::connect()`
-currently requires both active entries to be `local`.
+Every `daemon.<module>` entry must be `transport: local`: a `tcp` or `tcp_ssl`
+entry, or one of their fields (`host`, `port`, `codec`, `ca`, `verify_peer`), is
+refused by name.
 
 ### Client
 
@@ -806,14 +805,13 @@ done
 | `test_commands.cpp` | All subcommand implementations via mock client: load/unload/reload module, list-modules, status, module-info, call, stats, watch, stop. Tests both success and error paths, JSON and human output modes. |
 | `test_mode_detection.cpp` | Mode detection (daemon/client/help/version), known subcommands list, argument parsing. |
 | `test_output.cpp` | Output formatter (human/JSON), TTY detection, printSuccess/printError/printRaw. |
-| `test_daemon_state.cpp` | Round-trip `daemon/state.json` — instance_id, pid, modulesDirs, per-module `transports` entries (local/tcp/tcp_ssl, codec defaulting), and the `tokens` array (`name, hash, issued_at, expires_at, local_only`). `fileOk` is independent of the pid (it's a parse check, not liveness). |
-| `test_token_store.cpp` | Token issuance (including `--expires` and `--local-only`), duplicate-name rejection (unless `--replace`), revocation, list, persistence round-trip. Confirms `tokens.json["tokens"]` stores hashes only; plaintext lives in `daemon/tokens/<name>.json`. Fail-closed invariants: an empty token never authenticates, `issueToken` Ok implies a non-empty token, a failed `--replace` preserves the prior raw token, and issuing against an unsupported-schema-version file refuses instead of clobbering it. |
+| `test_daemon_state.cpp` | Round-trip `daemon/state.json` and `daemon/config.json` — instance_id, pid, modulesDirs, and the rest of the config. The keys of the removed tcp/tcp_ssl transports load at their old defaults and are refused by name otherwise, in both files and the client config. `fileOk` is independent of the pid (it's a parse check, not liveness). |
+| `test_token_store.cpp` | Token issuance (including `--expires`; `--local-only` is recorded and changes nothing), duplicate-name rejection (unless `--replace`), revocation, list, persistence round-trip. Confirms `tokens.json["tokens"]` stores hashes only; plaintext lives in `daemon/tokens/<name>.json`. Fail-closed invariants: an empty token never authenticates, `issueToken` Ok implies a non-empty token, a failed `--replace` preserves the prior raw token, and issuing against an unsupported-schema-version file refuses instead of clobbering it. |
 | `test_config.cpp` | Token resolution order (env var → `client/<token_file>`); `client/config.json` parsing; `clientTokenPath` accepts plain filenames and rejects path-traversal (`../`, absolute, sub-dirs). |
-| `test_port_allocator.cpp` | Ephemeral-port allocation: bad host returns 0, an IPv6 any-address (`::`) allocates a port, consecutive allocations are distinct. |
 | `test_access_policy_arg.cpp` | `--access-policy` resolution: the `enforce` alias expands to the deny-by-default document, the alias beats the file branch, inline JSON and file paths pass through unchanged, and a bad path / malformed JSON fails with a reason rather than degrading to "no policy". |
 | `test_log_sink.cpp` | Pipe-based stdout/stderr capture into the rotating daemon log. |
 | `test_paths.cpp` | Executable / bundle-relative path resolution (`paths.h`). |
-| `test_cli.cpp` | End-to-end CLI tests: help, version, no-args, client commands without daemon, daemon startup with --verbose; rejection of an invalid `--module-transport` port, an invalid `--client-codec`, and a `--token-file` that carries no usable token. |
+| `test_cli.cpp` | End-to-end CLI tests: help, version, no-args, client commands without daemon, `daemon config set` / `client config set` validation, and the removed tcp/tcp_ssl keys refused by `config set` and at boot. `test_cli_logoscore.cpp` refuses logoscore's removed transport flags and their environment variables, and a `--token-file` that carries no usable token. |
 | `test_integration.cpp` | Daemon-backed integration: a real `logosctl` daemon against a real module directory, driven through the client subcommands — error paths, the full `test_basic_module` API surface, event subscription via `watch`, and many simultaneous clients on one daemon. |
 | `test_cli_logoscore.cpp` / `test_integration_logoscore.cpp` | The same two suites frozen against `logoscore`'s surface, so shared-runtime changes can't regress the tool people actually use. They get deleted with the binary. |
 
