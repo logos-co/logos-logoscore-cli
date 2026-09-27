@@ -9,6 +9,10 @@
 
 class Daemon {
 public:
+    // Set by `daemon start --detach` for its child, whose stdout/stderr are
+    // the startup file that the parent deletes once the daemon is ready.
+    static constexpr const char* kDetachedEnv = "LOGOSCTL_DETACHED";
+
     // Boot the daemon from a fully-merged DaemonConfig. The caller (in
     // main.cpp) is responsible for the merge order (`defaults <
     // config.json < CLI args`) and per-flag override detection via

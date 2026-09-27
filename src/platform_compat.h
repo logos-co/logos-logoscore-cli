@@ -98,6 +98,16 @@ inline int setEnvVar(const char* name, const char* value)
 #endif
 }
 
+// unsetenv(3). An empty value is how _putenv_s removes a variable.
+inline int unsetEnvVar(const char* name)
+{
+#ifdef _WIN32
+    return ::_putenv_s(name, "");
+#else
+    return ::unsetenv(name);
+#endif
+}
+
 // chmod(2) with POSIX mode bits.
 //
 // DELIBERATE NO-OP ON WINDOWS, and a real loss of hardening — stated here

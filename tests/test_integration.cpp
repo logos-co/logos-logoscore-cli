@@ -1603,10 +1603,13 @@ FdId idOf(const struct stat& st)
             static_cast<unsigned long long>(st.st_ino)};
 }
 
-// What each descriptor of `pid` refers to. On macOS this is libproc, which lsof reads too.
-std::vector<FdId> heldBy(pid_t pid)
+// What one descriptor refers to; a file also has its path and size.
+struct HeldFd { FdId id; std::string path; long long size = -1; };
+
+// Every descriptor of `pid`. On macOS this is libproc, which lsof reads too.
+std::vector<HeldFd> heldBy(pid_t pid)
 {
-    std::vector<FdId> ids;
+    std::vector<HeldFd> held;
 #ifdef __APPLE__
     std::vector<proc_fdinfo> fds(4096);
     const int bytes = ::proc_pidinfo(pid, PROC_PIDLISTFDS, 0, fds.data(),
@@ -1615,22 +1618,26 @@ std::vector<FdId> heldBy(pid_t pid)
     for (const proc_fdinfo& f : fds) {
         if (f.proc_fdtype == PROX_FDTYPE_VNODE) {
             vnode_fdinfowithpath v{};
-            if (::proc_pidfdinfo(pid, f.proc_fd, PROC_PIDFDVNODEPATHINFO, &v, sizeof v) == sizeof v)
-                ids.emplace_back(v.pvip.vip_vi.vi_stat.vst_dev, v.pvip.vip_vi.vi_stat.vst_ino);
+            if (::proc_pidfdinfo(pid, f.proc_fd, PROC_PIDFDVNODEPATHINFO, &v, sizeof v) == sizeof v) {
+                const vinfo_stat& vs = v.pvip.vip_vi.vi_stat;
+                held.push_back({FdId(vs.vst_dev, vs.vst_ino), v.pvip.vip_path, vs.vst_size});
+            }
         } else if (f.proc_fdtype == PROX_FDTYPE_PIPE) {
             pipe_fdinfo p{};
             if (::proc_pidfdinfo(pid, f.proc_fd, PROC_PIDFDPIPEINFO, &p, sizeof p) == sizeof p)
-                ids.emplace_back(0, p.pipeinfo.pipe_handle);
+                held.push_back({FdId(0, p.pipeinfo.pipe_handle), {}, -1});
         }
     }
 #else
     std::error_code ec;
     for (const auto& e : fs::directory_iterator("/proc/" + std::to_string(pid) + "/fd", ec)) {
         struct stat st{};
-        if (::stat(e.path().c_str(), &st) == 0) ids.push_back(idOf(st));
+        if (::stat(e.path().c_str(), &st) != 0) continue;
+        std::error_code rec;
+        held.push_back({idOf(st), fs::read_symlink(e.path(), rec).string(), st.st_size});
     }
 #endif
-    return ids;
+    return held;
 }
 
 // The daemon is not this process's child; it is found by the pid its launcher prints.
@@ -1655,7 +1662,51 @@ protected:
     }
 };
 
+// Nor may it hold daemon/startup.err, which the parent deletes at readiness.
+class DetachedStartupFileTest : public DetachedDaemonFdTest {
+protected:
+    // Start with --detach and give the daemon something to log. Then the fd
+    // probe must see `control` open, and nothing under daemon/startup*.
+    void expectStartupFileReleased(const std::string& control) {
+        std::string out;
+        ASSERT_EQ(d.run("daemon start --detach", &out, /*timeoutSecs=*/90), 0) << out;
+        const std::string tag = "Daemon started (pid ";
+        const auto at = out.find(tag);
+        ASSERT_NE(at, std::string::npos) << out;
+        daemonPid = std::atoll(out.c_str() + at + tag.size());
+
+        ASSERT_EQ(d.run("load-module test_basic_module", &out, kNegativeBudgetSecs), 0) << out;
+        for (int i = 0; i < 5; ++i)
+            ASSERT_EQ(d.run("call test_basic_module echo detach_" + std::to_string(i), &out), 0)
+                << out;
+
+        const std::vector<HeldFd> held = heldBy(static_cast<pid_t>(daemonPid));
+        // Without the control, a probe that lists nothing would pass below.
+        ASSERT_TRUE(std::any_of(held.begin(), held.end(), [&](const HeldFd& h) {
+            return h.path.find(control) != std::string::npos;
+        })) << "the fd probe does not see " << control << " open in pid " << daemonPid;
+        for (const HeldFd& h : held)
+            EXPECT_EQ(h.path.find("/daemon/startup"), std::string::npos)
+                << "pid " << daemonPid << " still holds " << h.path << " ("
+                << h.size << " bytes), which --detach deleted";
+    }
+};
+
 } // namespace
+
+// The sink's saved stdout/stderr, which it mirrored every log line into.
+TEST_F(DetachedStartupFileTest, DaemonHoldsNoHandleOnItsStartupFile)
+{
+    expectStartupFileReleased("/logs/daemon_");
+}
+
+// No sink takes stdout/stderr over, so they are the startup file itself.
+TEST_F(DetachedStartupFileTest, DaemonWithoutFileLoggingHoldsNoHandleOnItsStartupFile)
+{
+    std::ofstream(d.configDir / "daemon" / "config.yaml", std::ios::app)
+        << "logging:\n  enabled: false\n";
+    expectStartupFileReleased("/dev/null");   // stdin, from --detach
+}
 
 TEST_F(DetachedDaemonFdTest, CallersPipeReachesEofWhileTheDaemonRuns)
 {
@@ -1700,10 +1751,11 @@ TEST_F(DetachedDaemonFdTest, CallersPipeReachesEofWhileTheDaemonRuns)
         << "no EOF on the caller's pipe 5 s after `daemon start --detach` returned";
 
     // Listed while p[0] is open, so no new pipe can reuse this one's identity.
-    const std::vector<FdId> held = heldBy(static_cast<pid_t>(daemonPid));
+    const std::vector<HeldFd> held = heldBy(static_cast<pid_t>(daemonPid));
     ::close(p[0]);
     const auto holds = [&held](const struct stat& s) {
-        return std::find(held.begin(), held.end(), idOf(s)) != held.end();
+        return std::any_of(held.begin(), held.end(),
+                           [&](const HeldFd& h) { return h.id == idOf(s); });
     };
     ASSERT_TRUE(holds(nullSt)) << "control: the daemon's stdin (/dev/null) was not listed";
     EXPECT_FALSE(holds(wSt)) << "the daemon holds the caller's pipe (write end)";
