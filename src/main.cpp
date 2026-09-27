@@ -792,8 +792,9 @@ int main(int argc, char *argv[])
             };
 
             for (int i = 0; i < 600; ++i) {
-                std::error_code ec;
-                if (std::filesystem::exists(statePath, ec)) {
+                // Only our child's: a concurrent start's daemon is not ours to report.
+                const DaemonRuntimeState st = DaemonRuntimeStateFile::read();
+                if (st.fileOk && st.pid == childPid) {
                     cleanupStartupFile();
                     fprintf(stdout, "Daemon started (pid %ld)\nLogs: %s\n",
                             childPid, logPath.c_str());
@@ -801,6 +802,13 @@ int main(int argc, char *argv[])
                     return 0;
                 }
                 if (childExited()) {
+                    // Lost to a concurrent start: refuse here, since both children
+                    // share the startup file and the winner's output can bury ours.
+                    if (Daemon::refuseIfAlreadyRunning()) {
+                        cleanupStartupFile();
+                        releaseChild();
+                        return 1;
+                    }
                     const std::string early = earlyOutput();
                     if (!early.empty()) {
                         // Print the child's own message. Prefixing it with

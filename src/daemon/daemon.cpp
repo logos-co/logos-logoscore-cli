@@ -26,6 +26,7 @@
 
 #include <uuid.h>
 
+#include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <map>
@@ -35,6 +36,7 @@
 #include <optional>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 #include "../platform_compat.h"
 #include "../process_util.h"
@@ -43,6 +45,8 @@
 #include <process.h>   // getpid — mingw-w64 puts it here, not in unistd.h
 #include <windows.h>
 #else
+#include <fcntl.h>
+#include <sys/file.h>
 #include <unistd.h>
 #endif
 
@@ -294,6 +298,35 @@ void bootstrapPackageModules(LogosAPI* api,
     package_bootstrap::run(hooks, dirs, signaturePolicy);
 }
 
+// Locks daemon/daemon.lock until this process exits. False only when another
+// process holds it; a file that cannot be locked at all is left to state.json.
+bool lockDaemonDir()
+{
+    std::error_code ec;
+    std::filesystem::create_directories(Config::daemonDir(), ec);
+    const std::string path = Config::daemonDir() + "/daemon.lock";
+#ifdef _WIN32
+    const HANDLE h = ::CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                   nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return true;
+    OVERLAPPED at{};
+    if (::LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &at))
+        return true;   // the handle stays open, and the lock with it
+    const bool held = ::GetLastError() == ERROR_LOCK_VIOLATION;
+    ::CloseHandle(h);
+    return !held;
+#else
+    const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0) return true;
+    if (::flock(fd, LOCK_EX | LOCK_NB) == 0)
+        return true;   // the fd stays open, and the lock with it
+    const bool held = errno == EWOULDBLOCK;
+    ::close(fd);
+    return !held;
+#endif
+}
+
 } // namespace
 
 bool Daemon::refuseIfAlreadyRunning()
@@ -320,6 +353,19 @@ int Daemon::start(int argc, char* argv[],
 
     // Refuse if a live daemon owns this config dir: two would clobber state.json
     // and the auto-token. First, before LogSink repoints the session's log.
+    // A lock holder with no live state.json is booting or stopping: wait for it.
+    for (int waitedMs = 0; !lockDaemonDir(); waitedMs += 100) {
+        if (refuseIfAlreadyRunning())
+            return 1;
+        if (waitedMs >= 30 * 1000) {
+            fprintf(stderr,
+                    "Error: another logosctl daemon is starting or stopping in this "
+                    "config dir. Refusing to start a second one — use --config-dir "
+                    "for a parallel instance.\n");
+            return 1;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
     if (refuseIfAlreadyRunning())
         return 1;
 
