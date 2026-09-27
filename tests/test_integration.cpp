@@ -1727,6 +1727,21 @@ TEST_F(ProbeFixture, EnforcePolicy_VersionTwoBindsOperatorsAndExplicitLeavesTheR
     EXPECT_EQ(open.value("result", nlohmann::json()), "open") << open.dump();
 }
 
+// Detector: version 1 leaves operators unrestricted, but a rule naming only
+// package_manager_ui (Basecamp's own document) refused their package calls,
+// which reach package_manager as core_service.
+TEST_F(ProbeFixture, EnforcePolicy_VersionOneLeavesOperatorsThePackageModules) {
+    bootWith(policyYaml(R"({"version":1,"mode":"enforce","restrictions":{)"
+                        R"("package_manager":{"allowedCallers":["package_manager_ui"]}}})"),
+             {"package_manager"});
+    if (::testing::Test::IsSkipped() || ::testing::Test::HasFatalFailure()) return;
+
+    int rc = -1;
+    const nlohmann::json listed = call("package_manager", "getInstalledPackages", &rc);
+    EXPECT_EQ(rc, 0) << listed.dump();
+    EXPECT_EQ(listed.value("status", std::string{}), "ok") << listed.dump();
+}
+
 // Operators reach the package modules through core_service, which checks the
 // operator's own grant there before it forwards anything.
 TEST_F(ProbeFixture, EnforcePolicy_VersionTwoGrantsMethodsAtAPackageModule) {
