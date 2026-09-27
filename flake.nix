@@ -137,9 +137,8 @@
             else import nixpkgs { inherit system; };
           cppSdk = logos-cpp-sdk.packages.${system}.logos-cpp-include;
           protocolPkg = logos-protocol.packages.${system}.logos-protocol-plain;
-          # Remote Runtime Control (`logosctl --remote`); logos-peering has no Windows build yet.
-          peeringLib = if system == "x86_64-windows" then null
-            else logos-peering.packages.${system}.libpeering;
+          # Remote Runtime Control (`logosctl --remote`).
+          peeringLib = logos-peering.packages.${system}.libpeering;
           liblogos = logos-liblogos.packages.${system}.logos-liblogos;
           liblogosLib = logos-liblogos.packages.${system}.logos-liblogos-lib;
           liblogosPortable = logos-liblogos.packages.${system}.portable;
@@ -225,10 +224,9 @@
           # read-only "embedded" directory (paths::bundledModulesDir(),
           # <bin>/../modules). Mirrors logos-basecamp/flake.nix so the CLI
           # and the GUI drive the same module surface.
-          # Links with other runtimes: bundled like capability_module. No Windows build yet.
-          peering = if isWindows then null else logos-peering.packages.${system};
-          peeringLibs = if peering == null then [ ]
-            else [ peering.peering_identity-lib peering.peering_module-lib ];
+          # Links with other runtimes: bundled like capability_module.
+          peering = logos-peering.packages.${system};
+          peeringLibs = [ peering.peering_identity-lib peering.peering_module-lib ];
           bundledInstallsDev = map installDev ([ capabilityModuleLib modulesStateModuleLib ] ++ peeringLibs);
           # Kept out of modules/ deliberately: logoscore scans that directory, so
           # anything extra there changes what it reports by default. (The doc-tests
@@ -290,7 +288,7 @@
               pkgs.yaml-cpp
               pkgs.spdlog
             ]
-            ++ pkgs.lib.optional (peeringLib != null) peeringLib
+            ++ [ peeringLib ]
             # CMakeLists.txt skips the whole test block for a Windows host, so
             # gtest is dead weight there -- and cross-building it is a real
             # cost, not a free one.
@@ -339,7 +337,7 @@
               protocolPkg
               liblogosLib
             ]
-            ++ pkgs.lib.optional (peeringLib != null) peeringLib;
+            ++ [ peeringLib ];
 
             installPhase = ''
               runHook preInstall
@@ -352,8 +350,10 @@
                 [ -f "$host" ] || continue
                 cp -L "$host" $out/bin/
               done
-              ${pkgs.lib.optionalString (peering != null) ''
-                cp -L ${peering.logos_host_remote}/bin/logos_host_remote $out/bin/
+              # The facade host, and on Windows the DLLs beside it that are not here yet.
+              cp -L ${peering.logos_host_remote}/bin/logos_host_remote* $out/bin/
+              ${pkgs.lib.optionalString isWindows ''
+                cp -Ln ${peering.logos_host_remote}/bin/*.dll $out/bin/
               ''}
               chmod -R +w $out/bin
 
@@ -513,6 +513,11 @@
                 ls -la ${liblogosPortable}/bin >&2 || true
                 exit 1
               fi
+              # The facade host an import runs in, with the DLLs it needs that are not here yet.
+              cp -L ${peering.logos_host_remote}/bin/logos_host_remote.exe $out/bin/
+              for dll in ${peering.logos_host_remote}/bin/*.dll; do
+                [ -f "$out/bin/$(basename "$dll")" ] || cp -L "$dll" $out/bin/
+              done
               chmod -R +w $out/bin
 
               # Built-in modules, from the SAME install-bundler path the native
@@ -609,7 +614,7 @@ ${pkgs.lib.optionalString withPkgModules ''
               cppSdk
               protocolPkg
             ]
-            ++ pkgs.lib.optional (peeringLib != null) peeringLib;
+            ++ [ peeringLib ];
 
             cmakeFlags = [
               "-GNinja"
@@ -719,7 +724,7 @@ ${pkgs.lib.optionalString withPkgModules ''
               pkgs.yaml-cpp
               pkgs.spdlog
             ]
-            ++ pkgs.lib.optional (peeringLib != null) peeringLib;
+            ++ [ peeringLib ];
 
             cmakeFlags = [
               "-GNinja"
@@ -755,7 +760,7 @@ ${pkgs.lib.optionalString withPkgModules ''
               protocolPkg
               liblogosLib
             ]
-            ++ pkgs.lib.optional (peeringLib != null) peeringLib;
+            ++ [ peeringLib ];
 
             passthru = {
               extraDirs = [ "modules" ] ++ pkgs.lib.optional withPkgModules "modules-pkg";
