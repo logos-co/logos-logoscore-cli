@@ -144,7 +144,6 @@ set(SHARED_SOURCES
     src/daemon/daemon.cpp
     src/daemon/daemon_state.cpp
     src/daemon/access_policy_arg.cpp
-    src/daemon/port_allocator.cpp
     src/daemon/token_store.cpp
     src/daemon/log_sink.cpp
     src/daemon/package_bootstrap.cpp
@@ -213,11 +212,8 @@ target_link_libraries(${_tgt} PRIVATE
 )
 
 if(WIN32)
-    # PortAllocator's probe socket. Winsock is not in the default link set the
-    # way libc's sockets are on POSIX, so without this the build fails at link
-    # with undefined `socket`/`bind`/`getsockname`/`WSAStartup`.
     # shell32: CommandLineToArgvW, for UTF-8 arguments (utf8_args.h).
-    target_link_libraries(${_tgt} PRIVATE ws2_32 shell32)
+    target_link_libraries(${_tgt} PRIVATE shell32)
 endif()
 
 target_include_directories(${_tgt} PRIVATE

@@ -83,22 +83,6 @@ constexpr int kShutdownProbeGapMs = 200;
 // call deadline.
 constexpr int kWatchArmMs = 20 * 1000;
 
-std::string plainTransportJson(const ClientModuleTransport& transport)
-{
-    if (transport.protocol == "local") return logosctl::kPlainLocalTransport;
-    nlohmann::json spec = {
-        {"protocol", transport.protocol},
-        {"host", transport.host},
-        {"port", transport.port},
-        {"codec", transport.codec},
-    };
-    if (transport.protocol == "tcp_ssl") {
-        if (!transport.caFile.empty()) spec["ca_file"] = transport.caFile;
-        spec["verify_peer"] = transport.verifyPeer;
-    }
-    return spec.dump();
-}
-
 } // namespace
 
 RpcClient::RpcClient()
@@ -138,10 +122,8 @@ bool RpcClient::connect()
         return false;
     }
 
-    // For local qt_remote_plain dialing, the protocol derives the endpoint from
-    // `local:logos_<module>_<instance_id>`, so we need the daemon's
-    // instance id. The daemon's auto-emitted client/config.json carries it;
-    // Remote TCP/TLS transports do not need it.
+    // The protocol derives the local endpoint from `local:logos_<module>_<instance_id>`,
+    // so we need the daemon's instance id; its auto-emitted client/config.json carries it.
     if (!d->clientState.instanceId.empty()) {
         d->instanceId = d->clientState.instanceId;
         logosctl::setEnvVar("LOGOS_INSTANCE_ID", d->instanceId.c_str());
@@ -151,8 +133,7 @@ bool RpcClient::connect()
     lp_token_save("core_service", d->token.c_str());
 
     // core_service is mandatory.
-    auto coreIt = d->clientState.daemon.find("core_service");
-    if (coreIt == d->clientState.daemon.end()) {
+    if (!d->clientState.daemon.count("core_service")) {
         m_lastError = ClientStateFile::filePath() + ": 'daemon.core_service' is required.";
         return false;
     }
@@ -167,30 +148,19 @@ bool RpcClient::connect()
     // check in Command::ensureConnected() cannot see -- that path removes
     // daemon/state.json, so there is no pid left to find dead.
     //
-    // Only for the local transport, and only when the answer is a definite no.
-    // localEndpointProvablyAbsent() fails closed on everything short of proof,
-    // so a reachable daemon is never refused on a guess. See local_endpoint.h.
-    if (coreIt->second.protocol == "local") {
-        std::string endpoint;
-        if (logosctl::localEndpointProvablyAbsent("core_service", d->instanceId,
-                                                  &endpoint)) {
-            m_lastError = fmt::format(
-                "No daemon running (no local endpoint at {}). A daemon that "
-                "stopped removes it; start one in this session to get it back.",
-                endpoint);
-            return false;
-        }
+    // Only when the answer is a definite no: localEndpointProvablyAbsent()
+    // fails closed on everything short of proof, so a reachable daemon is
+    // never refused on a guess. See local_endpoint.h.
+    std::string endpoint;
+    if (logosctl::localEndpointProvablyAbsent("core_service", d->instanceId, &endpoint)) {
+        m_lastError = fmt::format(
+            "No daemon running (no local endpoint at {}). A daemon that "
+            "stopped removes it; start one in this session to get it back.",
+            endpoint);
+        return false;
     }
 
-    std::string capabilityTransport = logosctl::kPlainLocalTransport;
-    if (auto capIt = d->clientState.daemon.find("capability_module");
-        capIt != d->clientState.daemon.end()) {
-        capabilityTransport = plainTransportJson(capIt->second);
-    }
-
-    d->coreService = std::make_unique<logosctl::PlainRpcClient>(
-        "core_service", "cli_client", plainTransportJson(coreIt->second),
-        capabilityTransport);
+    d->coreService = std::make_unique<logosctl::PlainRpcClient>("core_service", "cli_client");
     if (!d->coreService->valid()) {
         m_lastError = "Failed to get core_service client handle.";
         return false;

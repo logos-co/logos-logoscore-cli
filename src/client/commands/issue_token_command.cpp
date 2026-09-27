@@ -90,7 +90,7 @@ int IssueTokenCommand::execute(const std::vector<std::string>& args)
                    "Default: non-expiring.");
     cli.add_flag("--replace", replace, "Replace an existing token with this name");
     cli.add_flag("--local-only", localOnly,
-                 "Reject this token over non-LocalSocket transports");
+                 "No effect, kept for existing scripts: every token is local-only now");
 
     try {
         parseArgs(cli, args);

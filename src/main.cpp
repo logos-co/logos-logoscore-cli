@@ -249,6 +249,18 @@ static std::optional<std::string> resolveAccessPolicy(const std::string& arg)
     return resolved;
 }
 
+// daemon/config.yaml, or defaults when there is none. nullopt for one that does
+// not load: the daemon refuses it rather than start without what it says.
+static std::optional<DaemonConfig> loadDaemonConfig()
+{
+    if (auto disk = DaemonConfigFile::read()) return disk;
+    std::error_code ec;
+    if (!std::filesystem::exists(DaemonConfigFile::filePath(), ec)) return DaemonConfig{};
+    std::cerr << "Error: the daemon does not start on a config it cannot load; fix it "
+                 "with `logosctl daemon config set`." << std::endl;
+    return std::nullopt;
+}
+
 // Collapse the two-token group verbs into the single tokens CLI11 has
 // subcommands for, before any parsing happens:
 //
@@ -382,17 +394,15 @@ int main(int argc, char *argv[])
                  "Fork into the background and return once the daemon is accepting commands");
 
     // Everything that used to be a flag here -- module directories, the
-    // persistence path, per-module transports, the access policy and group,
-    // the plaintext-TCP opt-in, and the seven client dial-spec flags -- now
-    // lives in the session's YAML documents, written with
-    // `daemon config set` / `client config set`. See src/yaml_json.h for why
-    // the split is YAML for humans, JSON for machines.
+    // persistence path, the access policy and group -- now lives in the
+    // session's YAML documents, written with `daemon config set` /
+    // `client config set`. See src/yaml_json.h for why the split is YAML for
+    // humans, JSON for machines.
     //
     // Configuration is never passed alongside an unrelated command, so
     // `daemon start` and every client command take the session exactly as it
     // is on disk. That removes the whole defaults < config.json < CLI merge
-    // layer, along with the ad-hoc `NAME=PROTOCOL[,k=v...]` grammar that
-    // existed only to squeeze a nested structure through a flag.
+    // layer.
     //
     // --config-dir is the one survivor, and it is not configuration: it
     // selects *which* session to act on, so it cannot itself live inside one.
@@ -587,6 +597,11 @@ int main(int argc, char *argv[])
 
     // ── Daemon mode ──────────────────────────────────────────────────────────
     if (daemonFlag || daemonSub->parsed()) {
+        // Configuration comes solely from daemon/config.yaml. Absent means
+        // defaults, which is a working local-only daemon.
+        const std::optional<DaemonConfig> mergedCfg = loadDaemonConfig();
+        if (!mergedCfg) return 1;
+
         if (detach) {
             // Re-exec rather than simply carrying on in the forked child.
             // macOS refuses to let a process that has already initialised
@@ -633,14 +648,12 @@ int main(int argc, char *argv[])
 
             // Somewhere for the child's *pre-logging* output to land.
             //
-            // A config that fails validation -- a bad transport, a plaintext
-            // listener on a public interface -- is rejected before LogSink
-            // opens the real log, so with the child's stderr on /dev/null the
-            // reason vanished and this command reported only "exited during
-            // startup. See <log>" naming a file that was never created. Once
-            // LogSink starts it dup2s its own pipe over these descriptors, so
-            // this file only ever holds the early output, and it is removed
-            // either way.
+            // With the child's stderr on /dev/null, anything it said before
+            // LogSink opened the real log vanished, and this command reported
+            // only "exited during startup. See <log>" naming a file that was
+            // never created. Once LogSink starts it dup2s its own pipe over
+            // these descriptors, so this file only ever holds the early
+            // output, and it is removed either way.
             const std::string startupPath =
                 (std::filesystem::path(Config::daemonDir()) / "startup.err").string();
             { std::error_code ec; std::filesystem::remove(startupPath, ec); }
@@ -717,12 +730,8 @@ int main(int argc, char *argv[])
             // current, and printable before the child has booted.
             std::string logPath;
             {
-                LoggingConfig lg;
-                SessionDirs   sd;
-                if (auto disk = DaemonConfigFile::read()) {
-                    lg = disk->logging;
-                    sd = disk->dirs;
-                }
+                const LoggingConfig& lg = mergedCfg->logging;
+                const SessionDirs&   sd = mergedCfg->dirs;
                 if (!lg.enabled) {
                     logPath = "(file logging disabled)";
                 } else {
@@ -836,131 +845,9 @@ int main(int argc, char *argv[])
             return 1;
         }
 
-
-        // Plaintext-TCP guard: a `tcp` listener on a non-loopback host
-        // sends tokens in cleartext. Refuse to start unless the
-        // operator explicitly opted in.
-        auto isLoopback = [](const std::string& h) {
-            return h == "127.0.0.1" || h == "::1" || h == "localhost";
-        };
-        auto validateCodec = [](const std::string& c) {
-            return c == "json" || c == "cbor";
-        };
-
-        // Configuration comes solely from daemon/config.yaml. Absent or
-        // unreadable means defaults, which is a working local-only daemon.
-        DaemonConfig mergedCfg;
-        std::string  configSource = "defaults";
-        if (auto disk = DaemonConfigFile::read()) {
-            mergedCfg = *disk;
-            configSource = "config.yaml";
-        }
-
-        // Push the top-level `ssl:` block into the listeners that need it.
-        // It is a session-wide default: a `tcp_ssl` entry naming its own
-        // cert/key/ca keeps them, one that names none inherits these. Done
-        // before state.json is written, so the resolved snapshot shows the
-        // material each listener actually bound with rather than the intent
-        // it was derived from.
-        //
-        // logosctl-only by construction -- this is main.cpp, the Modern
-        // front-end. logoscore (main_legacy.cpp) never calls it.
-        applySslDefaults(mergedCfg);
-
-        // Make sure the well-known modules at least *have* an entry,
-        // so a bare `logosctl daemon start` (no transport flags) still boots
-        // with listeners. The local-prepend below populates them.
-        for (const std::string& wellKnown : {"core_service", "capability_module"}) {
-            (void)mergedCfg.modules[wellKnown];  // default-construct empty
-        }
-
-        // Always make every configured module carry a LocalSocket
-        // listener. Two reasons:
-        //
-        //  (1) Default modules (none operator-configured) need *some*
-        //      listener — local is the cheapest, always-works choice.
-        //
-        //  (2) Even when the operator explicitly opts into TCP / TCP+SSL
-        //      for a given module (e.g.
-        //      `--module-transport core_service=tcp,...`,
-        //      `--module-transport my_module=tcp,...`), a lot of
-        //      intra-daemon code paths (capability_module's
-        //      requestModule → core_service handshake; the daemon's
-        //      own capability-module discovery flow;
-        //      cross-module outbound `getClient(name)` calls) default
-        //      to LocalSocket and have no plumbing to discover the
-        //      operator's chosen TCP endpoint. Forcing a local listener
-        //      alongside whatever else the operator named keeps those
-        //      paths working without fan-out — the operator's TCP
-        //      listener is the *additional* surface for outside clients.
-        //
-        // Order matters: we PREPEND local so it's the first entry in
-        // each module's preference list, which means consumers that
-        // pick "first transport" land on local. Operator-supplied
-        // entries follow in the order they were typed.
-        //
-        // Applies to every module in the merged config, well-known or
-        // user-configured — same logic, no special-casing.
-        //
-        // Normalization rule: at most one `local` entry per module,
-        // always at index 0. If the operator typed `local` later in
-        // the order (e.g. `--module-transport NAME=tcp,...
-        // --module-transport NAME=local`) we MOVE that entry to the
-        // front rather than leave it at index 1 and prepend a fresh
-        // one — otherwise consumers that pick "first transport" would
-        // still land on TCP, and we'd have two local entries to dedupe.
-        for (auto& [moduleName, transports] : mergedCfg.modules) {
-            (void)moduleName;
-            auto localIt = std::find_if(transports.begin(), transports.end(),
-                [](const TransportInfo& t) { return t.protocol == "local"; });
-            TransportInfo localEntry;
-            if (localIt != transports.end()) {
-                localEntry = std::move(*localIt);
-                transports.erase(localIt);
-            } else {
-                localEntry.protocol = "local";
-            }
-            transports.insert(transports.begin(), std::move(localEntry));
-        }
-
-        // Plaintext-TCP guard, post-merge: refuse to bind plaintext tcp on a
-        // non-loopback host unless `insecure_tcp` is enabled. Iterating the
-        // merged map means a disk-supplied plaintext listener gets the same
-        // scrutiny as any other — the operator can't bypass the guard by
-        // stashing the combo in the config file.
-        for (const auto& [moduleName, transports] : mergedCfg.modules) {
-            for (const auto& t : transports) {
-                if (t.protocol != "tcp") continue;
-                if (isLoopback(t.host)) continue;
-                if (mergedCfg.insecureTcp) continue;
-                // Name the escape hatch this binary actually has. logosctl has
-                // no --insecure-tcp flag -- configuration is the YAML document
-                // -- and telling an operator to pass a flag that does not exist
-                // sends them looking for a typo in their own command line.
-                std::cerr << "Error: module '" << moduleName
-                          << "' binds plaintext tcp on non-loopback host '"
-                          << t.host << "'. Use protocol: tcp_ssl, or set "
-                          << "insecure_tcp: true in the daemon config if you "
-                          << "really mean it."
-                          << std::endl;
-                return 1;
-            }
-        }
-
-        // TLS-material guard, post-defaults: a tcp_ssl listener with no
-        // certificate binds happily and then fails every handshake with
-        // "no shared cipher", which reads like a client problem. Refuse to
-        // start and name the two places the material can come from.
-        if (auto missing = findTlsListenersMissingMaterial(mergedCfg);
-            !missing.empty()) {
-            for (const auto& who : missing) {
-                std::cerr << "Error: " << who << " has no certificate/key. "
-                          << "Set cert: and key: on the listener, or a "
-                          << "top-level ssl: { cert, key } block to cover "
-                          << "every tcp_ssl listener at once." << std::endl;
-            }
-            return 1;
-        }
+        std::error_code ec;
+        const std::string configSource =
+            std::filesystem::exists(DaemonConfigFile::filePath(), ec) ? "config.yaml" : "defaults";
 
         // Both trailing parameters are bool. Name them at the call site: this
         // line used to read `..., configSource, g_verbose)`, which silently
@@ -968,7 +855,7 @@ int main(int argc, char *argv[])
         // so -v never reached anything the daemon gates on it, and it quietly
         // rewrote the config file instead. logosctl has no --persist-config;
         // configuration is installed with `daemon config set`.
-        return Daemon::start(argc, argv, mergedCfg, configSource,
+        return Daemon::start(argc, argv, *mergedCfg, configSource,
                              /*persistConfig=*/false, /*verbose=*/g_verbose);
     }
 

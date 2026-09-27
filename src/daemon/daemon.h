@@ -20,13 +20,6 @@ public:
     // authoritative — it doesn't re-read disk files or re-apply
     // defaults.
     //
-    // `cfg.modules` must already include `core_service` and
-    // `capability_module` entries; the caller defaults them to
-    // LocalSocket-only when neither config.json nor CLI flags
-    // populated them. For non-LocalSocket entries with `port == 0`,
-    // the daemon pre-allocates a fresh ephemeral port via
-    // `PortAllocator` so the listener doesn't race the kernel for it.
-    //
     // `configSource` is a diagnostic string ("cli" | "config.json" |
     // "defaults") recorded into state.json's `config_source` field
     // so operators can tell at a glance where the running daemon's

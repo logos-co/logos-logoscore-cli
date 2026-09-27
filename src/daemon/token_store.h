@@ -19,8 +19,8 @@
 //                            (ephemeral) and config.json (preferences).
 //   - tokens/<name>.json  — operator-copyable file with the *raw* token,
 //                            created at issue time. Once the operator
-//                            copies it to a client host (or to the local
-//                            `client/` dir), they're free to delete the
+//                            copies it to a client session's `client/`
+//                            dir, they're free to delete the
 //                            raw file from the daemon side — the hash in
 //                            tokens.json is what validates from then on.
 //
@@ -41,15 +41,14 @@ constexpr int kTokensFileSchemaVersion = 2;
 // One accepted-token entry. Hashes-at-rest (the raw token only ever
 // lives in `daemon/tokens/<name>.json` and the operator's copy on the
 // client side). Validation: hash the inbound token, compare to `hash`,
-// then enforce `expiresAt` (if set) and `localOnly` (if true, the
-// inbound transport must be "local").
+// then enforce `expiresAt` (if set).
 struct TokenEntry {
     std::string name;
     std::string hash;       // sha256 hex digest of the raw token
     std::string issuedAt;   // ISO 8601 UTC
     // Optional ISO 8601 absolute deadline. Empty = non-expiring.
     std::string expiresAt;
-    // If true, the daemon rejects this token over non-local transports.
+    // Recorded, and enforced by nothing: every token is local-only now.
     bool        localOnly = false;
 };
 
@@ -120,8 +119,7 @@ public:
     // daemon/tokens/<name>.json on success.
     //
     // `expiresAt` may be empty (non-expiring) or an ISO 8601 absolute
-    // deadline. `localOnly` constrains the token to the LocalSocket
-    // transport at validation time. If `replace` is false and `name`
+    // deadline. `localOnly` is only recorded. If `replace` is false and `name`
     // already exists, returns `AlreadyExists`. I/O failures (perm
     // denied, disk full, etc.) return `IoError` so the CLI can
     // surface a different exit code than "name collision".
@@ -153,15 +151,10 @@ public:
     std::vector<IssuedToken> listTokens() const;
 
     // Look up a token by its raw value. Hashes the input and matches
-    // against daemon/tokens.json. On match, additionally enforces:
-    //   - expires_at: rejected if `now() >= expires_at`
-    //   - local_only: rejected unless `transportProtocol == "local"`
-    //
-    // `transportProtocol` should be one of the wire-level transport
-    // identifiers ("local", "tcp", "tcp_ssl"). Returns the entry name
-    // on success.
-    std::optional<std::string> lookupByToken(const std::string& token,
-                                             const std::string& transportProtocol) const;
+    // against daemon/tokens.json; an entry past its expires_at is rejected.
+    // Returns the entry name on success. Tokens arrive over the local socket
+    // only, which the daemon's operator resolver enforces.
+    std::optional<std::string> lookupByToken(const std::string& token) const;
 
     // Absolute path of daemon/tokens/<name>.json — exposed so the CLI
     // can print it to operators after issue.

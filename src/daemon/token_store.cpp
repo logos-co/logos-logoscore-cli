@@ -438,8 +438,7 @@ std::vector<IssuedToken> TokenStore::listTokens() const
 }
 
 std::optional<std::string>
-TokenStore::lookupByToken(const std::string& token,
-                          const std::string& transportProtocol) const
+TokenStore::lookupByToken(const std::string& token) const
 {
     // Fail closed on an empty token: it would hash to SHA-256("") and could
     // match a corrupt empty-hash entry. An empty credential is never valid.
@@ -450,9 +449,7 @@ TokenStore::lookupByToken(const std::string& token,
     const auto tokens = TokensFile::read();
     for (const auto& e : tokens) {
         if (e.hash != h) continue;
-        if (isExpired(e.expiresAt))                 return std::nullopt;
-        if (e.localOnly && transportProtocol != "local")
-            return std::nullopt;
+        if (isExpired(e.expiresAt)) return std::nullopt;
         return e.name;
     }
     return std::nullopt;

@@ -2,7 +2,6 @@
 
 #include <spdlog/spdlog.h>
 #include "daemon_state.h"
-#include "port_allocator.h"
 #include "token_store.h"
 #include "log_sink.h"
 #include "package_bootstrap.h"
@@ -11,8 +10,6 @@
 #include "logos_core.h"
 
 #include <logos_socket_paths.h>
-#include <logos_transport_config.h>
-#include <logos_transport_config_json.h>
 #include <logos_protocol.h>
 #include "../core_service/package_service.h"
 #include "../core_service/shell_calls.h"
@@ -130,92 +127,6 @@ void Daemon::setupSignalHandlers()
 
 namespace {
 
-// Materialize a per-module TransportInfo list into a LogosTransportSet
-// used by the runtime's child host. For non-LocalSocket entries with
-// `port == 0`, pre-allocate a fresh ephemeral port via PortAllocator
-// (ask the kernel for a free TCP port, close the probe socket, hand
-// the number to the listener). Without the pre-allocation the listener
-// would race the kernel to bind and the actual port would only be
-// known *after* the listener was up — too late to advertise in
-// state.json.
-//
-// No "inheritance" here. Each module's transports are independent;
-// nothing about core_service's set leaks into capability_module's.
-// The CLI's `--module-transport` flags drive the input directly.
-//
-// Returns std::nullopt if any non-local listener fails to acquire a
-// port. The caller is expected to abort daemon startup — silently
-// advertising port=0 in state.json (the previous behaviour) is
-// worse: clients pick up an unreachable endpoint and time out.
-std::optional<LogosTransportSet> buildTransportSet(
-    const std::vector<TransportInfo>& infos,
-    const std::string& moduleName)
-{
-    LogosTransportSet out;
-    for (const auto& src : infos) {
-        TransportInfo eff = src;
-
-        if (src.protocol != "local" && eff.port == 0) {
-            eff.port = PortAllocator::allocateEphemeralTcp(eff.host);
-            if (eff.port == 0) {
-                fprintf(stderr,
-                        "[%s] Failed to allocate ephemeral port for %s\n",
-                        moduleName.c_str(), src.protocol.c_str());
-                return std::nullopt;
-            }
-        }
-
-        LogosTransportConfig c;
-        if (eff.protocol == "local") c.protocol = LogosProtocol::QtRemotePlain;
-        else if (eff.protocol == "tcp") c.protocol = LogosProtocol::Tcp;
-        else if (eff.protocol == "tcp_ssl") c.protocol = LogosProtocol::TcpSsl;
-        else {
-            fprintf(stderr,
-                    "[%s] Unknown transport '%s'.\n",
-                    moduleName.c_str(), eff.protocol.c_str());
-            return std::nullopt;
-        }
-        c.host       = eff.host;
-        c.port       = eff.port;
-        c.caFile     = eff.caFile;
-        c.certFile   = eff.certFile;
-        c.keyFile    = eff.keyFile;
-        c.verifyPeer = eff.verifyPeer;
-        c.codec      = (eff.codec == "cbor") ? LogosWireCodec::Cbor
-                                              : LogosWireCodec::Json;
-        out.push_back(std::move(c));
-    }
-    return out;
-}
-
-// Round-trip a LogosTransportSet back into the on-disk TransportInfo
-// shape so we can advertise it under `modules.<name>.transports` in
-// state.json. Reverse of buildTransportSet in the sense that the
-// on-disk shape matches what clients then read.
-std::vector<TransportInfo> toAdvertised(const LogosTransportSet& set)
-{
-    std::vector<TransportInfo> out;
-    for (const auto& c : set) {
-        TransportInfo t;
-        switch (c.protocol) {
-        case LogosProtocol::Tcp:         t.protocol = "tcp"; break;
-        case LogosProtocol::TcpSsl:      t.protocol = "tcp_ssl"; break;
-        case LogosProtocol::QtRemotePlain: t.protocol = "local"; break;
-        case LogosProtocol::LocalSocket:
-        default:                         t.protocol = "local"; break;
-        }
-        t.host = c.host;
-        t.port = c.port;
-        t.caFile = c.caFile;
-        t.verifyPeer = c.verifyPeer;
-        t.codec = (c.codec == LogosWireCodec::Cbor) ? "cbor" : "json";
-        // certFile/keyFile intentionally NOT copied — they're
-        // server-only secrets and don't belong in state.json.
-        out.push_back(std::move(t));
-    }
-    return out;
-}
-
 // Load the bundled package modules and point package_manager at this
 // session's directories. Best-effort throughout: a daemon that cannot manage
 // packages is still fully usable for loading and calling modules, so nothing
@@ -285,13 +196,14 @@ char* copyForProtocol(const std::string& value)
 // core_service runs in the runtime's process; the daemon names its operators,
 // handles its shutdown and adds the package operations, which the runtime
 // forwards here over its private pipe.
+// Operator tokens are good on the local socket only; an in-process caller is as local.
 char* resolveOperator(const char* token, const char* transport, void*)
 {
     if (!token || !transport) return nullptr;
-    // A caller in this process is as local as the local socket.
-    const std::string protocol = std::string(transport) == "inproc" ? "local" : transport;
+    const std::string via = transport;
+    if (via != "local" && via != "inproc") return nullptr;
     TokenStore tokenStore;
-    const auto name = tokenStore.lookupByToken(token, protocol);
+    const auto name = tokenStore.lookupByToken(token);
     return name ? copyForProtocol(*name) : nullptr;
 }
 
@@ -341,16 +253,6 @@ char* extendCoreService(const char* callerJson, const char* method, const char* 
             {"status", "error"}, {"code", "INVALID_ARGS"},
             {"message", "core_service." + name + " takes other arguments."}}.dump());
     return copyForProtocol(result->dump());
-}
-
-// What the embedded core_service adds to its own inproc and local listeners.
-LogosTransportSet networkTransports(const LogosTransportSet& all)
-{
-    LogosTransportSet network;
-    for (const auto& transport : all)
-        if (transport.protocol == LogosProtocol::Tcp || transport.protocol == LogosProtocol::TcpSsl)
-            network.push_back(transport);
-    return network;
 }
 
 // Locks daemon/daemon.lock until this process exits. False only when another
@@ -482,7 +384,6 @@ int Daemon::start(int argc, char* argv[],
                     lo.dir.c_str());
         }
     }
-    const auto& moduleTransports = cfg.modules;
     // 1. Generate instance ID BEFORE core init, so logos_host inherits it
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -626,48 +527,9 @@ int Daemon::start(int argc, char* argv[],
     // 4b. The access policy, before any module loads. Empty => none.
     if (!cfg.accessPolicy.empty()) runtimeConfig["access_policy"] = cfg.accessPolicy;
 
-    // 5. Materialize per-module transport sets BEFORE the runtime starts
-    //    so capability_module (loaded as it starts) gets the
-    //    listeners the operator asked for, with ephemeral ports already
-    //    allocated. Each module's transports come from the
-    //    `--module-transport` CLI flags, fully decoupled — nothing about
-    //    core_service's listeners leaks into capability_module's. The
-    //    CLI defaulted both well-known modules to a LocalSocket-only
-    //    entry if the operator didn't configure them.
-    auto getModuleInfos = [&moduleTransports](const std::string& name) {
-        auto it = moduleTransports.find(name);
-        return it == moduleTransports.end()
-                   ? std::vector<TransportInfo>{}
-                   : it->second;
-    };
-
-    auto coreTransportsOpt = buildTransportSet(
-        getModuleInfos("core_service"), "core_service");
-    if (!coreTransportsOpt) {
-        fprintf(stderr,
-                "Daemon startup aborted: failed to build core_service transport set "
-                "(see prior log lines for which listener failed).\n");
-        return 1;
-    }
-    LogosTransportSet coreTransports = std::move(*coreTransportsOpt);
-
-    auto capabilityTransportsOpt = buildTransportSet(
-        getModuleInfos("capability_module"), "capability_module");
-    if (!capabilityTransportsOpt) {
-        fprintf(stderr,
-                "Daemon startup aborted: failed to build capability_module transport set "
-                "(see prior log lines for which listener failed).\n");
-        return 1;
-    }
-    LogosTransportSet capabilityTransports = std::move(*capabilityTransportsOpt);
-
-    // capability_module's listeners, which the runtime binds as it starts.
-    runtimeConfig["module_transports"] = {
-        {"capability_module", logos::transportSetToJsonString(capabilityTransports)}};
-
-    // 5b. core_service is liblogos': the daemon is its shell ("logoscore") and
-    //     hands it what only the daemon knows. The bundled directories are what
-    //     ships beside the binary, so a reserved module name resolves only there.
+    // 5. core_service is liblogos': the daemon is its shell ("logoscore") and
+    //    hands it what only the daemon knows. The bundled directories are what
+    //    ships beside the binary, so a reserved module name resolves only there.
     nlohmann::json bundledDirs = nlohmann::json::array();
     if (!bundledDir.empty()) bundledDirs.push_back(bundledDir);
     if (modern && !paths::bundledPackageModulesDir().empty())
@@ -679,8 +541,6 @@ int Daemon::start(int argc, char* argv[],
     runtimeConfig["modules_dirs"] = modulesDirList;
     runtimeConfig["bundled_modules_dirs"] = bundledDirs;
     if (!cfg.placement.empty()) runtimeConfig["placement_policy"] = cfg.placement;
-    runtimeConfig["core_service_transports"] =
-        logos::transportSetToJsonString(networkTransports(coreTransports));
     // peering_module lets this shell, and local operators, manage it.
     if (!cfg.peering.empty()) {
         nlohmann::json peering = nlohmann::json::parse(cfg.peering, nullptr, false);
@@ -708,11 +568,10 @@ int Daemon::start(int argc, char* argv[],
     // -v reaches the runtime's log too.
     if (verbose && !std::getenv("LOGOS_LOG_LEVEL")) logosctl::setEnvVar("LOGOS_LOG_LEVEL", "debug");
 
-    // 6. Start the runtime. capability_module loads there now, with the
-    //    transport set above, and the runtime answers with this shell's
-    //    binding: every lifecycle call the daemon makes goes through
-    //    core_service as "logoscore". Without its token authority it does not
-    //    start, and nothing could load.
+    // 6. Start the runtime. capability_module loads there now, and the runtime
+    //    answers with this shell's binding: every lifecycle call the daemon
+    //    makes goes through core_service as "logoscore". Without its token
+    //    authority it does not start, and nothing could load.
     char* spawnError = nullptr;
     logos_runtime* runtime = logos_runtime_spawn(runtimeConfig.dump().c_str(), &spawnError);
     if (!runtime) {
@@ -796,27 +655,17 @@ int Daemon::start(int argc, char* argv[],
                                 cfg.signaturePolicy, verbose);
     }
 
-    // 9. Write the live-instance state file. Carries the resolved
-    //    transport endpoints (post-bind, with real ports), instanceId/
-    //    pid/startedAt for co-resident clients, and a snapshot of the
-    //    operator-resolved config for diagnostics. Persistent state
-    //    (tokens.json) and operator preferences (config.json, only
-    //    written on --persist-config) live in their own files and
-    //    aren't touched here.
+    // 9. Write the live-instance state file: instanceId/pid/startedAt for
+    //    co-resident clients, and a snapshot of the operator-resolved config
+    //    for diagnostics. Persistent state (tokens.json) and operator
+    //    preferences (config.json, only written on --persist-config) live in
+    //    their own files and aren't touched here.
     DaemonRuntimeState state;
     state.instanceId    = instanceId;
     state.pid           = pid;
     state.startedAt     = currentUtcIso8601();
     state.configSource  = configSource;
-    // Start from the operator-merged config so downstream consumers
-    // see every preference (ssl paths, insecureTcp), then
-    // overwrite the per-module map with the resolved (post-bind)
-    // transports — that's the only field where state.json diverges
-    // from config.json on intent.
-    state.resolved              = cfg;
-    state.resolved.modules.clear();
-    state.resolved.modules.emplace("core_service",      toAdvertised(coreTransports));
-    state.resolved.modules.emplace("capability_module", toAdvertised(capabilityTransports));
+    state.resolved      = cfg;
     if (!DaemonRuntimeStateFile::write(state)) {
         fprintf(stderr, "Failed to write daemon state file: %s\n",
                 DaemonRuntimeStateFile::filePath().c_str());
@@ -834,8 +683,8 @@ int Daemon::start(int argc, char* argv[],
         LogSink::discardStdio();
 
     // Persist operator preferences only if asked (legacy front-end only).
-    // Done after state.json is on disk so a config that fails earlier (e.g. a
-    // bind failure) doesn't pollute config.json.
+    // Done after state.json is on disk so a config that fails earlier
+    // doesn't pollute config.json.
     if (persistConfig) {
         if (DaemonConfigFile::write(cfg)) {
             fprintf(stdout, "Persisted config: %s\n",
@@ -847,22 +696,9 @@ int Daemon::start(int argc, char* argv[],
     }
 
     // 10. Generate the local-client convenience artifacts (client/config.json
-    //     + client/auto.json). The config.json write is gated inside
-    //     writeLocalClientArtifacts on the file not already existing —
-    //     operator-authored client config must not be clobbered just because a
-    //     daemon happened to start in the same config dir.
-    //     The one exception: an existing config.json whose instance_id
-    //     no longer matches this daemon is a stale copy of our own
-    //     artifact (persisted config dir, replaced daemon) and is
-    //     refreshed in place — see writeLocalClientArtifacts.
-    //     The raw client/auto.json is always (re)written so a config.json
-    //     pointing at "auto.json" stays consistent with the freshly-issued
-    //     auto token.
+    //     + client/auto.json), both rewritten for this boot's instance and token.
     if (!DaemonRuntimeStateFile::writeLocalClientArtifacts(
-            instanceId, autoTokenRaw, state.startedAt,
-            toAdvertised(coreTransports),
-            toAdvertised(capabilityTransports),
-            effectiveAccessGroup)) {
+            instanceId, autoTokenRaw, state.startedAt, effectiveAccessGroup)) {
         fprintf(stderr, "Warning: failed to write local client artifacts under %s\n",
                 Config::clientDir().c_str());
     }
