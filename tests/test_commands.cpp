@@ -356,7 +356,7 @@ TEST_F(CommandTest, Peer_AcceptingRuntimeControlPrintsAPolicyExample)
         {"result", {{"pending", LogosList::array({{{"id", "p1"}, {"peer_runtime_id", "rt-1"},
                                                     {"uses", {"provider-access", "runtime-control"}}}})}}}};
     mockClient.callMethodResultByMethod["confirmPairing"] = LogosMap{{"status", "ok"}, {"result", {{"ok", true}}}};
-    output.setJsonMode(false);
+    output.setHumanMode(true);
     auto cmd = createCommand("peer", mockClient, output);
     const std::string out = captureOutput([&] { EXPECT_EQ(cmd->execute({"accept", "p1"}), 0); });
     EXPECT_EQ(mockClient.lastCallMethod, "confirmPairing");
