@@ -56,6 +56,8 @@
     # peering_module, peering_identity and the facade host, logos_host_remote.
     logos-peering.url = "github:logos-co/logos-peering";
     logos-peering.inputs.logos-nix.follows = "logos-nix";
+    # One libpeering source: liblogos builds its in-process facades from it.
+    logos-liblogos.inputs.logos-peering.follows = "logos-peering";
   };
 
   outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-liblogos, logos-package-manager, logos-capability-module, logos-modules-state-module, logos-package-manager-module, logos-package-downloader-module, logos-storage-module, logos-test-modules-src, nix-bundle-logos-module-install, nix-bundle-lgx, nix-bundle-dir, nix-bundle-appimage, logos-peering }:
