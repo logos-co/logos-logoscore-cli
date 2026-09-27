@@ -278,7 +278,9 @@ when `--persist-config` is used.
 
 The keys of the removed `tcp` and `tcp_ssl` transports (`modules`, `ssl`,
 `insecure_tcp`) still load at the defaults every older file carried, and are
-dropped; any other value is refused by name. Neither file writes them.
+dropped; any other value is refused by name. `state.json` is the daemon's own
+record, so there they are dropped whatever they hold: a daemon started before
+the upgrade is still seen as running. Neither file writes them.
 
 ### TokenStore
 

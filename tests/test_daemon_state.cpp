@@ -534,8 +534,8 @@ TEST_F(DaemonStateTest, Config_WellFormedDocumentStillLoads)
 //
 // Every config.json --persist-config wrote, and every state.json `resolved`
 // block, carries `ssl` with empty paths, `insecure_tcp: false` and local
-// listeners under `modules`. Those still load; anything more is refused by
-// name, never dropped.
+// listeners under `modules`. Those still load; in a config anything more is
+// refused by name, never dropped. state.json drops the keys whatever they hold.
 
 namespace {
 
@@ -653,12 +653,28 @@ TEST_F(DaemonStateTest, RemovedKeys_AreRefusedByTheLoaderToo)
                           "    - protocol: tcp\n"
                           "      host: 0.0.0.0\n");
     EXPECT_FALSE(DaemonConfigFile::read().has_value());
+}
 
+TEST_F(DaemonStateTest, RemovedKeys_AnOlderDaemonWithTcpListenersStillReads)
+{
+    // A daemon started before the upgrade, still running: the "already
+    // running" guard and the stale-session checks must still see it.
+    json resolved = legacyDefaults();
+    resolved["modules"]["core_service"]["transports"].push_back(
+        {{"protocol", "tcp_ssl"}, {"host", "0.0.0.0"}, {"port", 6443}, {"ca_file", "/ca.pem"}});
+    resolved["ssl"] = {{"cert", "/etc/ssl/cert.pem"}, {"key", "/etc/ssl/key.pem"}, {"ca", ""}};
+    resolved["insecure_tcp"] = true;
     fs::path p(DaemonRuntimeStateFile::filePath());
     fs::create_directories(p.parent_path());
     std::ofstream(p, std::ios::trunc)
-        << R"({"version":2,"instance_id":"x","pid":1,"resolved":{"insecure_tcp":true}})";
-    EXPECT_FALSE(DaemonRuntimeStateFile::read().fileOk);
+        << json{{"version", 2}, {"instance_id", "old456"}, {"pid", 4242},
+                {"started_at", "2026-01-01T00:00:00Z"}, {"resolved", resolved}}.dump(4);
+
+    DaemonRuntimeState got = DaemonRuntimeStateFile::read();
+    EXPECT_TRUE(got.fileOk);
+    EXPECT_EQ(got.pid, 4242);
+    EXPECT_EQ(got.instanceId, "old456");
+    EXPECT_EQ(got.resolved.modulesDirs, std::vector<std::string>{"/opt/modules"});
 }
 
 TEST_F(DaemonStateTest, RemovedKeys_ClientTransportsAreRefusedByName)

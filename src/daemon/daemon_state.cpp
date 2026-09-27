@@ -417,7 +417,11 @@ DaemonRuntimeState DaemonRuntimeStateFile::read()
     state.startedAt    = r.str("started_at");
     state.configSource = r.str("config_source");
     if (const json* resolvedObj = r.mapping("resolved")) {
-        auto resolved = daemonConfigFromJson(*resolvedObj, errs, "resolved.");
+        // A daemon's own record, not operator config: an older daemon's tcp
+        // listeners must not hide that it is running, so drop the removed keys.
+        json current = *resolvedObj;
+        for (const char* removed : {"modules", "ssl", "insecure_tcp"}) current.erase(removed);
+        auto resolved = daemonConfigFromJson(current, errs, "resolved.");
         if (!resolved) {
             // Same fail-the-parse contract as DaemonConfigFile::read:
             // an invalid entry means we can't trust any of the resolved
