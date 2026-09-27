@@ -4,7 +4,8 @@
 //
 // This is the operator-facing half of deny-by-default enforcement: whatever
 // this returns is handed verbatim to logos_core_set_access_policy(), where
-// `mode: "enforce"` (and only that) arms the runtime. The tests pin:
+// `mode: "enforce"` or `"explicit"` arms the runtime and any mode it does not
+// know is refused. The tests pin:
 //   - `enforce` expands to a document the runtime reads as enforce mode
 //   - the alias wins over the file branch (no relative path named "enforce")
 //   - inline JSON and file paths are passed through unchanged
