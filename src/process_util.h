@@ -17,7 +17,7 @@
 //   0        the process exists
 //   EPERM    it exists but belongs to another user -- still ALIVE
 //   ESRCH    no such process -- dead
-// so only ESRCH counts as dead.
+// so only ESRCH counts as dead. A zombie counts as dead too.
 
 #include <chrono>
 #include <csignal>
@@ -29,8 +29,36 @@
 #include <cerrno>
 #include <sys/types.h>
 #endif
+#if defined(__linux__)
+#include <fstream>
+#include <iterator>
+#include <string>
+#elif defined(__APPLE__)
+#include <sys/sysctl.h>
+#endif
 
 namespace logosctl {
+
+// Exited but not yet reaped by its parent, e.g. a daemon a test harness
+// spawned. kill(pid, 0) still succeeds on one.
+inline bool processIsZombie(long long pid)
+{
+#if defined(__linux__)
+    std::ifstream f("/proc/" + std::to_string(pid) + "/stat");
+    const std::string s((std::istreambuf_iterator<char>(f)), {});
+    const auto comm = s.rfind(')');   // "pid (comm) state ..."
+    return comm != std::string::npos && comm + 2 < s.size() && s[comm + 2] == 'Z';
+#elif defined(__APPLE__)
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, static_cast<int>(pid)};
+    struct kinfo_proc info{};
+    size_t len = sizeof(info);
+    return ::sysctl(mib, 4, &info, &len, nullptr, 0) == 0 && len > 0
+        && info.kp_proc.p_stat == SZOMB;
+#else
+    (void)pid;
+    return false;
+#endif
+}
 
 inline bool processAlive(long long pid)
 {
@@ -57,8 +85,9 @@ inline bool processAlive(long long pid)
     ::CloseHandle(h);
     return state == WAIT_TIMEOUT;   // not signalled => still running
 #else
-    if (::kill(static_cast<pid_t>(pid), 0) == 0) return true;
-    return errno != ESRCH;          // EPERM etc: exists, just not ours
+    // Only ESRCH is gone; EPERM etc. exists, just not ours.
+    if (::kill(static_cast<pid_t>(pid), 0) != 0 && errno == ESRCH) return false;
+    return !processIsZombie(pid);
 #endif
 }
 

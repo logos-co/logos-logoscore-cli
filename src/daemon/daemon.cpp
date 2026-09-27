@@ -296,6 +296,20 @@ void bootstrapPackageModules(LogosAPI* api,
 
 } // namespace
 
+bool Daemon::refuseIfAlreadyRunning()
+{
+    const DaemonRuntimeState existing = DaemonRuntimeStateFile::read();
+    if (!existing.fileOk || existing.pid <= 0 || !logosctl::processAlive(existing.pid))
+        return false;
+    fprintf(stderr,
+            "Error: a logosctl daemon is already running in this config dir "
+            "(pid %lld, instance %s). Refusing to start a second one — use "
+            "--config-dir for a parallel instance.\n",
+            static_cast<long long>(existing.pid),
+            existing.instanceId.c_str());
+    return true;
+}
+
 int Daemon::start(int argc, char* argv[],
                   const DaemonConfig& cfg,
                   const std::string& configSource,
@@ -303,6 +317,11 @@ int Daemon::start(int argc, char* argv[],
                   bool verbose)
 {
     const auto& modulesDirs      = cfg.modulesDirs;
+
+    // Refuse if a live daemon owns this config dir: two would clobber state.json
+    // and the auto-token. First, before LogSink repoints the session's log.
+    if (refuseIfAlreadyRunning())
+        return 1;
 
     // Apply the session-directory redirects before anything asks Config for a
     // path. Defaults keep every directory inside the config dir, which is what
@@ -400,24 +419,6 @@ int Daemon::start(int argc, char* argv[],
         }
     }
 #endif
-
-    // Refuse to start if a live daemon already owns this config-dir — two would
-    // clobber the shared state.json and re-issue the auto-token. Checked before
-    // logos_core_init so it fails fast. A stale file from a crashed daemon (pid
-    // gone) is not a live owner and is overwritten below.
-    {
-        const DaemonRuntimeState existing = DaemonRuntimeStateFile::read();
-        if (existing.fileOk && existing.pid > 0
-            && logosctl::processAlive(existing.pid)) {
-            fprintf(stderr,
-                    "Error: a logosctl daemon is already running in this config dir "
-                    "(pid %lld, instance %s). Refusing to start a second one — use "
-                    "--config-dir for a parallel instance.\n",
-                    static_cast<long long>(existing.pid),
-                    existing.instanceId.c_str());
-            return 1;
-        }
-    }
 
     // Reap the socket files left behind by a previous node that died without
     // running its destructors. A graceful stop unlinks its own sockets (Qt's

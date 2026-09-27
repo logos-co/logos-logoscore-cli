@@ -42,6 +42,10 @@ public:
                      bool persistConfig,
                      bool verbose);
 
+    // Prints the refusal and returns true if a live daemon owns this config
+    // dir. start() calls it, and so does the `--detach` parent before it spawns.
+    static bool refuseIfAlreadyRunning();
+
 #ifdef _WIN32
     // Entry point for the Win32 console control handler, which lives in an
     // anonymous namespace in daemon.cpp and so cannot reach the private

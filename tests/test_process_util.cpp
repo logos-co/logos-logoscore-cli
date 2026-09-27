@@ -26,9 +26,7 @@ int elapsedMs(std::chrono::steady_clock::time_point t0)
 }
 
 // Spawn a child that exits after `lifetimeMs`, with SIGCHLD ignored so the
-// kernel reaps it for us. Without that the child lingers as a zombie, and
-// kill(pid, 0) — what processAlive asks — reports a zombie as ALIVE. The real
-// caller is never the daemon's parent, so it never sees one; this test would.
+// kernel reaps it for us.
 struct AutoReapedChild {
     struct sigaction saved{};
     pid_t pid = -1;
@@ -85,3 +83,23 @@ TEST(ProcessUtil, WaitForProcessExitNoticesTheExitPromptly)
     EXPECT_LT(took, 3000) << "took " << took << "ms to notice a 200ms child";
     child.pid = -1;   // already gone; nothing to kill
 }
+
+#ifndef _WIN32
+TEST(ProcessUtil, AnUnreapedChildCountsAsExited)
+{
+    // A daemon whose parent has not reaped it yet, e.g. a test harness's.
+    const pid_t pid = ::fork();
+    ASSERT_GE(pid, 0) << "fork failed";
+    if (pid == 0) ::_exit(0);
+
+    siginfo_t info{};
+    ASSERT_EQ(::waitid(P_PID, static_cast<id_t>(pid), &info, WEXITED | WNOWAIT), 0);
+    ASSERT_EQ(::kill(pid, 0), 0) << "precondition: the exited child is still a zombie";
+
+    EXPECT_FALSE(logosctl::processAlive(pid));
+    EXPECT_TRUE(logosctl::waitForProcessExit(pid, 1000));
+
+    int status = 0;
+    ::waitpid(pid, &status, 0);
+}
+#endif

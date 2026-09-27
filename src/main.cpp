@@ -639,6 +639,10 @@ int main(int argc, char *argv[])
             logosctl::setEnvVar("LOGOSCTL_CONFIG_DIR", Config::configDir().c_str());
 
             const std::string statePath = Config::daemonStatePath();
+            // A live owner keeps its state file; deleting it hid that daemon
+            // from the child's own check, which then started a second one.
+            if (Daemon::refuseIfAlreadyRunning())
+                return 1;
             // A stale state file from a previous run would make the readiness
             // check pass instantly against a daemon that never started.
             {
