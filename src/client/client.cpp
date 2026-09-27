@@ -200,8 +200,8 @@ bool RpcClient::connect()
     return true;
 }
 
-// A route from this client's operator pairing, then core_service's tls_tcp
-// session: the daemon knows this client by its key, so no token goes with it.
+// A Runtime Control session with the daemon's core_service on tls_tcp: the daemon
+// knows this client by its key, so no token goes with it, and its policy decides each call.
 bool RpcClient::connectRemote()
 {
     std::string error;

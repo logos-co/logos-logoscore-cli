@@ -4,6 +4,7 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -17,7 +18,9 @@ constexpr const char* kUsage =
     "  pair-window SECONDS           admit code pairing for a while (0 closes)\n"
     "  pair HOST PORT                start pairing; compare the code, then accept\n"
     "  accept ID | reject ID         decide a pending pairing\n"
-    "  invite [--operator] [--ttl S] print a single-use invite\n"
+    "  invite [--runtime-control] [--ttl S]\n"
+    "                                print a single-use invite; --runtime-control is for a\n"
+    "                                remote logosctl, which may then call what `policy` grants\n"
     "  redeem [FILE|-]               redeem an invite read from FILE or stdin\n"
     "  remove PEER | rename PEER ALIAS\n"
     "  export MODULE [--events] | unexport MODULE\n"
@@ -116,8 +119,27 @@ int PeerCommand::execute(const std::vector<std::string>& args)
     if (verb == "imports" && rest.empty()) return simple("imports", LogosList::array());
     if (verb == "pair-window" && rest.size() == 1 && number(rest[0]))
         return simple("openPairingWindow", LogosList::array({*number(rest[0])}));
-    if ((verb == "accept" || verb == "reject") && rest.size() == 1)
-        return simple(verb == "accept" ? "confirmPairing" : "rejectPairing", LogosList::array({rest[0]}));
+    if (verb == "reject" && rest.size() == 1) return simple("rejectPairing", LogosList::array({rest[0]}));
+    if (verb == "accept" && rest.size() == 1) {
+        // A runtime-control client may call nothing until the remote policy grants it methods.
+        std::string control;
+        if (const auto pending = call("pending", LogosList::array()))
+            for (const auto& p : pending->value("pending", LogosList::array())) {
+                const LogosList uses = p.value("uses", LogosList::array());
+                if (p.value("id", "") == rest[0]
+                    && std::find(uses.begin(), uses.end(), "runtime-control") != uses.end())
+                    control = p.value("peer_runtime_id", "");
+            }
+        const auto result = call("confirmPairing", LogosList::array({rest[0]}));
+        if (!result) return 4;
+        print(*result);
+        if (!control.empty() && !output().isJsonMode())
+            output().printRaw(fmt::format(
+                "It may call nothing yet. Grant it methods in the remote policy (logosctl peer policy "
+                "shows it, peer policy set FILE replaces it), for example:\n  {}",
+                LogosMap{{control + "/logosctl", {{"core_service", {"getStatus", "listModules"}}}}}.dump()));
+        return 0;
+    }
     if (verb == "remove" && rest.size() == 1) return simple("removePeer", LogosList::array({rest[0]}));
     if (verb == "rename" && rest.size() == 2)
         return simple("renamePeer", LogosList::array({rest[0], rest[1]}));
@@ -138,7 +160,7 @@ int PeerCommand::execute(const std::vector<std::string>& args)
         std::string role = "peer";
         long long ttl = 0;
         for (std::size_t i = 0; i < rest.size(); ++i) {
-            if (rest[i] == "--operator") role = "operator";
+            if (rest[i] == "--runtime-control") role = "runtime-control";
             else if (rest[i] == "--ttl" && i + 1 < rest.size() && number(rest[i + 1])) ttl = *number(rest[++i]);
             else return usage();
         }

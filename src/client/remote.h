@@ -2,9 +2,9 @@
 #define LOGOSCTL_REMOTE_H
 
 // Remote Runtime Control (`logosctl --remote PEER`): this client's own peering
-// identity and operator pairings, kept in <config dir>/remote, and a route to a
-// paired daemon's core_service for each run. Needs libpeering; without it every
-// call says so.
+// identity and the daemons that enrolled it for runtime-control, kept in
+// <config dir>/remote, and a session with a daemon's core_service for each run,
+// as the consumer `logosctl`. Needs libpeering; without it every call says so.
 
 #include <nlohmann/json.hpp>
 
@@ -23,10 +23,10 @@ std::string inviteText(const std::string& text);
 
 // This client, as the daemons it pairs with see it: {runtime_id, display_id, name}.
 std::optional<nlohmann::json> self(std::string* error);
-// Its operator pairings: [{runtime_id, alias, display_name, display_id, status, …}].
+// Its pairings: [{runtime_id, alias, display_name, display_id, granted_uses, status, …}].
 std::optional<nlohmann::json> peers(std::string* error);
 
-// Redeems an operator invite; `waiting` hears each state until the daemon
+// Redeems a runtime-control invite; `waiting` hears each state until the daemon
 // accepts (or refuses) it. The new peer, or nothing.
 std::optional<nlohmann::json> pair(const std::string& invite, std::chrono::seconds limit,
                                    const std::function<void(const nlohmann::json&)>& waiting,

@@ -336,6 +336,33 @@ TEST_F(CommandTest, Remote_AnInviteMayBeBareOrWhatPeerInvitePrints)
     EXPECT_EQ(logosctl::remote::inviteText(R"({"other":1})"), R"({"other":1})");
 }
 
+TEST_F(CommandTest, Peer_ARuntimeControlInviteAsksForThatRole)
+{
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}, {"result", {{"invite", "logos-pair:v1:x"}}}};
+    auto cmd = createCommand("peer", mockClient, output);
+    ASSERT_NE(cmd, nullptr);
+    captureOutput([&] { EXPECT_EQ(cmd->execute({"invite", "--runtime-control", "--ttl", "600"}), 0); });
+    EXPECT_EQ(mockClient.lastCallModule, "peering_module");
+    EXPECT_EQ(mockClient.lastCallMethod, "createInvite");
+    EXPECT_EQ(mockClient.lastCallArgs, LogosList::array({"runtime-control", 600}));
+    captureOutput([&] { EXPECT_EQ(cmd->execute({"invite", "--operator"}), 1); });
+}
+
+// Accepting a runtime-control pairing says the client may call nothing yet.
+TEST_F(CommandTest, Peer_AcceptingRuntimeControlPrintsAPolicyExample)
+{
+    mockClient.callMethodResultByMethod["pending"] = LogosMap{
+        {"status", "ok"},
+        {"result", {{"pending", LogosList::array({{{"id", "p1"}, {"peer_runtime_id", "rt-1"},
+                                                    {"uses", {"provider-access", "runtime-control"}}}})}}}};
+    mockClient.callMethodResultByMethod["confirmPairing"] = LogosMap{{"status", "ok"}, {"result", {{"ok", true}}}};
+    output.setJsonMode(false);
+    auto cmd = createCommand("peer", mockClient, output);
+    const std::string out = captureOutput([&] { EXPECT_EQ(cmd->execute({"accept", "p1"}), 0); });
+    EXPECT_EQ(mockClient.lastCallMethod, "confirmPairing");
+    EXPECT_NE(out.find("rt-1/logosctl"), std::string::npos) << out;
+}
+
 // These tests build without libpeering: remote mode says so rather than failing late.
 TEST_F(CommandTest, Remote_WithoutLibpeeringSaysSo)
 {

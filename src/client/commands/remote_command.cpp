@@ -12,8 +12,9 @@ namespace {
 
 constexpr const char* kUsage =
     "Usage: logosctl remote <verb> ...\n"
-    "  pair [FILE|-]    redeem a daemon's operator invite (`logosctl peer invite --operator`\n"
-    "                   there), read from FILE or stdin; waits until the daemon accepts it\n"
+    "  pair [FILE|-]    redeem a daemon's runtime-control invite (`logosctl peer invite\n"
+    "                   --runtime-control` there), read from FILE or stdin; waits until the\n"
+    "                   daemon accepts it. Its remote policy then decides each call\n"
     "  ls               this client's paired daemons, and its own ID\n"
     "  remove PEER      forget a daemon\n"
     "Then: logosctl --remote PEER <command>";

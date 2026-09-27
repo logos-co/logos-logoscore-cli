@@ -317,7 +317,8 @@ void requestShutdownFromCoreService(void*)
     Daemon::requestShutdownAfter(shutdownGraceMs());
 }
 
-// Package operations change what is installed: the runtime and operators only.
+// Package operations change what is installed: the runtime and operators only, and a
+// remote consumer the daemon's policy granted the method (core_service asked first).
 char* extendCoreService(const char* callerJson, const char* method, const char* argsJson,
                         void* userData)
 {
@@ -326,7 +327,7 @@ char* extendCoreService(const char* callerJson, const char* method, const char* 
     const nlohmann::json caller = nlohmann::json::parse(callerJson ? callerJson : "{}",
                                                         nullptr, false);
     const std::string kind = caller.is_object() ? caller.value("kind", std::string{}) : "";
-    if (kind != "host" && kind != "operator")
+    if (kind != "host" && kind != "operator" && kind != "remote")
         return copyForProtocol(nlohmann::json{
             {"status", "error"}, {"code", "FORBIDDEN"},
             {"message", "core_service." + name + " is for operators."}}.dump());

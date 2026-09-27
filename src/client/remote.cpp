@@ -142,7 +142,7 @@ std::optional<Route> route(const std::string& peer, std::string* error)
 {
     auto service = open(error);
     if (!service) return std::nullopt;
-    auto granted = service->operatorRoute(peer, error);
+    auto granted = service->runtimeControlSession(peer, "logosctl", error);
     if (!granted) return std::nullopt;
     return Route{std::move(granted->dial), std::move(granted->hello), std::move(granted->chainPem),
                  std::move(granted->keyPem)};
