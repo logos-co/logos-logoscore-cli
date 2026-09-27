@@ -1,6 +1,7 @@
 #include "daemon_state.h"
 #include "../config.h"
 #include "../json_schema.h"
+#include "../removed_transports.h"
 #include "../yaml_json.h"
 
 #include <nlohmann/json.hpp>
@@ -44,104 +45,15 @@ std::string currentUtcIso8601()
 
 namespace {
 
-// Serialize one transport endpoint into the `transports` array under a module.
-//
-// `includeSecrets` distinguishes the two files this feeds. The operator's
-// config is where cert/key are *authored*, so they have to survive a
-// round-trip; state.json is a published runtime record that clients read, and
-// a server key path has no business in it.
-json transportToJson(const TransportInfo& t, bool includeSecrets)
-{
-    json j;
-    j["protocol"] = t.protocol;
-    if (t.protocol != "local") {
-        j["host"] = t.host;
-        j["port"] = t.port;
-        j["codec"] = t.codec.empty() ? std::string("json") : t.codec;
-    }
-    if (t.protocol == "tcp_ssl") {
-        if (!t.caFile.empty()) j["ca_file"] = t.caFile;
-        j["verify_peer"] = t.verifyPeer;
-        if (includeSecrets) {
-            if (!t.certFile.empty()) j["cert"] = t.certFile;
-            if (!t.keyFile.empty())  j["key"]  = t.keyFile;
-        }
-    }
-    return j;
-}
-
-// `path` is where this entry lives in the document (e.g.
-// "modules.core_service.transports[0]"), so a rejection can name it.
-std::optional<TransportInfo> transportFromJson(const json& j,
-                                               json_schema::Errors& errs,
-                                               const std::string& path)
-{
-    if (!j.is_object()) {
-        errs.mismatch(path, "a mapping describing one transport", j);
-        return std::nullopt;
-    }
-    json_schema::Reader r(j, errs, path + ".");
-    TransportInfo t;
-    t.protocol = r.str("protocol");
-    // Strict allowlist. An unknown protocol ("local2", "tcps", etc.)
-    // would otherwise default to LocalSocket downstream, silently
-    // misconfiguring the daemon (a typo in config.json would mean no
-    // TCP listener appears, with no visible diagnostic). Fail the
-    // parse so callers see "schema-invalid" instead of "looked fine,
-    // no listener bound".
-    if (t.protocol != "local"
-     && t.protocol != "tcp"
-     && t.protocol != "tcp_ssl") {
-        errs.note(r.path("protocol") +
-                  R"(: expected one of "local", "tcp", "tcp_ssl")" +
-                  (t.protocol.empty() ? std::string(", but it is missing.")
-                                      : ", but got \"" + t.protocol + "\"."));
-        return std::nullopt;
-    }
-    t.host = r.str("host");
-    t.port = static_cast<uint16_t>(r.integer("port", 0, 0, 0xFFFF));
-    t.caFile = r.str("ca_file");
-    t.verifyPeer = r.boolean("verify_peer", true);
-    // The server's certificate and key. Read here because the config file is
-    // where an operator writes them -- with the transport CLI flags gone it is
-    // the only place. Omitting them left every tcp_ssl listener bound with no
-    // certificate, so each handshake died with "no shared cipher" and TLS was
-    // effectively unconfigurable. state.json never carries them, so this is a
-    // no-op on that path.
-    t.certFile = r.str("cert");
-    t.keyFile  = r.str("key");
-    t.codec = r.str("codec", "json");
-    // A field of the wrong type is reported by the reader; the entry as a
-    // whole is unusable, so hand back nothing rather than a half-read one.
-    if (!errs.ok()) return std::nullopt;
-    return t;
-}
-
 // Serialize the configuration block (preferences-or-resolved, same
 // shape) into a JSON object. Used by both DaemonConfigFile (for
 // config.json) and DaemonRuntimeStateFile (for state.json's
 // `resolved` block).
-json daemonConfigToJson(const DaemonConfig& cfg, bool includeSecrets)
+json daemonConfigToJson(const DaemonConfig& cfg)
 {
     json obj;
     obj["modules_dirs"]     = cfg.modulesDirs;
     obj["persistence_path"] = cfg.persistencePath;
-
-    json modulesObj = json::object();
-    for (const auto& [name, transports] : cfg.modules) {
-        json arr = json::array();
-        for (const auto& t : transports) arr.push_back(transportToJson(t, includeSecrets));
-        json moduleObj = json::object();
-        moduleObj["transports"] = std::move(arr);
-        modulesObj[name] = std::move(moduleObj);
-    }
-    obj["modules"] = std::move(modulesObj);
-
-    json sslObj = json::object();
-    sslObj["cert"] = cfg.sslCert;
-    sslObj["key"]  = cfg.sslKey;
-    sslObj["ca"]   = cfg.sslCa;
-    obj["ssl"] = std::move(sslObj);
 
     // Only emit `dirs` when something is actually redirected, so a default
     // config stays free of noise the reader has to interpret.
@@ -162,7 +74,6 @@ json daemonConfigToJson(const DaemonConfig& cfg, bool includeSecrets)
     logObj["console"]     = cfg.logging.console;
     obj["logging"] = std::move(logObj);
 
-    obj["insecure_tcp"] = cfg.insecureTcp;
     if (!cfg.accessPolicy.empty()) obj["access_policy"] = cfg.accessPolicy;
     if (!cfg.placement.empty())    obj["placement"]     = cfg.placement;
     if (!cfg.bundledModulesDirs.empty()) obj["bundled_modules_dirs"] = cfg.bundledModulesDirs;
@@ -175,17 +86,77 @@ json daemonConfigToJson(const DaemonConfig& cfg, bool includeSecrets)
     return obj;
 }
 
+// `modules:`, `ssl:` and `insecure_tcp:` went with the tcp and tcp_ssl transports.
+// What every written config carried still loads, and is dropped; the rest is refused.
+bool removedTransportKeysLoad(const json& obj, const json_schema::Reader& r)
+{
+    json_schema::Errors& errs = r.errors();
+    if (const json* modules = r.mapping("modules")) {
+        for (auto it = modules->begin(); it != modules->end(); ++it) {
+            const json& moduleObj = it.value();
+            const std::string modulePath = r.path("modules") + "." + it.key();
+            // An empty value (`core_service:` with nothing after it) names no transports.
+            if (moduleObj.is_null()) continue;
+            // `<module>: { transports: [ ... ] }` as written, or a bare list.
+            const json* arr = nullptr;
+            if (moduleObj.is_array()) {
+                arr = &moduleObj;
+            } else if (moduleObj.is_object()) {
+                json_schema::Reader mr(moduleObj, errs, modulePath + ".");
+                arr = mr.list("transports", "a list of transports");
+                if (!arr) {
+                    if (!errs.ok()) return false;
+                    continue;  // no `transports` key: no entries, not an error
+                }
+            } else {
+                errs.mismatch(modulePath,
+                              "a list of transports, or a mapping with a "
+                              "\"transports\" list",
+                              moduleObj);
+                return false;
+            }
+            for (std::size_t i = 0; i < arr->size(); ++i) {
+                if (!isLocalTransportEntry(
+                        (*arr)[i], "protocol",
+                        {"host", "port", "codec", "ca_file", "verify_peer", "cert", "key"}, errs,
+                        modulePath + ".transports[" + std::to_string(i) + "]"))
+                    return false;
+            }
+        }
+    }
+    if (!errs.ok()) return false;
+
+    if (const auto ssl = obj.find("ssl"); ssl != obj.end() && !ssl->is_null()) {
+        std::string key = r.path("ssl");
+        bool empty = ssl->is_object();
+        for (auto it = ssl->begin(); empty && it != ssl->end(); ++it) {
+            if (!it->is_null() && *it != json("")) {
+                key += "." + it.key();
+                empty = false;
+            }
+        }
+        if (!empty) {
+            errs.note(removedWithTcpTransports(key));
+            return false;
+        }
+    }
+    if (const auto it = obj.find("insecure_tcp");
+        it != obj.end() && !it->is_null() && *it != json(false)) {
+        errs.note(removedWithTcpTransports(r.path("insecure_tcp")));
+        return false;
+    }
+    return true;
+}
+
 // Inverse of daemonConfigToJson — used by both config.json and
 // state.json readers (the latter parses the `resolved` block).
 //
 // Returns std::nullopt, with the reason in `errs`, when anything in the
 // document is not what the schema expects: a value of the wrong type
-// (`modules_dirs:` given a scalar), an out-of-range number, or a transport
-// entry that fails the strict-allowlist check in `transportFromJson` (an
-// unknown `protocol`, say). Silent skip would turn a typo in config.yaml into
-// a quietly-disabled listener — the daemon would come up with a partial
-// transport set, no diagnostic. Failing the parse forces the operator to see
-// the error and fix the file; nothing is applied in the meantime.
+// (`modules_dirs:` given a scalar), an out-of-range number, or a setting the
+// tcp and tcp_ssl transports took with them. Failing the parse forces the
+// operator to see the error and fix the file; nothing is applied in the
+// meantime.
 // `prefix` is the dotted path of `obj` inside its file — empty for config.yaml,
 // "resolved." for the block state.json nests it under — so every message points
 // at the key as it appears in the file the operator would open.
@@ -198,60 +169,7 @@ std::optional<DaemonConfig> daemonConfigFromJson(const json& obj,
     cfg.modulesDirs     = r.stringList("modules_dirs");
     cfg.persistencePath = r.str("persistence_path");
 
-    if (const json* modules = r.mapping("modules")) {
-        for (auto it = modules->begin(); it != modules->end(); ++it) {
-            const std::string& moduleName = it.key();
-            if (moduleName.empty()) continue;
-            const json& moduleObj = it.value();
-            const std::string modulePath = r.path("modules") + "." + moduleName;
-            // An empty value (`core_service:` with nothing after it) means the
-            // module names no transports, same as everywhere else in this
-            // reader. It is not a type mismatch.
-            if (moduleObj.is_null()) continue;
-            // Two accepted spellings. The canonical one is
-            // `<module>: { transports: [ ... ] }`, which is what we emit and
-            // what state.json uses. A bare sequence is the obvious thing to
-            // hand-write, so accept it as shorthand rather than skipping it
-            // silently — an ignored transport block means the daemon boots
-            // local-only with no hint as to why.
-            const json* arr = nullptr;
-            if (moduleObj.is_array()) {
-                arr = &moduleObj;
-            } else if (moduleObj.is_object()) {
-                json_schema::Reader mr(moduleObj, errs, modulePath + ".");
-                arr = mr.list("transports", "a list of transports");
-                if (!arr) {
-                    if (!errs.ok()) return std::nullopt;
-                    continue;  // no `transports` key: no entries, not an error
-                }
-            } else {
-                errs.mismatch(modulePath,
-                              "a list of transports, or a mapping with a "
-                              "\"transports\" list",
-                              moduleObj);
-                return std::nullopt;
-            }
-            std::vector<TransportInfo> transports;
-            for (std::size_t i = 0; i < arr->size(); ++i) {
-                auto t = transportFromJson(
-                    (*arr)[i], errs,
-                    modulePath + ".transports[" + std::to_string(i) + "]");
-                // errs names the offending entry; refuse the whole document
-                // rather than load a partial transport set.
-                if (!t) return std::nullopt;
-                transports.push_back(*t);
-            }
-            if (!transports.empty())
-                cfg.modules.emplace(moduleName, std::move(transports));
-        }
-    }
-
-    if (const json* ssl = r.mapping("ssl")) {
-        json_schema::Reader sr(*ssl, errs, r.path("ssl") + ".");
-        cfg.sslCert = sr.str("cert");
-        cfg.sslKey  = sr.str("key");
-        cfg.sslCa   = sr.str("ca");
-    }
+    if (!removedTransportKeysLoad(obj, r)) return std::nullopt;
 
     if (const json* dirs = r.mapping("dirs")) {
         json_schema::Reader d(*dirs, errs, r.path("dirs") + ".");
@@ -277,18 +195,16 @@ std::optional<DaemonConfig> daemonConfigFromJson(const json& obj,
         cfg.logging.console   = l.boolean("console", true);
     }
 
-    cfg.insecureTcp  = r.boolean("insecure_tcp", false);
     cfg.accessPolicy = r.str("access_policy");
     cfg.placement    = r.str("placement");
     cfg.bundledModulesDirs = r.stringList("bundled_modules_dirs");
     cfg.accessGroup  = r.str("access_group");
     if (const json* peering = r.mapping("peering")) cfg.peering = peering->dump();
 
-    // Strict allowlist, same reasoning as the transport `protocol` field: the
-    // value is handed to package_manager, which ignores what it doesn't
-    // recognise. A typo ("required", "strict") would otherwise leave the
-    // module on its default `warn` while `daemon config show` kept displaying
-    // the operator's stricter intent.
+    // Strict allowlist: the value is handed to package_manager, which ignores
+    // what it doesn't recognise. A typo ("required", "strict") would otherwise
+    // leave the module on its default `warn` while `daemon config show` kept
+    // displaying the operator's stricter intent.
     cfg.signaturePolicy = r.str("signature_policy");
     if (!cfg.signaturePolicy.empty() && !isValidSignaturePolicy(cfg.signaturePolicy)) {
         errs.note(r.path("signature_policy") + ": expected one of \"none\", "
@@ -433,7 +349,7 @@ std::optional<DaemonConfig> DaemonConfigFile::read()
 
 bool DaemonConfigFile::write(const DaemonConfig& cfg)
 {
-    json obj = daemonConfigToJson(cfg, /*includeSecrets=*/true);
+    json obj = daemonConfigToJson(cfg);
     obj["version"] = kDaemonConfigSchemaVersion;
     // logoscore keeps writing JSON so an existing deployment's config file
     // stays readable by the tool that wrote it; logosctl writes YAML.
@@ -459,7 +375,7 @@ bool DaemonRuntimeStateFile::write(const DaemonRuntimeState& state)
     obj["pid"]           = state.pid;
     obj["started_at"]    = state.startedAt;
     if (!state.configSource.empty()) obj["config_source"] = state.configSource;
-    obj["resolved"]      = daemonConfigToJson(state.resolved, /*includeSecrets=*/false);
+    obj["resolved"]      = daemonConfigToJson(state.resolved);
     return atomicWriteJson(fs::path(filePath()), obj);
 }
 
@@ -504,9 +420,9 @@ DaemonRuntimeState DaemonRuntimeStateFile::read()
         auto resolved = daemonConfigFromJson(*resolvedObj, errs, "resolved.");
         if (!resolved) {
             // Same fail-the-parse contract as DaemonConfigFile::read:
-            // an invalid embedded transport entry means we can't trust
-            // any of the resolved block. Return an empty (fileOk=false)
-            // state so callers don't act on partial data.
+            // an invalid entry means we can't trust any of the resolved
+            // block. Return an empty (fileOk=false) state so callers don't
+            // act on partial data.
             std::cerr << "DaemonRuntimeState: refusing to load partial "
                       << "resolved block from " << filePath() << std::endl;
             return DaemonRuntimeState{};
@@ -533,105 +449,9 @@ bool DaemonRuntimeStateFile::remove()
     return fs::remove(filePath(), ec);
 }
 
-namespace {
-
-// Pick the transport a co-resident client should dial for a given
-// module. Operator-typed order is the source of truth: prefer
-// LocalSocket (always works on the same host) when present; otherwise
-// fall through to whatever the operator named first. A TCP-only
-// daemon emits a TCP client config, a TCP+local daemon emits local,
-// and an operator-misordered TCP+local config still does the right
-// thing because we explicitly look for a `local` entry first.
-const TransportInfo* pickClientDialTransport(
-    const std::vector<TransportInfo>& transports)
-{
-    if (transports.empty()) return nullptr;
-    for (const auto& t : transports) {
-        if (t.protocol == "local") return &t;
-    }
-    return &transports.front();
-}
-
-// Translate a server-side BIND address into a same-host DIAL address.
-// Wildcard bind targets ("0.0.0.0", "::", "::0") aren't valid
-// connect targets — a client that tries to connect to 0.0.0.0
-// usually fails with "address not available" or hits whatever route
-// the kernel happens to pick. Map them to loopback so the auto-
-// emitted client/config.json (intended for a co-resident client)
-// always has a working dial spec. daemon/state.json's advertised
-// transport list is unaffected — that one keeps the operator's
-// bind address verbatim because remote clients on a different host
-// need it to reach the listener.
-std::string toClientDialHost(const std::string& bindHost)
-{
-    if (bindHost.empty())            return "127.0.0.1";
-    if (bindHost == "0.0.0.0")       return "127.0.0.1";
-    if (bindHost == "::" ||
-        bindHost == "::0")           return "::1";
-    return bindHost;
-}
-
-// Serialize one TransportInfo into the per-module entry shape that
-// client/config.json expects. The required fields depend on protocol;
-// emit only what the dial side actually needs.
-json toClientEntry(const TransportInfo& t)
-{
-    json entry;
-    entry["transport"] = t.protocol;
-    if (t.protocol == "tcp" || t.protocol == "tcp_ssl") {
-        entry["host"] = toClientDialHost(t.host);
-        entry["port"] = t.port;
-        if (!t.codec.empty()) entry["codec"] = t.codec;
-    }
-    if (t.protocol == "tcp_ssl") {
-        if (!t.caFile.empty()) entry["ca"] = t.caFile;
-        // Auto-emitted local-client config is for same-host dialing
-        // against the daemon we just bound. The daemon uses its own
-        // cert/key; the client config doesn't need verifyPeer or CA
-        // for the loopback case unless the operator explicitly set
-        // them. Mirror what's in the resolved transport.
-        entry["verify_peer"] = t.verifyPeer;
-    }
-    return entry;
-}
-
-}  // namespace
-
 bool isValidSignaturePolicy(const std::string& policy)
 {
     return policy == "none" || policy == "warn" || policy == "require";
-}
-
-void applySslDefaults(DaemonConfig& cfg)
-{
-    if (cfg.sslCert.empty() && cfg.sslKey.empty() && cfg.sslCa.empty()) return;
-
-    for (auto& [moduleName, transports] : cfg.modules) {
-        (void)moduleName;
-        for (auto& t : transports) {
-            // Only TLS listeners have anywhere to put this. A `local` or
-            // plaintext `tcp` entry carrying a cert path would be advertised
-            // to clients as if it meant something.
-            if (t.protocol != "tcp_ssl") continue;
-            if (t.certFile.empty()) t.certFile = cfg.sslCert;
-            if (t.keyFile.empty())  t.keyFile  = cfg.sslKey;
-            if (t.caFile.empty())   t.caFile   = cfg.sslCa;
-        }
-    }
-}
-
-std::vector<std::string> findTlsListenersMissingMaterial(const DaemonConfig& cfg)
-{
-    std::vector<std::string> offenders;
-    for (const auto& [moduleName, transports] : cfg.modules) {
-        for (const auto& t : transports) {
-            if (t.protocol != "tcp_ssl") continue;
-            if (!t.certFile.empty() && !t.keyFile.empty()) continue;
-            offenders.push_back(moduleName + " tcp_ssl " + t.host + ":" +
-                                std::to_string(t.port));
-        }
-    }
-    return offenders;
 }
 
 // Resolve an OS group name-or-gid to a gid. Accepts an all-digits string as a
@@ -678,8 +498,6 @@ bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
     const std::string& instanceId,
     const std::string& autoTokenRaw,
     const std::string& issuedAt,
-    const std::vector<TransportInfo>& coreServiceTransports,
-    const std::vector<TransportInfo>& capabilityModuleTransports,
     const std::string& accessGroup)
 {
     const std::string clientDir      = Config::clientDir();
@@ -748,82 +566,39 @@ bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
     }
 #endif
 
-    // client/config.json — dial config matching what the daemon actually
-    // bound (mirrors the resolved transports so a co-resident client just
-    // works; a hardcoded `local` used to hang against a TCP-only daemon).
-    //
-    // Decide whether to (re)write it:
-    //   - Absent: always (re)generate. The instance_id changes every boot and
-    //     this file is the client's only channel for it, so a persisted config
-    //     dir that lost the file — or a second OS user who never had one — must
-    //     get a current one back. (This is the pain a service operator hit:
-    //     re-copying config.json by hand after every restart.)
-    //   - Present with an instance_id that doesn't match this daemon: a stale
-    //     copy of our own artifact (persisted dir, replaced daemon) — refresh
-    //     it in place, preserving its token_file.
-    //   - Present, matching (or operator-authored, no instance_id): left
-    //     untouched so a hand-written remote config is never clobbered.
-    bool writeClientCfg = false;
+    // client/config.json — this daemon's local dial spec, rewritten every boot
+    // because the instance_id is new. The token_file an existing one names stays.
     std::string tokenFileName = "auto.json";
-    if (!fs::exists(clientCfgPath, ec)) {
-        writeClientCfg = true;
-    } else {
-        std::ifstream ifs(clientCfgPath);
-        if (ifs) {
-            std::stringstream ebuf;
-            ebuf << ifs.rdbuf();
-            json existing = json::object();
-            if (auto parsed = yaml_json::parse(ebuf.str()); parsed && parsed->is_object())
-                existing = std::move(*parsed);
-            // Type-checked: this file is operator-editable, and a stray
-            // `instance_id: 42` must not abort the daemon mid-boot. A field of
-            // the wrong type reads as absent, which lands on the safe side —
-            // the artifact gets regenerated / keeps the default token file.
+    if (std::ifstream ifs(clientCfgPath); ifs) {
+        std::stringstream ebuf;
+        ebuf << ifs.rdbuf();
+        // Type-checked: a stray `token_file: 42` must not abort the daemon mid-boot.
+        if (auto parsed = yaml_json::parse(ebuf.str()); parsed && parsed->is_object()) {
             json_schema::Errors ignored;
-            json_schema::Reader er(existing, ignored);
-            const std::string existingInstance = er.str("instance_id");
-            if (!existingInstance.empty() && existingInstance != instanceId) {
-                writeClientCfg = true;
-                // Keep whatever token file the existing config referenced —
-                // an operator may have repointed it away from auto.json.
-                const std::string named = er.str("token_file");
-                if (!named.empty()) tokenFileName = named;
-            }
+            const std::string named = json_schema::Reader(*parsed, ignored).str("token_file");
+            if (!named.empty()) tokenFileName = named;
         }
     }
 
-    if (writeClientCfg) {
-        const TransportInfo* coreDial =
-            pickClientDialTransport(coreServiceTransports);
-        const TransportInfo* capDial =
-            pickClientDialTransport(capabilityModuleTransports);
+    json client;
+    client["version"]     = 2;
+    client["token_file"]  = tokenFileName;
+    client["instance_id"] = instanceId;
+    client["daemon"]      = {{"core_service", {{"transport", "local"}}},
+                             {"capability_module", {{"transport", "local"}}}};
 
-        json daemonBlock;
-        daemonBlock["core_service"]      = coreDial ? toClientEntry(*coreDial)
-                                                    : json({{"transport", "local"}});
-        daemonBlock["capability_module"] = capDial  ? toClientEntry(*capDial)
-                                                    : json({{"transport", "local"}});
-
-        json client;
-        client["version"]     = 2;
-        client["token_file"]  = tokenFileName;
-        client["instance_id"] = instanceId;
-        client["daemon"]      = std::move(daemonBlock);
-
-        // The client config carries no secret (the token lives in a separate
-        // file), so it is safe to make group-readable when sharing. Written
-        // as YAML: this is a file operators hand-edit for remote setups.
-        const bool wrote = Config::flavor() == Config::Flavor::Modern
-            ? atomicWriteText(fs::path(clientCfgPath), yaml_json::dump(client), fileMode)
-            : atomicWriteJson(fs::path(clientCfgPath), client, fileMode);
-        if (!wrote) return false;
+    // The client config carries no secret (the token lives in a separate
+    // file), so it is safe to make group-readable when sharing.
+    const bool wrote = Config::flavor() == Config::Flavor::Modern
+        ? atomicWriteText(fs::path(clientCfgPath), yaml_json::dump(client), fileMode)
+        : atomicWriteJson(fs::path(clientCfgPath), client, fileMode);
+    if (!wrote) return false;
 #ifndef _WIN32
-        // chown/uid_t do not exist in mingw-w64; shareWithGroup is always false
-        // on Windows anyway (resolveOsGroupGid refuses there).
-        if (shareWithGroup)
-            ::chown(clientCfgPath.c_str(), static_cast<uid_t>(-1), groupGid);
+    // chown/uid_t do not exist in mingw-w64; shareWithGroup is always false
+    // on Windows anyway (resolveOsGroupGid refuses there).
+    if (shareWithGroup)
+        ::chown(clientCfgPath.c_str(), static_cast<uid_t>(-1), groupGid);
 #endif
-    }
 
     // client/auto.json — same shape as daemon/tokens/<name>.json.
     // Always (re)write: the daemon just (re)issued the auto token, so

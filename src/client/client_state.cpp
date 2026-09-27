@@ -1,6 +1,7 @@
 #include "client_state.h"
 #include "../config.h"
 #include "../json_schema.h"
+#include "../removed_transports.h"
 #include "../yaml_json.h"
 
 #include <sstream>
@@ -37,67 +38,6 @@ void ClientStateFile::setOverride(std::optional<ClientState> override)
     overrideSlot() = std::move(override);
 }
 
-namespace {
-
-json transportToJson(const ClientModuleTransport& t)
-{
-    json j;
-    j["transport"] = t.protocol;
-    if (t.protocol != "local") {
-        j["host"] = t.host;
-        j["port"] = t.port;
-        j["codec"] = t.codec.empty() ? std::string("json") : t.codec;
-    }
-    if (t.protocol == "tcp_ssl") {
-        if (!t.caFile.empty()) j["ca"] = t.caFile;
-        j["verify_peer"] = t.verifyPeer;
-    }
-    return j;
-}
-
-// `path` is where this entry lives in the document ("daemon.core_service"), so
-// a rejection can name it.
-std::optional<ClientModuleTransport> transportFromJson(const json& j,
-                                                       json_schema::Errors& errs,
-                                                       const std::string& path)
-{
-    if (!j.is_object()) {
-        errs.mismatch(path, "a mapping describing one transport", j);
-        return std::nullopt;
-    }
-    json_schema::Reader r(j, errs, path + ".");
-    ClientModuleTransport t;
-    t.protocol = r.str("transport");
-    // Strict allowlist — a typo in client/config.json's `transport`
-    // would otherwise default downstream to LocalSocket and the
-    // client would silently dial the wrong endpoint instead of
-    // failing the parse with a clear schema error.
-    if (t.protocol != "local"
-     && t.protocol != "tcp"
-     && t.protocol != "tcp_ssl") {
-        errs.note(r.path("transport") +
-                  R"(: expected one of "local", "tcp", "tcp_ssl")" +
-                  (t.protocol.empty() ? std::string(", but it is missing.")
-                                      : ", but got \"" + t.protocol + "\"."));
-        return std::nullopt;
-    }
-    if (t.protocol != "local") {
-        t.host = r.str("host");
-        t.port = static_cast<uint16_t>(r.integer("port", 0, 0, 0xFFFF));
-        t.codec = r.str("codec", "json");
-    }
-    if (t.protocol == "tcp_ssl") {
-        t.caFile = r.str("ca");
-        t.verifyPeer = r.boolean("verify_peer", true);
-    }
-    // A field of the wrong type is recorded in `errs`; the entry as a whole is
-    // unusable, so hand back nothing rather than a half-read dial spec.
-    if (!errs.ok()) return std::nullopt;
-    return t;
-}
-
-} // namespace
-
 std::optional<ClientState> parseClientStateDocument(const json& obj,
                                                     std::string* error)
 {
@@ -129,17 +69,14 @@ std::optional<ClientState> parseClientStateDocument(const json& obj,
             for (auto it = daemonObj->begin(); it != daemonObj->end(); ++it) {
                 const std::string& moduleName = it.key();
                 if (moduleName.empty()) continue;
-                auto t = transportFromJson(it.value(), errs,
-                                           r.path("daemon") + "." + moduleName);
-                // Strict-parse contract: a typo in client/config.yaml
-                // (e.g. transport=tcp_ssll) would otherwise silently
-                // drop the entry, leaving the dial set incomplete and
-                // surfacing as an obscure "no entry for core_service"
-                // error later. Fail the whole parse so the caller
-                // reports the broken config up front.
-                if (!t) return fail(errs.ok() ? "the document could not be read."
-                                              : errs.message());
-                state.daemon.emplace(moduleName, *t);
+                // Strict: a dropped entry would surface later as an obscure
+                // "no entry for core_service", so fail the whole parse here.
+                if (!isLocalTransportEntry(it.value(), "transport",
+                                           {"host", "port", "codec", "ca", "verify_peer"}, errs,
+                                           r.path("daemon") + "." + moduleName))
+                    return fail(errs.ok() ? "the document could not be read."
+                                          : errs.message());
+                state.daemon.insert(moduleName);
             }
         }
         if (!errs.ok()) return fail(errs.message());
@@ -199,8 +136,8 @@ bool ClientStateFile::write(const ClientState& state)
         obj["instance_id"] = state.instanceId;
 
     json daemonObj = json::object();
-    for (const auto& [name, t] : state.daemon)
-        daemonObj[name] = transportToJson(t);
+    for (const std::string& name : state.daemon)
+        daemonObj[name] = {{"transport", "local"}};
     obj["daemon"] = std::move(daemonObj);
 
     std::ofstream ofs(path, std::ios::trunc);
