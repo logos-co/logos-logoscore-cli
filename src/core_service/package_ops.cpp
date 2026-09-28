@@ -486,9 +486,9 @@ LogosMap apply(LogosAPI* api, Op op,
             for (const auto& m : toRestore)
                 logos_core_unload_module(m.c_str(), /*with_dependents=*/true);
 
-            // confirmUpgrade removes the old copy in-module; confirmInstall
-            // has nothing to remove. Either way the download+install below is
-            // the initiator's job — that is what the approval hands back.
+            // confirmUpgrade removes a user-installed copy in-module, but
+            // leaves an embedded copy intact. The download+install below
+            // places its replacement in the user directory.
             nlohmann::json confirmR = (op == Op::Upgrade)
                 ? call(api, kPm, "confirmUpgrade", LogosList{name, std::string{}})
                 : call(api, kPm, "confirmInstall", LogosList{name});
