@@ -3,7 +3,7 @@
 
 #include "command.h"
 
-// The `catalog` group: ls, add, remove, enable, disable, refresh.
+// The `catalog` group: ls, add, remove, enable, disable, refresh, source.
 //
 // "Catalog" is the CLI's word for what the downloader library and module call
 // a repository — the layers below keep their own vocabulary, since renaming
@@ -11,6 +11,9 @@
 //
 // enable/disable earn their place next to add/remove because the built-in
 // default catalog cannot be removed, only silenced.
+//
+// `source` reads or sets where packages download from: any, logos (Logos
+// Storage only) or http (HTTP only).
 class CatalogCommand : public Command {
 public:
     using Command::Command;
@@ -20,6 +23,9 @@ public:
     std::string description() const override {
         return "Manage the package catalogs this session pulls from";
     }
+
+private:
+    int downloadSource(const std::string& value);
 };
 
 // The `key` group: ls, add, remove — the trusted signing keys used to verify
