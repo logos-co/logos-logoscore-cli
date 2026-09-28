@@ -1,0 +1,545 @@
+name: "Installing a Package over Logos Storage with logosctl"
+output: logosctl-storage-install.md
+release: ""
+
+intro: |
+  [`logosctl-packages`](logosctl-packages.test.yaml) installs `openmetrics`
+  from the public catalog over HTTPS. This one installs the same package,
+  but it comes from the Logos Storage network.
+
+  The `package_downloader` module fetches a package over Logos Storage when
+  the catalog's index advertises a `logos:<network>:<cid>` URL. It needs the
+  `storage_module`, its optional dependency. `logosctl` ships it, and the
+  daemon loads it with the downloader.
+
+  When the storage module is gone, the downloader uses the package's HTTPS
+  URL instead.
+
+  This doc-test publishes the released `openmetrics.lgx` to a local storage
+  node, and serves a local catalog that points at it.
+
+what_you_build: "A logosctl session that installs openmetrics from a local catalog, first over Logos Storage, then over HTTPS."
+
+what_you_learn:
+  - How the daemon brings up the storage module with the downloader
+  - How a catalog advertises a package over Logos Storage and over HTTPS
+  - How to see which URL served a download with `logosctl watch`
+  - How the install falls back to HTTPS when the storage module is unloaded
+
+prerequisites:
+  - |
+    **Nix** with flakes enabled. Install from [nixos.org](https://nixos.org/download.html), then enable flakes:
+
+    ```bash
+    mkdir -p ~/.config/nix
+    echo 'experimental-features = nix-command flakes' >> ~/.config/nix/nix.conf
+    ```
+
+    Verify: `nix flake --help >/dev/null 2>&1 && echo "Flakes enabled"`
+  - "**A Linux machine.**"
+  - "**`jq`**, **`openssl`** and **`python3`** on your `PATH`. Verify: `jq --version && openssl version && python3 --version`"
+  - "**Network access.** The released package is fetched from the public module release repository."
+
+sections:
+  - title: "Build the tools"
+    step: true
+    platform: [linux]
+    text: |
+      Packages in the public catalog ship **portable** variants, so this
+      doc-test uses the portable bundle, as `logosctl-packages` does.
+    steps:
+      - title: "Build the bundle"
+        run: 'nix build "github:logos-co/logos-logoscore-cli{release}#ctl-bundle-dir" -o result-portable'
+        code_block: "nix build 'github:logos-co/logos-logoscore-cli#ctl-bundle-dir' -o result-portable"
+        check_file: "result-portable/bin/logosctl"
+
+      - title: "The bundle carries the storage module"
+        run: "ls result-portable/modules-pkg"
+        code_block: "ls result-portable/modules-pkg"
+        expect_contains:
+          - "package_downloader"
+          - "storage_module"
+
+      - title: "Build the storage node"
+        text: "It plays the Storage node that provides the package."
+        run: "nix build 'git+https://github.com/logos-storage/logos-storage-nim?submodules=1#logos-storage-nim' -o storage-node"
+        code_block: "nix build 'git+https://github.com/logos-storage/logos-storage-nim?submodules=1#logos-storage-nim' -o storage-node"
+        check_file: "storage-node/bin/storage"
+
+      - title: "Build caddy"
+        text: "It serves the catalog and the package over HTTPS."
+        run: "nix build nixpkgs#caddy -o caddy"
+        code_block: "nix build nixpkgs#caddy -o caddy"
+        check_file: "caddy/bin/caddy"
+
+      - title: "Build the lgx tool"
+        text: "`index.py` uses it to read the package manifest."
+        run: "nix build 'github:logos-co/logos-package#lgx' -o lgx"
+        code_block: "nix build 'github:logos-co/logos-package#lgx' -o lgx"
+        check_file: "lgx/bin/lgx"
+
+  - title: "Publish openmetrics to a storage node"
+    step: true
+    platform: [linux]
+    text: |
+      A release uploads packages to a Logos Storage node over its HTTP API.
+      The following steps reproduce that with the released `openmetrics`.
+    steps:
+      - title: "Download the released package"
+        text: |
+          The public catalog's index gives the URL of the newest release.
+        run: |
+          set -eu
+
+          url=$(curl -sSL https://github.com/logos-co/logos-modules-release/releases/download/index/index.json \
+            | jq -er '.packages[] | select(.name == "openmetrics") | .versions[0].url')
+          echo "$url"
+
+          curl -sSL --fail -o openmetrics.lgx "$url"
+        code_block: |
+          curl -sSL https://github.com/logos-co/logos-modules-release/releases/download/index/index.json \
+            | jq -r '.packages[] | select(.name == "openmetrics") | .versions[0].url'
+          curl -sSL -o openmetrics.lgx <url>
+        check_file: "openmetrics.lgx"
+
+      - title: "Start the Storage node"
+        run: |
+          set -eu
+
+          mkdir -p provider-data
+
+          ./storage-node/bin/storage \
+            --data-dir="$(pwd)/provider-data" \
+            --api-port=8080 \
+            --listen-port=8081 \
+            --nat=extip:127.0.0.1 \
+            --no-bootstrap-node \
+            > provider.log 2>&1 &
+
+          echo $! > provider.pid
+
+          for _ in $(seq 60); do
+            if curl -sf http://127.0.0.1:8080/api/storage/v1/debug/info | jq -e '.spr != ""' > /dev/null; then
+              echo "provider up"
+              exit 0
+            fi
+            sleep 1
+          done
+
+          cat provider.log
+          exit 1
+        code_block: |
+          storage --data-dir=./provider-data \
+            --api-port=8080 \
+            --listen-port=8081 \
+            --nat=extip:127.0.0.1 \
+            --no-bootstrap-node &
+        expect_contains:
+          - "provider up"
+
+      - title: "Read its SPR"
+        text: |
+          The SPR will be used as a bootstrap node for the Storage module.
+        run: |
+          set -eu
+          curl --fail-with-body -sS -H 'Accept: text/plain' http://127.0.0.1:8080/api/storage/v1/spr > spr.txt
+          cat spr.txt
+        code_block: "curl -sS -H 'Accept: text/plain' http://127.0.0.1:8080/api/storage/v1/spr > spr.txt"
+        expect_contains:
+          - "spr:"
+
+      - title: "Upload the package"
+        text: "The Storagenode answers with the package's CID."
+        run: |
+          set -eu
+
+          curl --fail-with-body -sS -X POST \
+            -H 'Content-Type: application/octet-stream' \
+            -H 'Content-Disposition: attachment; filename="openmetrics.lgx"' \
+            --data-binary @openmetrics.lgx \
+            http://127.0.0.1:8080/api/storage/v1/data > cid.txt
+
+          cat cid.txt
+        code_block: |
+          curl --fail-with-body -sS -X POST \
+            -H 'Content-Type: application/octet-stream' \
+            -H 'Content-Disposition: attachment; filename="openmetrics.lgx"' \
+            --data-binary @openmetrics.lgx \
+            http://127.0.0.1:8080/api/storage/v1/data > cid.txt
+        check_file: "cid.txt"
+
+  - title: "Serve a catalog over local HTTPS"
+    step: true
+    platform: [linux]
+    text: |
+      `logosctl catalog add` accepts `https://` URLs only, so the catalog is
+      served over HTTPS with a self-signed certificate.
+    steps:
+      - title: "Generate a certificate"
+        run: |
+          set -eu
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout localhost.key -out localhost.crt \
+            -subj "/CN=localhost" -addext "subjectAltName=IP:127.0.0.1"
+        code_block: |
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout localhost.key -out localhost.crt \
+            -subj "/CN=localhost" -addext "subjectAltName=IP:127.0.0.1"
+        check_file: "localhost.crt"
+
+      - title: "Start the HTTPS server"
+        text: "It serves the `www` directory."
+        run: |
+          set -eu
+
+          mkdir -p www
+
+          cat > Caddyfile <<'EOF'
+          {
+              auto_https off
+              admin off
+          }
+
+          :8443 {
+              bind 127.0.0.1
+              tls localhost.crt localhost.key
+              root * www
+              file_server
+          }
+          EOF
+
+          ./caddy/bin/caddy run --config Caddyfile --adapter caddyfile > caddy.log 2>&1 &
+          echo $! > caddy.pid
+
+          for _ in $(seq 60); do
+            if curl -sk -o /dev/null https://127.0.0.1:8443/; then
+              echo "server up"
+              exit 0
+            fi
+            sleep 1
+          done
+
+          cat caddy.log
+          exit 1
+        code_block: "caddy run --config Caddyfile --adapter caddyfile &"
+        expect_contains:
+          - "server up"
+
+      - title: "Build index.json"
+        text: |
+          `index.json` lists the package with two URLs: the storage one first,
+          the HTTPS one second. `logos.dev` is the network the storage node
+          must be on.
+        run: |
+          set -eu
+
+          echo "logos:logos.dev:$(cat cid.txt) https://127.0.0.1:8443/openmetrics.lgx $(pwd)/openmetrics.lgx" > urls.txt
+
+          curl -sSLO https://raw.githubusercontent.com/logos-co/logos-modules-release-tool/main/index.py
+
+          PATH="$(pwd)/lgx/bin:$PATH" \
+          SSL_CERT_FILE="$(pwd)/localhost.crt" NIX_SSL_CERT_FILE="$(pwd)/localhost.crt" \
+            python3 index.py build urls.txt --no-icons -o www/index.json 2> index.log
+
+          jq -r '.packages[0].versions[0].urls[]' www/index.json
+        code_block: |
+          echo "logos:logos.dev:$(cat cid.txt) https://127.0.0.1:8443/openmetrics.lgx ./openmetrics.lgx" > urls.txt
+          curl -sSLO https://raw.githubusercontent.com/logos-co/logos-modules-release-tool/main/index.py
+          python3 index.py build urls.txt --no-icons -o www/index.json
+        expect_contains:
+          - "logos:logos.dev:"
+          - "https://127.0.0.1:8443/openmetrics.lgx"
+
+      - title: "Write logos-repo.json"
+        text: "`logos-repo.json` names the catalog and points at its index."
+        run: |
+          set -eu
+
+          cat > www/logos-repo.json <<'EOF'
+          {
+            "schemaVersion": 1,
+            "name": "doctest-catalog",
+            "displayName": "Doctest Catalog",
+            "description": "Local catalog served over HTTPS for this doc-test.",
+            "indexUrl": "https://127.0.0.1:8443/index.json",
+            "trustedSigners": []
+          }
+          EOF
+        check_file: "www/logos-repo.json"
+
+      - title: "The HTTPS URL is dead for now"
+        text: |
+          The package is not in `www`, so a successful install can only come
+          from the storage network.
+        run: "curl -s -o /dev/null -w '%{http_code}\\n' --cacert localhost.crt https://127.0.0.1:8443/openmetrics.lgx"
+        expect_contains:
+          - "404"
+
+  - title: "Start a session"
+    step: true
+    platform: [linux]
+    text: |
+      The storage module reads its node configuration from
+      `$HOME/.logos_storage/config.json`. The daemon runs with `HOME` set to
+      `./storage-home`, so it reads the file written here.
+    steps:
+      - title: "Write the node configuration"
+        text: |
+          The provider is the only bootstrap node. `network` must match the
+          one in `logos:<network>:<cid>`, or the downloader ignores the CID.
+        run: |
+          set -eu
+
+          mkdir -p storage-home/.logos_storage storage-data
+
+          cat > storage-home/.logos_storage/config.json <<EOF
+          {
+              "data-dir": "$(pwd)/storage-data",
+              "network": "logos.dev",
+              "nat": "extip:127.0.0.1",
+              "listen-port": 8082,
+              "bootstrap-node": ["$(cat spr.txt)"]
+          }
+          EOF
+        code_block: |
+          mkdir -p storage-home/.logos_storage
+
+          cat > storage-home/.logos_storage/config.json <<EOF
+          {
+              "data-dir": "$(pwd)/storage-data",
+              "network": "logos.dev",
+              "nat": "extip:127.0.0.1",
+              "listen-port": 8082,
+              "bootstrap-node": ["$(cat spr.txt)"]
+          }
+          EOF
+        check_file: "storage-home/.logos_storage/config.json"
+
+      - title: "Start the daemon"
+        text: |
+          The catalog is fetched with libcurl, which must trust our
+          self-signed certificate.
+        run: 'HOME="$(pwd)/storage-home" SSL_CERT_FILE="$(pwd)/localhost.crt" ./result-portable/bin/logosctl --config-dir ./storage-session daemon start --detach'
+        code_block: "HOME=$(pwd)/storage-home SSL_CERT_FILE=$(pwd)/localhost.crt logosctl --config-dir ./storage-session daemon start --detach"
+        expect_contains:
+          - "Daemon started"
+
+      - title: "The storage module comes up with the downloader"
+        run: "./result-portable/bin/logosctl --config-dir ./storage-session module ls --loaded"
+        code_block: "logosctl module ls --loaded"
+        expect_contains:
+          - "package_manager"
+          - "package_downloader"
+          - "storage_module"
+
+      - title: "The downloader starts the node"
+        text: |
+          The downloader sees the storage module become ready and starts its
+          node. Nobody starts the node by hand.
+        run: |
+          set -eu
+
+          # The node takes a few seconds to join the network
+          for _ in $(seq 30); do
+            running=$(./result-portable/bin/logosctl --config-dir ./storage-session call storage_module isRunning)
+            case "$running" in *'"result":true'*) break ;; esac
+            sleep 1
+          done
+
+          echo "$running"
+        code_block: "logosctl call storage_module isRunning"
+        expect_contains:
+          - "true"
+
+      - title: "The node is on the catalog's network"
+        run: "./result-portable/bin/logosctl --config-dir ./storage-session call storage_module network"
+        code_block: "logosctl call storage_module network"
+        expect_contains:
+          - "logos.dev"
+
+  - title: "Find something to install"
+    step: true
+    platform: [linux]
+    text: |
+      The default catalog is always present. It is removed so that the
+      package can only come from ours.
+    steps:
+      - title: "Use our catalog only"
+        run: |
+          set -eu
+
+          default=$(./result-portable/bin/logosctl --json --config-dir ./storage-session catalog ls \
+            | jq -er '.[] | select(.isDefault) | .url')
+
+          ./result-portable/bin/logosctl --config-dir ./storage-session catalog remove "$default"
+          ./result-portable/bin/logosctl --config-dir ./storage-session catalog add https://127.0.0.1:8443/logos-repo.json
+          ./result-portable/bin/logosctl --config-dir ./storage-session catalog refresh
+          ./result-portable/bin/logosctl --human --config-dir ./storage-session catalog ls
+        code_block: |
+          logosctl catalog remove <default url>
+          logosctl catalog add https://127.0.0.1:8443/logos-repo.json
+          logosctl catalog refresh
+          logosctl catalog ls
+        expect_contains:
+          - "[on ] doctest-catalog"
+        expect_not_contains:
+          - "(default)"
+
+      - title: "Search it"
+        run: "./result-portable/bin/logosctl --config-dir ./storage-session package search openmetrics"
+        code_block: "logosctl search openmetrics"
+        expect_contains:
+          - "openmetrics"
+
+  - title: "Install over Logos Storage"
+    step: true
+    platform: [linux]
+    steps:
+      - title: "Watch the downloader's events"
+        text: |
+          `downloadDone` carries the package name (`arg0`) and the URL that
+          served it (`arg1`).
+        run: |
+          set -eu
+
+          ./result-portable/bin/logosctl --json --config-dir ./storage-session watch package_downloader \
+            > events.txt 2>&1 &
+          echo $! > watch.pid
+
+          # The subscription has to reach the daemon before the install starts.
+          sleep 2
+        code_block: "logosctl --json watch package_downloader > events.txt &"
+        check_file: "watch.pid"
+
+      - title: "Preview the install"
+        run: "./result-portable/bin/logosctl --config-dir ./storage-session install openmetrics --dry-run"
+        code_block: "logosctl install openmetrics --dry-run"
+        expect_contains:
+          - "openmetrics"
+          - '"action":"install"'
+
+      - title: "Install for real"
+        run: "./result-portable/bin/logosctl --config-dir ./storage-session install openmetrics -y"
+        code_block: "logosctl install openmetrics -y"
+        expect_contains:
+          - '"installed":["openmetrics"]'
+
+      - title: "It came from the storage network"
+        run: |
+          set -eu
+
+          for _ in $(seq 30); do
+            grep -q downloadDone events.txt && break
+            sleep 1
+          done
+
+          jq -rs 'map(select(.event == "downloadDone")) | last | .data.arg1' events.txt
+        code_block: |
+          jq -rs 'map(select(.event == "downloadDone")) | last | .data.arg1' events.txt
+        expect_contains:
+          - "logos:logos.dev:"
+
+      - title: "The package's CID is the one served"
+        run: |
+          jq -es --arg src "logos:logos.dev:$(cat cid.txt)" \
+            'map(select(.event == "downloadDone")) | last | .data.arg1 == $src' events.txt
+        expect_contains:
+          - "true"
+
+      - title: "The session's node now holds the package"
+        text: |
+          A node that downloads a file keeps it, and provides it to the
+          network.
+        run: './result-portable/bin/logosctl --config-dir ./storage-session call storage_module exists "$(cat cid.txt)"'
+        code_block: 'logosctl call storage_module exists "$(cat cid.txt)"'
+        expect_contains:
+          - '"value":true'
+
+  - title: "Installed is not loaded"
+    step: true
+    platform: [linux]
+    steps:
+      - title: "Discoverable, not loaded"
+        run: "./result-portable/bin/logosctl --config-dir ./storage-session module ls"
+        code_block: "logosctl module ls"
+        expect_contains:
+          - "openmetrics"
+          - "not_loaded"
+
+      - title: "Load it"
+        run: "./result-portable/bin/logosctl --config-dir ./storage-session module load openmetrics"
+        code_block: "logosctl module load openmetrics"
+        expect_contains:
+          - "openmetrics"
+
+      - title: "Confirm it is running"
+        run: "./result-portable/bin/logosctl --config-dir ./storage-session module ls --loaded"
+        code_block: "logosctl module ls --loaded"
+        expect_contains:
+          - "openmetrics"
+
+  - title: "Fall back to HTTPS"
+    step: true
+    platform: [linux]
+    text: |
+      Without the storage module, the downloader skips the `logos:` URL and
+      uses the HTTPS one.
+    steps:
+      - title: "Remove the package"
+        run: "./result-portable/bin/logosctl --config-dir ./storage-session package remove openmetrics -y"
+        code_block: "logosctl package remove openmetrics -y"
+        expect_contains:
+          - '"removed":["openmetrics"]'
+
+      - title: "Unload the storage module"
+        run: |
+          set -eu
+          ./result-portable/bin/logosctl --config-dir ./storage-session module unload storage_module > /dev/null
+          ./result-portable/bin/logosctl --config-dir ./storage-session module ls --loaded
+        code_block: "logosctl module unload storage_module"
+        expect_not_contains:
+          - "storage_module"
+
+      - title: "Make the HTTPS URL live"
+        run: |
+          set -eu
+          cp openmetrics.lgx www/openmetrics.lgx
+          curl -s -o /dev/null -w '%{http_code}\n' --cacert localhost.crt https://127.0.0.1:8443/openmetrics.lgx
+        code_block: "cp openmetrics.lgx www/"
+        expect_contains:
+          - "200"
+
+      - title: "Install again"
+        run: "./result-portable/bin/logosctl --config-dir ./storage-session install openmetrics -y"
+        code_block: "logosctl install openmetrics -y"
+        expect_contains:
+          - '"installed":["openmetrics"]'
+
+      - title: "It came from HTTPS"
+        run: |
+          set -eu
+
+          for _ in $(seq 30); do
+            [ "$(grep -c downloadDone events.txt)" -ge 2 ] && break
+            sleep 1
+          done
+
+          jq -rs 'map(select(.event == "downloadDone")) | last | .data.arg1' events.txt
+        code_block: |
+          jq -rs 'map(select(.event == "downloadDone")) | last | .data.arg1' events.txt
+        expect_contains:
+          - "https://127.0.0.1:8443/openmetrics.lgx"
+
+  - title: "Shut down"
+    step: true
+    platform: [linux]
+    steps:
+      - title: "Stop the daemon"
+        run: "./result-portable/bin/logosctl --config-dir ./storage-session daemon stop"
+        code_block: "logosctl daemon stop"
+
+      - title: "Stop the watcher, the provider and the HTTPS server"
+        run: |
+          kill "$(cat watch.pid)" "$(cat provider.pid)" "$(cat caddy.pid)" 2>/dev/null || true
+          echo "stopped"
+        code_block: "kill %1 %2 %3"
+        expect_contains:
+          - "stopped"
