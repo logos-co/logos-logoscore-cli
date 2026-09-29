@@ -31,6 +31,28 @@ namespace fs = std::filesystem;
 
 namespace paths {
 
+std::string appImagePath()
+{
+#ifdef __linux__
+    const char* appImage = std::getenv("APPIMAGE");
+    const char* appDir = std::getenv("APPDIR");
+    if (!appImage || !*appImage || !appDir || !*appDir) return {};
+
+    const fs::path exe = executablePath();
+    const fs::path dir = fs::path(appDir).lexically_normal();
+    const fs::path relative = exe.lexically_relative(dir);
+    if (relative.empty() || relative == "." || *relative.begin() == "..") return {};
+
+    std::error_code ec;
+    const fs::path outer = fs::absolute(appImage, ec);
+    if (ec || !fs::is_regular_file(outer, ec)
+        || ::access(outer.string().c_str(), X_OK) != 0) return {};
+    return outer.lexically_normal().string();
+#else
+    return {};
+#endif
+}
+
 #ifdef _WIN32
 // Shared by executablePath()/executableDir(): GetModuleFileNameW truncates
 // rather than failing when the buffer is too small (and on older Windows does
@@ -132,6 +154,8 @@ std::string bundledModulesDir()
 
 std::string relaunchPath(const char* argv0)
 {
+    if (const std::string outer = appImagePath(); !outer.empty()) return outer;
+
     auto usable = [](const fs::path& p) {
         std::error_code ec;
         // .string(), not .c_str(): fs::path::value_type is wchar_t on Windows,
