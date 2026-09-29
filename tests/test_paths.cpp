@@ -127,3 +127,28 @@ TEST_F(RelaunchPathTest, IgnoresNonExecutableCandidates)
     EXPECT_EQ(paths::relaunchPath((dir / "adir").c_str()),
               paths::executablePath());
 }
+
+#ifdef __linux__
+TEST_F(RelaunchPathTest, RelaunchesOuterAppImageInsteadOfMountedBinary)
+{
+    const fs::path outer = makeExecutable("logosctl.AppImage");
+    const fs::path inner = makeExecutable("logosctl");
+    const char* priorImage = std::getenv("APPIMAGE");
+    const char* priorDir = std::getenv("APPDIR");
+    const std::string savedImage = priorImage ? priorImage : "";
+    const std::string savedDir = priorDir ? priorDir : "";
+
+    setenv("APPIMAGE", outer.c_str(), 1);
+    setenv("APPDIR", paths::executableDir().c_str(), 1);
+    EXPECT_EQ(paths::relaunchPath(inner.c_str()), outer.string());
+
+    setenv("APPDIR", dir.c_str(), 1);
+    EXPECT_EQ(paths::appImagePath(), "")
+        << "an inherited APPIMAGE variable outside its mount is not ours";
+
+    if (priorImage) setenv("APPIMAGE", savedImage.c_str(), 1);
+    else unsetenv("APPIMAGE");
+    if (priorDir) setenv("APPDIR", savedDir.c_str(), 1);
+    else unsetenv("APPDIR");
+}
+#endif
