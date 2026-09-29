@@ -13,6 +13,11 @@ std::string executableDir();
 // initialised CoreFoundation, so the child must exec() rather than carry on.
 std::string executablePath();
 
+// When running inside an AppImage, return the outer AppImage path. Re-execing
+// its mounted inner binary after --detach would let the original AppImage
+// runtime exit and unmount the filesystem underneath the daemon.
+std::string appImagePath();
+
 // The path to re-exec this process with, given the argv[0] we were invoked
 // under. NOT the same question as executablePath().
 //
@@ -26,7 +31,7 @@ std::string executablePath();
 // argv[0] is what the caller actually ran, which is the launcher, so prefer it:
 // by path when it has a slash, via PATH when it is a bare name. Fall back to
 // executablePath() only when neither yields something executable (argv[0] can
-// be absent or a lie).
+// be absent or a lie). An AppImage must relaunch through its outer runtime.
 std::string relaunchPath(const char* argv0);
 
 // Returns "{executableDir}/../modules" if that directory exists, or empty.

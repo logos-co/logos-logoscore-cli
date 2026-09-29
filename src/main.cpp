@@ -620,6 +620,9 @@ int main(int argc, char *argv[])
             // binary with --detach stripped, and that copy runs the daemon
             // normally.
             const std::string self = paths::relaunchPath(argv[0]);
+#ifdef __linux__
+            const bool appImageRelaunch = !paths::appImagePath().empty();
+#endif
             if (self.empty()) {
                 fprintf(stderr, "Error: could not resolve own path for --detach.\n");
                 return 1;
@@ -793,12 +796,20 @@ int main(int argc, char *argv[])
             };
 
             for (int i = 0; i < 600; ++i) {
-                // Only our child's: a concurrent start's daemon is not ours to report.
+                // Normally the daemon is our direct child. An AppImage may
+                // keep its FUSE mount alive in an intermediate runtime process,
+                // leaving the daemon as that child's descendant in the same session.
+                // The session ID still distinguishes it from a concurrent start.
                 const DaemonRuntimeState st = DaemonRuntimeStateFile::read();
-                if (st.fileOk && st.pid == childPid) {
+                bool ourDaemon = st.fileOk && st.pid == childPid;
+#ifdef __linux__
+                if (st.fileOk && appImageRelaunch && st.pid > 0)
+                    ourDaemon = ::getsid(static_cast<pid_t>(st.pid)) == childPid;
+#endif
+                if (ourDaemon) {
                     cleanupStartupFile();
                     fprintf(stdout, "Daemon started (pid %ld)\nLogs: %s\n",
-                            childPid, logPath.c_str());
+                            static_cast<long>(st.pid), logPath.c_str());
                     releaseChild();
                     return 0;
                 }
