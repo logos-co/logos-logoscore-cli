@@ -740,7 +740,7 @@ For `tcp_ssl`, each module entry also accepts `"ca": "<path>"` and
 | `Client::getModuleStats() -> LogosList` | `core_service.getModuleStats()` |
 | `Client::callModuleMethod(module, method, args) -> LogosMap` | `core_service.callModuleMethod(module, method, args)` |
 | `Client::shutdown() -> LogosMap` | `core_service.shutdown()` |
-| `Client::watchModuleEvents(module, event, callback) -> bool` | `core_service.watchModuleEvents(module, event)` + event subscription |
+| `Client::watchModuleEvents(module, event, callback, onDaemonLost) -> bool` | `core_service.watchModuleEvents(module, event)` + event subscription; `onDaemonLost` runs if the daemon goes away |
 
 **Implementation pattern:**
 
@@ -986,11 +986,11 @@ logosctl watch <module> [--event <name>]
 **Behavior:**
 1. Connects to daemon via `Client`
 2. Calls `core_service.watchModuleEvents(module, event)` — core_service registers an event listener on the target module and forwards events through its own event system
-3. Client subscribes to core_service events via `LogosAPIClient::onEvent()`
+3. Client subscribes to core_service events via `LogosAPIClient::onEventWhenAvailable()` under a Manual restart policy, so a lost daemon is reported (`Held`) rather than re-armed against a new one
 4. On each event: prints formatted line (human) or NDJSON line (JSON mode)
-5. Runs until SIGINT/SIGTERM
+5. Runs until SIGINT/SIGTERM, or until the daemon goes away
 
-**Exit codes:** 0 on clean shutdown, 2 if no daemon, 3 if module not loaded.
+**Exit codes:** 0 on clean shutdown, 2 if no daemon or the daemon goes away, 3 if module not loaded.
 
 ### logosctl stats
 

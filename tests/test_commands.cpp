@@ -21,6 +21,9 @@
 #include "config.h"
 #include "daemon/daemon_state.h"
 
+#include <QCoreApplication>
+#include <QTimer>
+
 // Mock client for testing commands without a real daemon
 class MockClient : public Client {
 public:
@@ -80,6 +83,8 @@ public:
     std::string lastWatchModule;
     std::string lastWatchEventName;
     bool watchShouldSucceed = false;
+    // Non-empty: a successful watch then reports the daemon lost with this reason.
+    std::string watchLostReason;
 
     bool connect() override {
         ++connectAttempts;
@@ -177,12 +182,16 @@ public:
     }
 
     bool watchModuleEvents(const std::string& module, const std::string& eventName,
-                            std::function<void(const LogosMap&)> callback) override {
+                            std::function<void(const LogosMap&)> callback,
+                            std::function<void(const std::string&)> onDaemonLost) override {
         ++rpcCalls;
         (void)callback;
         lastWatchModule    = module;
         lastWatchEventName = eventName;
-        return m_connected && watchShouldSucceed;
+        const bool ok = m_connected && watchShouldSucceed;
+        if (ok && !watchLostReason.empty())
+            QTimer::singleShot(0, [onDaemonLost, reason = watchLostReason] { onDaemonLost(reason); });
+        return ok;
     }
 
 private:
@@ -1070,6 +1079,26 @@ TEST_F(CommandTest, Watch_ModuleNotLoaded_ReturnsExit3)
     nlohmann::json doc = parseJson(out);
     EXPECT_EQ(doc["code"].get<std::string>(), "WATCH_FAILED");
     EXPECT_NE(doc["message"].get<std::string>().find("'missing'"), std::string::npos);
+}
+
+// The daemon going away ends the watch with NO_DAEMON, exit 2, instead of leaving it running.
+TEST_F(CommandTest, Watch_DaemonGoesAway_ExitsWithNoDaemon)
+{
+    static int argc = 0;
+    static QCoreApplication* app = QCoreApplication::instance()
+        ? QCoreApplication::instance() : new QCoreApplication(argc, nullptr);
+    (void)app;
+    mockClient.watchShouldSucceed = true;
+    mockClient.watchLostReason = "provider_unavailable";
+    auto cmd = createCommand("watch", mockClient, output);
+
+    std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"chat"}), 2);
+    });
+
+    nlohmann::json doc = parseJson(out);
+    EXPECT_EQ(doc["code"].get<std::string>(), "NO_DAEMON");
+    EXPECT_NE(doc["message"].get<std::string>().find("'chat'"), std::string::npos);
 }
 
 TEST_F(CommandTest, Watch_NoDaemon_ReturnsExit2)

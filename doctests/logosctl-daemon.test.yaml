@@ -388,6 +388,16 @@ sections:
         expect_contains:
           - '"result":42'
 
+      - title: "Watch the module while the daemon stops"
+        text: |
+          `watch` streams a module's events until you stop it, or until the
+          daemon goes away. Start one in the background, then stop the daemon
+          under it:
+        run: |
+          (./logos/bin/logosctl --config-dir ./session watch test_basic_module > watch.log 2>&1; echo "watch exit: $?" >> watch.log) > /dev/null 2>&1 < /dev/null &
+          sleep 2
+        code_block: "logosctl watch test_basic_module > watch.log &"
+
       - title: "Stop the daemon"
         text: "Shut down the daemon cleanly:"
         run: "./logos/bin/logosctl --config-dir ./session daemon stop"
@@ -408,6 +418,19 @@ sections:
         code_block: "logosctl daemon status"
         expect_contains:
           - '"status":"not_running"'
+
+      - title: "The watch ended with the daemon"
+        text: |
+          The watcher did not outlive the daemon. It reported `NO_DAEMON` and
+          exited with code 2, the code every client command uses when there is
+          no daemon:
+        run: |
+          for i in $(seq 1 20); do grep -q 'watch exit:' watch.log && break; sleep 1; done
+          cat watch.log
+        code_block: "cat watch.log"
+        expect_contains:
+          - '"code":"NO_DAEMON"'
+          - "watch exit: 2"
 
       - title: "A worker is not orphaned if the daemon crashes"
         text: |

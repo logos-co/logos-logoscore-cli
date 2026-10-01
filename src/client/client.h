@@ -66,10 +66,11 @@ public:
     // Daemon lifecycle
     virtual LogosMap shutdown() = 0;
 
-    // Event watching
+    // Event watching. `onDaemonLost` runs once if the daemon goes away; the watch is over then.
     virtual bool watchModuleEvents(const std::string& module,
                                    const std::string& eventName,
-                                   std::function<void(const LogosMap&)> callback) = 0;
+                                   std::function<void(const LogosMap&)> callback,
+                                   std::function<void(const std::string& reason)> onDaemonLost) = 0;
 };
 
 // Real RPC client implementation that connects to the daemon.
@@ -102,7 +103,8 @@ public:
     LogosMap shutdown() override;
     bool watchModuleEvents(const std::string& module,
                            const std::string& eventName,
-                           std::function<void(const LogosMap&)> callback) override;
+                           std::function<void(const LogosMap&)> callback,
+                           std::function<void(const std::string& reason)> onDaemonLost) override;
 
 private:
     // Answer "is the daemon actually gone?" from evidence, after a shutdown
