@@ -177,6 +177,20 @@ std::vector<std::string> affectedLoaded(Backend& api, const std::vector<std::str
     return out;
 }
 
+// Running modules outside `stopping` that depend on one of them. Unloading
+// takes them down too; nothing restarts them.
+std::vector<std::string> loadedDependents(Backend& api, const std::vector<std::string>& stopping)
+{
+    const auto loaded = api.loadedModules();
+    const std::unordered_set<std::string> loadedSet(loaded.begin(), loaded.end());
+    std::unordered_set<std::string> seen(stopping.begin(), stopping.end());
+    std::vector<std::string> out;
+    for (const auto& m : stopping)
+        for (const auto& d : api.dependents(m))
+            if (loadedSet.count(d) && seen.insert(d).second) out.push_back(d);
+    return out;
+}
+
 // Resolve the install/upgrade closure. Returns the resolver's array, or a
 // null json on failure.
 nlohmann::json resolveClosure(Backend& api,
@@ -344,7 +358,9 @@ LogosMap plan(Backend& api, Op op,
     }
 
     out["changes"] = changes;
-    out["affected_loaded"] = affectedLoaded(api, affected);
+    const auto stopping = affectedLoaded(api, affected);
+    out["affected_loaded"] = stopping;
+    out["stopped_dependents"] = loadedDependents(api, stopping);
     return out;
 }
 

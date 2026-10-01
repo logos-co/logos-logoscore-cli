@@ -225,6 +225,57 @@ sections:
           - "reinstall"
           - "stopped and restarted"
 
+  - title: "Reinstalling under a running dependent"
+    step: true
+    platform: [linux, macos]
+    text: |
+      Replacing a running module stops whatever depends on it as well. Those
+      dependents are **not** restarted afterwards, so the plan names them
+      before anything happens, and the result says which ones to load again.
+
+      `test_context_module_cpp` requires `test_basic_module` (and
+      `test_basic_module_cpp`). Install both packages and load it:
+    steps:
+      - title: "Build and install a dependent"
+        run: |
+          SYS=$(nix eval --impure --raw --expr builtins.currentSystem)
+          mkdir -p ctx
+          for m in test_basic_module_cpp test_context_module_cpp; do
+            nix build "github:logos-co/logos-test-modules{release}#modules.$SYS.$m.lgx" -o "$m-lgx"
+            cp "$m-lgx"/*.lgx "ctx/$m.lgx"
+          done
+          chmod +w ctx/*.lgx
+          ./ctl/bin/logosctl{exe} --human --config-dir ./session install --dir ./ctx -y
+          ./ctl/bin/logosctl{exe} --human --config-dir ./session module load test_context_module_cpp
+        code_block: |
+          logosctl install --dir ./ctx -y
+          logosctl module load test_context_module_cpp
+        expect_contains:
+          - "Loaded module: test_context_module_cpp"
+
+      - title: "Reinstall the module it depends on"
+        run: "./ctl/bin/logosctl{exe} --human --config-dir ./session install --dir ./drop -y"
+        code_block: "logosctl install --dir ./drop -y"
+        expect_contains:
+          - "These running modules will be stopped and restarted: test_basic_module"
+          - "These running modules depend on them and will be stopped, not restarted: test_context_module_cpp"
+          - "Restarted: test_basic_module"
+          - "Stopped, not restarted: test_context_module_cpp"
+          - "Load it again with: logosctl module load test_context_module_cpp"
+
+      - title: "Load the dependent again"
+        run: "./ctl/bin/logosctl{exe} --human --config-dir ./session module load test_context_module_cpp"
+        code_block: "logosctl module load test_context_module_cpp"
+        expect_contains:
+          - "Loaded module: test_context_module_cpp"
+
+      - title: "Remove the dependent"
+        run: "./ctl/bin/logosctl{exe} --human --config-dir ./session package remove test_context_module_cpp test_basic_module_cpp -y"
+        code_block: "logosctl package remove test_context_module_cpp test_basic_module_cpp -y"
+        expect_contains:
+          - "Removed:"
+          - "test_context_module_cpp"
+
   - title: "What is refused, and why"
     step: true
     platform: [linux, macos]

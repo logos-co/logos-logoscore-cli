@@ -394,7 +394,9 @@ some tools do:
   different rules, so run them separately.
 
 Installing does not require a daemon restart: the daemon re-scans afterwards,
-and only modules that were *already running* are stopped and restarted.
+and only modules that were *already running* are stopped and restarted. A
+running module that depends on one of them is stopped too and is **not**
+restarted; the plan names it, and `module load` brings it back.
 
 #### Argument typing
 
@@ -513,7 +515,21 @@ logosctl module load storage_module
 
 The daemon re-scans after an install, so a freshly installed module is loadable
 immediately — no restart. What `install` *does* restart is anything that was
-already running and had to be stopped to make way; nothing else is touched.
+already running and had to be stopped to make way. Running modules that depend
+on those are stopped with them and left stopped; the plan lists them before
+you confirm, and the result says which to load again:
+
+```
+$ logosctl install ./worker.lgx -y
+The following changes will be made (install):
+  reinstall  calc_slow 1.0.0 -> 1.0.0
+These running modules will be stopped and restarted: calc_slow
+These running modules depend on them and will be stopped, not restarted: calc_fanout
+Installed: calc_slow
+Restarted: calc_slow
+Stopped, not restarted: calc_fanout
+Load it again with: logosctl module load calc_fanout
+```
 
 Dependencies are handled by default in the direction that avoids breakage:
 `install`/`upgrade` pull dependencies in (`--no-deps` opts out), and `remove`
