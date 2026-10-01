@@ -359,7 +359,7 @@ public:
                        const std::string& data)> emitEvent;
 
     // Module lifecycle
-    StdLogosResult loadModule(const std::string& name);
+    StdLogosResult loadModule(const std::string& name, bool withOptional = true);
     // withDependents cascades the unload to dependents, leaves-first.
     StdLogosResult unloadModule(const std::string& name, bool withDependents);
     StdLogosResult reloadModule(const std::string& name);
@@ -424,7 +424,7 @@ method, scanned by a code generator; neither is used here any more.)
 
 | Method | What it does (daemon-side) |
 |---|---|
-| `loadModule(name)` | Calls `logos_core_load_module(name, LOGOS_LOAD_REQUIRED_AND_OPTIONAL)`. Returns `{"status":"ok","module":"...","version":"...","dependencies_loaded":[...]}` |
+| `loadModule(name, withOptional)` | Calls `logos_core_load_module(name, LOGOS_LOAD_REQUIRED_AND_OPTIONAL)`, or `LOGOS_LOAD_REQUIRED_DEPS` when `withOptional` is false (`--no-optional`; omitted means true). Returns `{"status":"ok","module":"...","version":"...","dependencies_loaded":[...]}` |
 | `unloadModule(name, withDependents)` | Calls `logos_core_unload_module(name, withDependents)`. With `withDependents` (the CLI default) liblogos cascades the unload to every module that depends on `name`, leaves-first, so nothing is left talking to a dead provider. Returns `{"status":"ok","module":"...","dependents_unloaded":[...]}` |
 | `refreshModules()` | Re-scans the daemon's module directories so a package installed since boot becomes loadable without a restart — this is what lets `install` be followed by `load` in one session |
 | `planPackageOperation(op, names, opts)` / `applyPackageOperation(op, names, opts)` | Daemon-side plan/apply for `install` / `remove` / `update` (see `src/core_service/package_ops.h`). The split exists so the client can show what would change and prompt; `--dry-run` stops after the plan |
@@ -727,7 +727,7 @@ For `tcp_ssl`, each module entry also accepts `"ca": "<path>"` and
 | `Client::connect() -> bool` | Read `<configDir>/client/config.json`, set `LOGOS_INSTANCE_ID` from `instance_id`, build `LogosTransportConfig` from the dial spec, load token from `token_file` (or `LOGOSCTL_TOKEN` env), create `LogosAPIClient` targeting `"core_service"`, authenticate |
 | `Client::isConnected() -> bool` | — |
 | `Client::lastError() -> std::string` | — (last connect/RPC failure reason) |
-| `Client::loadModule(name) -> LogosMap` | `core_service.loadModule(name)` |
+| `Client::loadModule(name, withOptional) -> LogosMap` | `core_service.loadModule(name, withOptional)` |
 | `Client::unloadModule(name, withDependents) -> LogosMap` | `core_service.unloadModule(name, withDependents)` |
 | `Client::reloadModule(name) -> LogosMap` | `core_service.reloadModule(name)` |
 | `Client::refreshModules() -> LogosMap` | `core_service.refreshModules()` |
@@ -1083,7 +1083,7 @@ Client commands call core_service methods, which delegate to liblogos internally
 
 | CLI command | core_service method | liblogos function called internally |
 |---|---|---|
-| `load-module` | `loadModule(name)` | `logos_core_load_module(name, LOGOS_LOAD_REQUIRED_AND_OPTIONAL)` |
+| `load-module` | `loadModule(name, withOptional)` | `logos_core_load_module(name, LOGOS_LOAD_REQUIRED_AND_OPTIONAL)`, or `LOGOS_LOAD_REQUIRED_DEPS` with `--no-optional` |
 | `unload-module` | `unloadModule(name, withDependents)` | `logos_core_unload_module(name, withDependents)` — liblogos does the leaves-first cascade |
 | `reload-module` | `reloadModule(name)` | `logos_core_unload_module(name, false)` + `logos_core_load_module(name, LOGOS_LOAD_REQUIRED_AND_OPTIONAL)` |
 | `list-modules` | `listModules(filter)` | `logos_core_get_known_modules`, `logos_core_get_loaded_modules` |

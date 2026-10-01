@@ -19,7 +19,8 @@ public:
     virtual std::string lastError() const = 0;
 
     // Module lifecycle
-    virtual LogosMap loadModule(const std::string& name) = 0;
+    // Also loads installed optional dependencies unless `withOptional` is false.
+    virtual LogosMap loadModule(const std::string& name, bool withOptional = true) = 0;
     // Cascades to dependents unless the caller opts out (`--no-dependents`).
     virtual LogosMap unloadModule(const std::string& name,
                                   bool withDependents) = 0;
@@ -82,7 +83,7 @@ public:
     bool isConnected() const override;
     std::string lastError() const override;
 
-    LogosMap loadModule(const std::string& name) override;
+    LogosMap loadModule(const std::string& name, bool withOptional = true) override;
     LogosMap unloadModule(const std::string& name, bool withDependents) override;
     LogosMap reloadModule(const std::string& name) override;
     LogosMap refreshModules() override;

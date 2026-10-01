@@ -65,8 +65,11 @@ nlohmann::json CoreServiceImpl::callMethodStd(const std::string& methodName,
   // this catch the exception escapes the event loop and kills the daemon, so a
   // malformed RPC becomes a structured error instead of a crash.
   try {
-    if (methodName == "loadModule" && args.size() >= 1)
-        return stdLogosResultToJson(loadModule(args[0].get<std::string>()));
+    if (methodName == "loadModule" && args.size() >= 1) {
+        // Older callers pass only the name; they keep loading optional dependencies.
+        const bool withOptional = args.size() >= 2 ? args[1].get<bool>() : true;
+        return stdLogosResultToJson(loadModule(args[0].get<std::string>(), withOptional));
+    }
 
     if (methodName == "unloadModule" && args.size() >= 1) {
         // Older callers pass only the name; the cascade is the default so an
@@ -160,7 +163,8 @@ std::vector<LogosMethodMetadata> CoreServiceImpl::getMethodsStd()
     };
 
     mkMethod("loadModule",
-             nlohmann::json::array({mkParam("name", "string")}),
+             nlohmann::json::array({mkParam("name", "string"),
+                                    mkParam("withOptional", "bool")}),
              "StdLogosResult");
 
     mkMethod("unloadModule",

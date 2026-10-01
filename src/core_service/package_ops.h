@@ -2,6 +2,7 @@
 #define PACKAGE_OPS_H
 
 #include <logos_json.h>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -21,6 +22,18 @@ class LogosAPI;
 namespace package_ops {
 
 enum class Op { Install, Upgrade, Remove };
+
+// The package modules and module runtime that plan/apply drive. The LogosAPI
+// overloads wire it to the daemon (package_ops_live.cpp); tests use a fake.
+struct Backend {
+    // A null json means the call itself failed; `why` (may be null) gets the reason.
+    std::function<nlohmann::json(const char* module, const std::string& method,
+                                 const LogosList& args, std::string* why)> call;
+    std::function<std::vector<std::string>()> loadedModules;
+    std::function<void(const std::string&)> unloadModule;   // with dependents
+    std::function<bool(const std::string&)> loadModule;
+    std::function<void()> refreshModules;
+};
 
 struct Options {
     // install/upgrade: resolve and act on the dependency closure. Off means
@@ -50,6 +63,9 @@ struct Options {
 LogosMap plan(LogosAPI* api, Op op,
               const std::vector<std::string>& names,
               const Options& opts);
+LogosMap plan(Backend& backend, Op op,
+              const std::vector<std::string>& names,
+              const Options& opts);
 
 // Execute. Returns the plan plus what actually happened:
 //   { status, op, changes, affected_loaded, installed: [...], removed: [...],
@@ -59,6 +75,9 @@ LogosMap plan(LogosAPI* api, Op op,
 // files on disk, loading is a separate explicit act. Only modules that were
 // already running before the operation are restarted afterwards.
 LogosMap apply(LogosAPI* api, Op op,
+               const std::vector<std::string>& names,
+               const Options& opts);
+LogosMap apply(Backend& backend, Op op,
                const std::vector<std::string>& names,
                const Options& opts);
 
@@ -78,6 +97,8 @@ LogosMap apply(LogosAPI* api, Op op,
 //
 // Shape: { status, result: { name, version, path, repository, ... } }
 LogosMap download(LogosAPI* api, const std::string& name,
+                  const Options& opts, const std::string& destDir);
+LogosMap download(Backend& backend, const std::string& name,
                   const Options& opts, const std::string& destDir);
 
 } // namespace package_ops
