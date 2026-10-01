@@ -1,4 +1,5 @@
 #include "package_ops.h"
+#include "optional_dependency_closure.h"
 #include "config.h"
 #include "logos_core.h"
 #include "rpc_deadlines.h"
@@ -204,34 +205,11 @@ nlohmann::json resolveClosure(LogosAPI* api,
             if (e.value("topLevel", false)) filtered.push_back(e);
         return filtered;
     }
-    LogosList inputs = LogosList::parse(dependenciesJson(names, opts));
-    std::set<std::string> selected(names.begin(), names.end());
-    std::set<std::string> mandatoryNames;
-    bool firstPass = true;
     const std::string installedJson = installedPackagesJson(installed);
-    for (;;) {
-        auto resolved = call(api, kPd, "resolveDependencies",
-                             LogosList{inputs.dump(), installedJson}, why);
-        if (!resolved.is_array() || !opts.withOptional) return resolved;
-        for (const auto& entry : resolved) {
-            if (entry.contains("error")) return resolved;
-            if (firstPass) mandatoryNames.insert(entry.value("name", std::string{}));
-        }
-        firstPass = false;
-        bool added = false;
-        for (const auto& offer : optionalOffers(resolved)) {
-            if (offer.contains("error")) continue;
-            const std::string name = offer.value("name", std::string{});
-            if (name.empty() || !selected.insert(name).second) continue;
-            inputs.push_back(offer.at("request"));
-            added = true;
-        }
-        if (!added) {
-            for (auto& entry : resolved)
-                entry["optional"] = !mandatoryNames.count(entry.value("name", std::string{}));
-            return resolved;
-        }
-    }
+    return resolveOptionalClosure(LogosList::parse(dependenciesJson(names, opts)), opts.withOptional,
+        [&](const nlohmann::json& inputs) {
+            return call(api, kPd, "resolveDependencies", LogosList{inputs.dump(), installedJson}, why);
+        });
 }
 
 // The cascade set for a removal: the package plus everything that depends on
