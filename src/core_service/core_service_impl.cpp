@@ -203,6 +203,7 @@ package_ops::Options toOptions(const LogosMap& opts)
 {
     package_ops::Options o;
     o.withDeps       = opts.value("withDeps", true);
+    o.withOptional   = opts.value("withOptional", true);
     o.withDependents = opts.value("withDependents", true);
     o.version        = opts.value("version", std::string{});
     o.rootHash       = opts.value("rootHash", std::string{});

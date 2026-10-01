@@ -3,6 +3,11 @@
 
 #include "command.h"
 
+namespace package_confirmation {
+enum class Choice { All, Mandatory, Cancel };
+Choice parse(const std::string& input);
+}
+
 // The `package` group: install, upgrade, remove, ls, show, deps, search,
 // download.
 //

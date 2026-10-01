@@ -26,6 +26,7 @@ struct Options {
     // install/upgrade: resolve and act on the dependency closure. Off means
     // "only the packages I named", which fails if a dependency is missing.
     bool withDeps = true;
+    bool withOptional = true;
     // remove: take the package's dependents with it. Off means "only this
     // package", which fails if anything still depends on it.
     bool withDependents = true;

@@ -1563,6 +1563,48 @@ TEST_F(CommandTest, Status_StaleSessionForAnotherInstance_StillDials)
 
 // ── package search ──────────────────────────────────────────────────────────
 
+TEST(PackageConfirmation, DefaultsToAllAndAcceptsEachChoice) {
+    using package_confirmation::Choice;
+    using package_confirmation::parse;
+    EXPECT_EQ(parse(""), Choice::All);
+    EXPECT_EQ(parse("  "), Choice::All);
+    EXPECT_EQ(parse("ALL"), Choice::All);
+    EXPECT_EQ(parse("m"), Choice::Mandatory);
+    EXPECT_EQ(parse("only mandatory"), Choice::Mandatory);
+    EXPECT_EQ(parse(" mandatory "), Choice::Mandatory);
+    EXPECT_EQ(parse("n"), Choice::Cancel);
+    EXPECT_EQ(parse("unknown"), Choice::Cancel);
+}
+
+TEST_F(CommandTest, PackageInstallDefaultsToAvailableOptionals) {
+    mockClient.planPackageResult = LogosMap{{"status", "ok"},
+        {"changes", LogosList::array({LogosMap{{"name", "delivery_module"}, {"action", "install"}}})},
+        {"affected_loaded", LogosList::array()}};
+    mockClient.applyPackageResult = LogosMap{{"status", "ok"}};
+    auto cmd = createCommand("package", mockClient, output);
+    captureOutput([&]() { EXPECT_EQ(cmd->execute({"install", "delivery_module", "-y"}), 0); });
+    EXPECT_TRUE(mockClient.lastPackageOpts.value("withOptional", false));
+}
+
+TEST_F(CommandTest, PackageInstallCanSelectOnlyMandatoryPackages) {
+    mockClient.planPackageResult = LogosMap{{"status", "ok"},
+        {"changes", LogosList::array({LogosMap{{"name", "delivery_module"}, {"action", "install"}}})},
+        {"affected_loaded", LogosList::array()}};
+    mockClient.applyPackageResult = LogosMap{{"status", "ok"}};
+    auto cmd = createCommand("package", mockClient, output);
+    captureOutput([&]() { EXPECT_EQ(cmd->execute({"install", "delivery_module", "-y", "--no-optional"}), 0); });
+    EXPECT_FALSE(mockClient.lastPackageOpts.value("withOptional", true));
+    EXPECT_TRUE(mockClient.lastPackageOpts.value("withDeps", false));
+}
+
+TEST_F(CommandTest, PackageInstallNoDepsAlsoDisablesOptionals) {
+    mockClient.planPackageResult = LogosMap{{"status", "ok"},
+        {"changes", LogosList::array()}, {"affected_loaded", LogosList::array()}};
+    auto cmd = createCommand("package", mockClient, output);
+    captureOutput([&]() { EXPECT_EQ(cmd->execute({"install", "delivery_module", "--dry-run", "--no-deps"}), 0); });
+    EXPECT_FALSE(mockClient.lastPackageOpts.value("withOptional", true));
+}
+
 // Search shows the latest version and a count of the rest: the full list made
 // every row wrap, which is what the column was supposed to prevent.
 TEST_F(CommandTest, PackageSearch_ShowsLatestVersionAndCountsTheRest)

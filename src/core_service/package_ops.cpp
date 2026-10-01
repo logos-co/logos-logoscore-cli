@@ -1,4 +1,5 @@
 #include "package_ops.h"
+#include "optional_dependency_closure.h"
 #include "config.h"
 #include "logos_core.h"
 #include "rpc_deadlines.h"
@@ -128,6 +129,16 @@ std::string dependenciesJson(const std::vector<std::string>& names,
     return deps.dump();
 }
 
+LogosList optionalOffers(const nlohmann::json& resolved)
+{
+    LogosList offers = LogosList::array();
+    if (resolved.is_array())
+        for (const auto& entry : resolved)
+            for (const auto& offer : entry.value("optionalDependencies", LogosList::array()))
+                offers.push_back(offer);
+    return offers;
+}
+
 // Same classification basecamp's confirmation dialog uses
 // (PackageCoordinator::depAction). "reinstall" is the same-version,
 // different-root-hash case — a rebuild of the identical version, which is a
@@ -194,10 +205,11 @@ nlohmann::json resolveClosure(LogosAPI* api,
             if (e.value("topLevel", false)) filtered.push_back(e);
         return filtered;
     }
-    return call(api, kPd, "resolveDependencies",
-                LogosList{dependenciesJson(names, opts),
-                          installedPackagesJson(installed)},
-                why);
+    const std::string installedJson = installedPackagesJson(installed);
+    return resolveOptionalClosure(LogosList::parse(dependenciesJson(names, opts)), opts.withOptional,
+        [&](const nlohmann::json& inputs) {
+            return call(api, kPd, "resolveDependencies", LogosList{inputs.dump(), installedJson}, why);
+        });
 }
 
 // The cascade set for a removal: the package plus everything that depends on
@@ -321,12 +333,15 @@ LogosMap plan(LogosAPI* api, Op op,
                     {"fromVersion", iv},
                     {"toVersion", rv},
                     {"repository", e.value("repositoryUrl", std::string{})},
+                    {"rootHash", rh},
+                    {"optional", e.value("optional", false)},
                     {"topLevel", e.value("topLevel", false)},
                 });
                 // A package already at the resolved version isn't touched, so
                 // it doesn't need stopping and restarting.
                 if (action != "installed") affected.push_back(n);
             }
+            out["optional_dependencies"] = optionalOffers(resolved);
         }
     }
 
@@ -497,8 +512,18 @@ LogosMap apply(LogosAPI* api, Op op,
 
         const LogosList installed = installedPackages(api);
         std::string why;
+        // Download the same optional selection the plan resolved. Pin each
+        // artifact so the installed set matches the reviewed plan.
+        LogosList downloadInputs = LogosList::array();
+        for (const auto& c : result["changes"]) {
+            if (c.value("action", std::string{}) == "installed") continue;
+            downloadInputs.push_back(LogosMap{{"name", c.at("name")},
+                                              {"version", c.at("toVersion")},
+                                              {"repositoryUrl", c.at("repository")},
+                                              {"rootHash", c.at("rootHash")}});
+        }
         nlohmann::json downloaded = call(api, kPd, "downloadResolvedDependencies",
-                                         LogosList{dependenciesJson(names, opts),
+                                         LogosList{downloadInputs.dump(),
                                                    opts.withDeps
                                                        ? installedPackagesJson(installed)
                                                        : std::string{}},

@@ -61,6 +61,7 @@ add_executable(unit_tests
     test_paths.cpp
     test_output.cpp
     test_commands.cpp
+    test_optional_dependency_closure.cpp
     test_mode_detection.cpp
     test_token_store.cpp
     test_port_allocator.cpp

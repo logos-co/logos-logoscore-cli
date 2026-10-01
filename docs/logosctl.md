@@ -319,7 +319,7 @@ logosctl watch MODULE [--event NAME]
 # Packages — what is on disk
 # install/upgrade share one option set:
 #   --file X.lgx  --dir D  --version V  --root-hash H  --catalog C
-#   -y|--yes  --dry-run  --no-deps  --no-dependents
+#   -y|--yes  --dry-run  --no-deps  --no-optional  --no-dependents
 # remove takes names only:  -y  --dry-run  --no-dependents
 logosctl package install NAME|FILE.lgx ...   # a path installs from disk
 logosctl package install --dir D             # every .lgx in a directory
@@ -519,6 +519,15 @@ takes dependents with it (`--no-dependents` opts out). `--dry-run` prints the
 full change table plus which running modules will be stopped, and without `-y`
 you are asked to confirm. With no terminal and no `-y` the operation is refused
 rather than assumed — a script that forgot `--yes` should fail loudly.
+
+Catalog installs and upgrades also offer available `optional_dependencies`,
+including those declared by a required dependency of an app. The change table
+marks their changes `(optional)`. The prompt offers `all`, `only mandatory`
+(or `m`), and `n`; pressing Enter selects **all**. `-y` also selects all available
+optionals. Use `--no-optional` to keep only mandatory packages in scripts or
+dry runs. An unavailable optional package, or one with unavailable required
+dependencies, never blocks the mandatory install. Optional packages already
+installed at a compatible version are kept as they are.
 
 Package signatures are verified against the session's own keyring:
 
