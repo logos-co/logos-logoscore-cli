@@ -522,12 +522,15 @@ rather than assumed — a script that forgot `--yes` should fail loudly.
 
 Catalog installs and upgrades also offer available `optional_dependencies`,
 including those declared by a required dependency of an app. The change table
-marks their changes `(optional)`. The prompt offers `all`, `only mandatory`
-(or `m`), and `n`; pressing Enter selects **all**. `-y` also selects all available
-optionals. Use `--no-optional` to keep only mandatory packages in scripts or
+marks their changes `(optional)`. When the plan includes optional packages,
+the prompt offers `all`, `only mandatory` (or `m`), and `n`; pressing Enter
+selects **all**. Otherwise it is the usual `[y/N]`. `-y` also selects all
+available optionals. Choosing `only mandatory` prints the reduced plan before
+applying it. Use `--no-optional` to keep only mandatory packages in scripts or
 dry runs. An unavailable optional package, or one with unavailable required
-dependencies, never blocks the mandatory install. Optional packages already
-installed at a compatible version are kept as they are.
+dependencies, never blocks the mandatory install; one that fails to download or
+install is reported as skipped. Optional packages already installed at a
+compatible version are kept as they are.
 
 Package signatures are verified against the session's own keyring:
 

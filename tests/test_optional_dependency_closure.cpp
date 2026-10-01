@@ -77,3 +77,36 @@ TEST(OptionalClosure, ResolverErrorsStopFurtherExpansion) {
     EXPECT_EQ(calls, 1);
     EXPECT_EQ(plan[0]["error"], "missing required child");
 }
+
+TEST(OptionalClosure, OfferThatIsARequiredChildOfAnotherSelectionIsNotPinned) {
+    // S offers Y and Z; Z requires Y. Y must install as Z's dependency, not as a pinned root.
+    int calls = 0;
+    json last;
+    const auto plan = package_ops::resolveOptionalClosure(json::array({"S"}), true,
+        [&](const json& inputs) {
+            ++calls;
+            last = inputs;
+            auto s = row("S");
+            s["optionalDependencies"] = json::array({offer("Y"), offer("Z")});
+            bool hasZ = false;
+            for (const auto& i : inputs) if (i.is_object() && i["name"] == "Z") hasZ = true;
+            if (hasZ) s["dependencyGraph"] = {{"S", json::array()}, {"Z", json::array({"Y"})}};
+            return hasZ ? json::array({row("Y"), row("Z"), s}) : json::array({s});
+        });
+    ASSERT_EQ(last.size(), 2u);
+    EXPECT_EQ(last[1]["name"], "Z");
+    EXPECT_FALSE(plan[0]["optional"].get<bool>());
+    EXPECT_TRUE(plan[1]["optional"].get<bool>());
+    EXPECT_EQ(calls, 3);
+}
+
+TEST(OptionalClosure, MalformedGraphEntriesAreIgnored) {
+    const auto plan = package_ops::resolveOptionalClosure(json::array({"S"}), true,
+        [&](const json&) {
+            auto s = row("S");
+            s["dependencyGraph"] = {{"S", json::array({nullptr, 3, "A"})}};
+            return json::array({s});
+        });
+    ASSERT_EQ(plan.size(), 1u);
+    EXPECT_FALSE(plan[0]["optional"].get<bool>());
+}

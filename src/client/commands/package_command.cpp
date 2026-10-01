@@ -295,9 +295,8 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
         return 0;
     }
 
-    if (!output().isJsonMode()) {
-        output().printRaw(fmt::format("The following changes will be made ({}):", op));
-        for (const auto& c : changes) {
+    auto printChanges = [&](const nlohmann::json& rows) {
+        for (const auto& c : rows) {
             const std::string action = c.value("action", std::string{});
             if (action == "installed") continue;
             const std::string from = c.value("fromVersion", std::string{});
@@ -310,6 +309,14 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
                                            : fmt::format(" {} -> {}", from, to)),
                 c.value("optional", false) ? " (optional)" : ""));
         }
+    };
+    bool anyOptional = false;
+    for (const auto& c : changes)
+        if (c.value("optional", false) && c.value("action", std::string{}) != "installed") anyOptional = true;
+
+    if (!output().isJsonMode()) {
+        output().printRaw(fmt::format("The following changes will be made ({}):", op));
+        printChanges(changes);
         const auto& affected = plan["affected_loaded"];
         if (affected.is_array() && !affected.empty()) {
             std::vector<std::string> a;
@@ -331,7 +338,8 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
 
     InstallChoice choice = InstallChoice::All;
     if (!yes) {
-        choice = op == "remove" || !localFiles.empty()
+        // The three-way prompt (Enter = all) only when there is an optional choice to make.
+        choice = !anyOptional
             ? (confirm("Proceed?") ? InstallChoice::All : InstallChoice::Cancel)
             : confirmInstall();
     }
@@ -357,6 +365,11 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
             if (output().isJsonMode()) output().printSuccess(plan);
             else output().printRaw("Nothing to do — mandatory packages are already up to date.");
             return 0;
+        }
+        // Required children of optional packages drop out too; show what will run.
+        if (!output().isJsonMode()) {
+            output().printRaw("Installing mandatory packages only:");
+            printChanges(plan["changes"]);
         }
     }
 
@@ -402,6 +415,9 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
         output().printRaw(fmt::format("Removed: {}", fmt::join(removed, ", ")));
     if (!reloaded.empty())
         output().printRaw(fmt::format("Restarted: {}", fmt::join(reloaded, ", ")));
+    for (const auto& s : result.value("skipped_optional", LogosList::array()))
+        output().printRaw(fmt::format("Skipped optional {}: {}", s.value("name", std::string{}),
+                                      s.value("error", std::string{})));
     // Installing does not load — say so, or the next `call` failing is a
     // mystery. Name what the user asked for, not the first dependency that
     // happened to install ahead of it.

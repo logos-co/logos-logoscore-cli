@@ -10,6 +10,7 @@
 #include <logos_json_convert.h>
 
 #include <algorithm>
+#include <set>
 #include <cstdlib>
 #include <filesystem>
 #include <set>
@@ -491,9 +492,17 @@ LogosMap apply(LogosAPI* api, Op op,
             installedNow.push_back(name);
         }
     } else {
+        std::set<std::string> unchanged, optionalNames;
+        for (const auto& c : result["changes"]) {
+            const std::string name = c.value("name", std::string{});
+            if (c.value("action", std::string{}) == "installed") unchanged.insert(name);
+            if (c.value("optional", false)) optionalNames.insert(name);
+        }
         // Gate per top-level package: the module allows exactly one pending
         // operation globally, so a multi-package request has to be sequenced.
         for (const auto& name : names) {
+            // confirmUpgrade would uninstall a copy that nothing below reinstalls.
+            if (op == Op::Upgrade && unchanged.count(name)) continue;
             std::string e;
             if (!openGate(api, op, name, depChanges, &e))
                 return fail("request", e);
@@ -515,12 +524,16 @@ LogosMap apply(LogosAPI* api, Op op,
         // Download the same optional selection the plan resolved. Pin each
         // artifact so the installed set matches the reviewed plan.
         LogosList downloadInputs = LogosList::array();
+        std::set<std::string> planned;
         for (const auto& c : result["changes"]) {
             if (c.value("action", std::string{}) == "installed") continue;
-            downloadInputs.push_back(LogosMap{{"name", c.at("name")},
-                                              {"version", c.at("toVersion")},
-                                              {"repositoryUrl", c.at("repository")},
-                                              {"rootHash", c.at("rootHash")}});
+            LogosMap input{{"name", c.at("name")},
+                           {"version", c.at("toVersion")},
+                           {"repositoryUrl", c.at("repository")},
+                           {"rootHash", c.at("rootHash")}};
+            if (c.value("optional", false)) input["optional"] = true;
+            downloadInputs.push_back(input);
+            planned.insert(c.value("name", std::string{}));
         }
         nlohmann::json downloaded = call(api, kPd, "downloadResolvedDependencies",
                                          LogosList{downloadInputs.dump(),
@@ -532,22 +545,39 @@ LogosMap apply(LogosAPI* api, Op op,
             return fail("download",
                         withReason("package_downloader did not return a download set", why));
 
+        // A failed optional package is reported, not fatal: the required
+        // packages still install and stopped modules are still restarted.
+        LogosList skippedOptional = LogosList::array();
         for (const auto& d : downloaded) {
-            if (d.contains("error") && !d.value("error", std::string{}).empty())
-                return fail("download", d.value("name", std::string("?")) + ": "
+            const std::string name = d.value("name", std::string{});
+            if (d.contains("error") && !d.value("error", std::string{}).empty()) {
+                if (optionalNames.count(name)) {
+                    skippedOptional.push_back(LogosMap{{"name", name}, {"error", d.value("error", std::string{})}});
+                    continue;
+                }
+                return fail("download", (name.empty() ? std::string("?") : name) + ": "
                                         + d.value("error", std::string{}));
+            }
             const std::string path = d.value("path", std::string{});
             if (path.empty()) continue;   // already satisfied, nothing fetched
+            // The resolver may add transitive rows (e.g. with --no-deps); install only the plan.
+            if (!planned.count(name)) continue;
 
             std::string why;
             nlohmann::json ins = call(api, kPm, "installPlugin", LogosList{path, false}, &why);
             if (!ins.is_object() || !ins.value("error", std::string{}).empty()) {
-                return fail("install", d.value("name", std::string("?")) + ": "
-                    + (ins.is_object() ? ins.value("error", std::string("install failed"))
-                                       : withReason("package_manager did not respond", why)));
+                const std::string error = ins.is_object()
+                    ? ins.value("error", std::string("install failed"))
+                    : withReason("package_manager did not respond", why);
+                if (optionalNames.count(name)) {
+                    skippedOptional.push_back(LogosMap{{"name", name}, {"error", error}});
+                    continue;
+                }
+                return fail("install", (name.empty() ? std::string("?") : name) + ": " + error);
             }
-            installedNow.push_back(d.value("name", std::string{}));
+            installedNow.push_back(name);
         }
+        if (!skippedOptional.empty()) result["skipped_optional"] = skippedOptional;
     }
 
     // Make the new files discoverable without a restart. Without this the
