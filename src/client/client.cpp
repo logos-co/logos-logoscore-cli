@@ -10,15 +10,22 @@
 #include <logos_api.h>
 #include <logos_api_client.h>
 #include <logos_instance.h>
+#include <logos_json_convert.h>
+#include <logos_subscription_state.h>
 #include <logos_transport_config.h>
 #include <token_manager.h>
 
 #include <QCoreApplication>
+#include <QEventLoop>
+#include <QPointer>
+#include <QTimer>
 
 #include <fmt/format.h>
 #include <chrono>
 #include <cstdlib>
 #include <ctime>
+#include <memory>
+#include <optional>
 #include <thread>
 
 // ---------------------------------------------------------------------------
@@ -458,7 +465,8 @@ bool RpcClient::confirmDaemonStopped(long long pid, std::string& how)
 
 bool RpcClient::watchModuleEvents(const std::string& module,
                                    const std::string& eventName,
-                                   std::function<void(const LogosMap&)> callback)
+                                   std::function<void(const LogosMap&)> callback,
+                                   std::function<void(const std::string& reason)> onDaemonLost)
 {
     if (!m_connected)
         return false;
@@ -468,12 +476,28 @@ bool RpcClient::watchModuleEvents(const std::string& module,
     if (!subscribed.is_boolean() || !subscribed.get<bool>())
         return false;
 
-    LogosObject* obj = d->coreService->requestObject("core_service");
-    if (!obj)
-        return false;
+    // The daemon holds this watch, so a restarted one would not resume it:
+    // hold rather than re-arm, and report the loss once.
+    const QString core = QStringLiteral("core_service");
+    d->coreService->setSubscriptionRestartPolicy(core, LogosRestartPolicy::Manual);
+    auto lost = std::make_shared<bool>(false);
+    d->coreService->setSubscriptionStatusCallback(core,
+        [lost, onDaemonLost](LogosSubscriptionEvent ev, quint64, const QString& reason) {
+            if (ev == LogosSubscriptionEvent::Armed || *lost)
+                return;
+            *lost = true;
+            if (onDaemonLost)
+                onDaemonLost(reason.toStdString());
+        });
 
-    d->coreService->onEvent(obj, std::string("module_event"),
-        [module, callback](const std::string& /*event*/, const nlohmann::json& data) {
+    // Return only once armed, so an event fired after "Watching..." is delivered.
+    auto armed = std::make_shared<std::optional<bool>>();
+    QEventLoop waitArmed;
+    const quint64 id = d->coreService->onEventWhenAvailable(core, QStringLiteral("module_event"),
+        [module, callback](const QString& /*event*/, const QVariantList& args) {
+            nlohmann::json data = nlohmann::json::array();
+            for (const QVariant& v : args)
+                data.push_back(logos::qvariantToNlohmann(v));
             if (!data.is_array() || data.size() < 2)
                 return;
             if (!data[0].is_string() || data[0].get<std::string>() != module)
@@ -497,7 +521,21 @@ bool RpcClient::watchModuleEvents(const std::string& module,
                 eventData["arg" + std::to_string(i - 2)] = data[i];
             eventObj["data"] = eventData;
             callback(eventObj);
+        },
+        [armed, loop = QPointer<QEventLoop>(&waitArmed)](bool ok) {
+            *armed = ok;
+            if (loop)
+                loop->quit();
         });
-
+    if (id == 0)
+        return false;
+    if (!armed->has_value()) {
+        QTimer::singleShot(Timeout().ms, &waitArmed, &QEventLoop::quit);
+        waitArmed.exec();
+    }
+    if (!armed->value_or(false)) {
+        d->coreService->cancelEventSubscription(id);
+        return false;
+    }
     return true;
 }

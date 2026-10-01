@@ -267,7 +267,7 @@ Watch events from a loaded module.
 logosctl watch <module> [--event <name>]
 ```
 
-Streams events to stdout as they arrive. Without `--event`, streams all events from the module. Runs until interrupted (SIGINT / SIGTERM).
+Streams events to stdout as they arrive. Without `--event`, streams all events from the module. Runs until interrupted (SIGINT / SIGTERM), or until the daemon goes away, which it reports as `NO_DAEMON` with exit code 2.
 
 Reserved protocol event names are never delivered — not by name, and not through the
 no-filter form. `__logos_call_complete__`, which carries a deferred call's return value, is
@@ -1007,6 +1007,12 @@ $ logosctl watch chat --json
 {"timestamp":"2026-03-23T14:30:02Z","module":"chat","event":"user-joined","data":{"user":"bob"}}
 {"timestamp":"2026-03-23T14:30:05Z","module":"chat","event":"chat-message","data":{"from":"bob","text":"hi"}}
 {"timestamp":"2026-03-23T14:30:06Z","module":"chat","event":"typing","data":{"user":"alice"}}
+```
+
+If the daemon stops or dies, `watch` ends with a `NO_DAEMON` error and exit code 2:
+```
+$ logosctl watch chat --json
+{"code":"NO_DAEMON","message":"The daemon went away (provider_unavailable); stopped watching 'chat'.","status":"error"}
 ```
 
 ### `stats`

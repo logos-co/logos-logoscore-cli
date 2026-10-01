@@ -161,7 +161,7 @@ logoscore call blobstore put 'json:@blob.json'   # {"_bytes":"..."} from a file
 |------|---------|
 | `0` | Success |
 | `1` | General error / daemon not running (for `status`) |
-| `2` | No daemon running |
+| `2` | No daemon running (also how `watch` ends when its daemon stops) |
 | `3` | Module error (not found, load/unload failed) |
 | `4` | Method error (not found, call failed, timeout) |
 

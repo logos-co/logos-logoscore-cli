@@ -27,6 +27,11 @@ int WatchCommand::execute(const std::vector<std::string>& args)
     bool ok = client().watchModuleEvents(module, eventName,
         [this](const LogosMap& event) {
             output().printEvent(event);
+        },
+        [this, module](const std::string& reason) {
+            output().printError("NO_DAEMON",
+                fmt::format("The daemon went away ({}); stopped watching '{}'.", reason, module));
+            QCoreApplication::exit(2);
         });
 
     if (!ok) {
@@ -38,6 +43,5 @@ int WatchCommand::execute(const std::vector<std::string>& args)
     if (!output().isJsonMode())
         std::cerr << fmt::format("Watching events from '{}'... (Ctrl+C to stop)\n", module);
 
-    QCoreApplication::exec();
-    return 0;
+    return QCoreApplication::exec();
 }
