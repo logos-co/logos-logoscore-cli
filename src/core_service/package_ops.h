@@ -30,6 +30,8 @@ struct Backend {
     std::function<nlohmann::json(const char* module, const std::string& method,
                                  const LogosList& args, std::string* why)> call;
     std::function<std::vector<std::string>()> loadedModules;
+    // Every module that requires this one, transitively: what unloadModule takes down with it.
+    std::function<std::vector<std::string>(const std::string&)> dependents;
     std::function<void(const std::string&)> unloadModule;   // with dependents
     std::function<bool(const std::string&)> loadModule;
     std::function<void()> refreshModules;
@@ -55,11 +57,13 @@ struct Options {
 
 // What the operation would do, without doing any of it. Shape:
 //   { status, op, changes: [{name, action, fromVersion, toVersion, repository}],
-//     affected_loaded: [names], errors: [...] }
+//     affected_loaded: [names], stopped_dependents: [names], errors: [...] }
 //
 // `action` is one of install | installed | reinstall | upgrade, the same
 // classification basecamp's confirmation dialog shows. `affected_loaded` is
 // the set of currently-loaded modules the operation will stop and restart.
+// `stopped_dependents` are running modules that depend on one of those: they
+// are stopped with it and NOT restarted.
 LogosMap plan(LogosAPI* api, Op op,
               const std::vector<std::string>& names,
               const Options& opts);
@@ -72,8 +76,8 @@ LogosMap plan(Backend& backend, Op op,
 //     reloaded: [...], failed_step?, error? }
 //
 // Newly installed packages are deliberately NOT loaded — installing puts
-// files on disk, loading is a separate explicit act. Only modules that were
-// already running before the operation are restarted afterwards.
+// files on disk, loading is a separate explicit act. Only the affected
+// modules that were running are restarted; their stopped dependents are not.
 LogosMap apply(LogosAPI* api, Op op,
                const std::vector<std::string>& names,
                const Options& opts);

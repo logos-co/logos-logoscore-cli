@@ -1599,6 +1599,35 @@ TEST_F(CommandTest, PackageInstallCanSelectOnlyMandatoryPackages) {
     EXPECT_TRUE(mockClient.lastPackageOpts.value("withDeps", false));
 }
 
+// Reinstalling a running module also stops what depends on it; the plan and the
+// result must name those, since nothing restarts them.
+TEST_F(CommandTest, PackageInstallNamesTheRunningDependentsItStops) {
+    LogosMap plan{{"status", "ok"},
+        {"changes", LogosList::array({LogosMap{{"name", "calc_slow"}, {"action", "reinstall"},
+                                               {"fromVersion", "1.0.0"}, {"toVersion", "1.0.0"}}})},
+        {"affected_loaded", LogosList::array({"calc_slow"})},
+        {"stopped_dependents", LogosList::array({"calc_fanout"})}};
+    mockClient.planPackageResult = plan;
+    LogosMap result = plan;
+    result["installed"] = LogosList::array({"calc_slow"});
+    result["reloaded"] = LogosList::array({"calc_slow"});
+    mockClient.applyPackageResult = result;
+    Output humanOutput;
+    humanOutput.setHumanMode(true);
+
+    auto cmd = createCommand("package", mockClient, humanOutput);
+    const std::string out = captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"install", "calc_slow", "-y"}), 0);
+    });
+
+    EXPECT_NE(out.find("will be stopped and restarted: calc_slow"), std::string::npos) << out;
+    EXPECT_NE(out.find("will be stopped, not restarted: calc_fanout"), std::string::npos) << out;
+    EXPECT_NE(out.find("Stopped, not restarted: calc_fanout"), std::string::npos) << out;
+    EXPECT_NE(out.find("logosctl module load calc_fanout"), std::string::npos) << out;
+    EXPECT_EQ(out.find("Load with: logosctl module load calc_slow"), std::string::npos)
+        << "calc_slow was restarted; a load hint for it is noise\n" << out;
+}
+
 TEST_F(CommandTest, ModuleLoadCanSkipOptionalDependencies) {
     mockClient.loadModuleResult = LogosMap{{"status", "ok"}, {"module", "chat"}, {"version", "1.0.0"}};
     auto cmd = createCommand("load-module", mockClient, output);

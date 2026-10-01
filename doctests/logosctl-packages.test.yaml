@@ -20,7 +20,8 @@ intro: |
     a package without starting it.
   - **The daemon does not need restarting.** After an install it re-scans, so a
     freshly installed module is loadable immediately. Only modules that were
-    *already running* and had to be stopped get restarted.
+    *already running* and had to be stopped get restarted; running modules
+    that depend on them are stopped too, and left stopped.
 
   This doc-test runs against the **live** module catalog, so it needs network
   access.

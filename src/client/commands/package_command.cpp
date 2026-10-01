@@ -70,6 +70,15 @@ InstallChoice confirmInstall()
     return package_confirmation::parse(line);
 }
 
+std::vector<std::string> namesOf(const nlohmann::json& arr)
+{
+    std::vector<std::string> v;
+    if (arr.is_array())
+        for (const auto& e : arr)
+            if (e.is_string()) v.push_back(e.get<std::string>());
+    return v;
+}
+
 const char* actionVerb(const std::string& action)
 {
     if (action == "install")   return "install";
@@ -366,6 +375,14 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
                     : "These running modules will be stopped and restarted: {}",
                 fmt::join(a, ", ")));
         }
+        const auto dependents = namesOf(plan.value("stopped_dependents", LogosList::array()));
+        if (!dependents.empty()) {
+            output().printRaw(fmt::format(
+                op == "remove"
+                    ? "These running modules depend on them and will be stopped too: {}"
+                    : "These running modules depend on them and will be stopped, not restarted: {}",
+                fmt::join(dependents, ", ")));
+        }
     }
 
     if (dryRun) {
@@ -437,14 +454,10 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
         return 0;
     }
 
-    auto names_of = [](const nlohmann::json& arr) {
-        std::vector<std::string> v;
-        if (arr.is_array()) for (const auto& e : arr) v.push_back(e.get<std::string>());
-        return v;
-    };
-    const auto installed = names_of(result.value("installed", LogosList::array()));
-    const auto removed   = names_of(result.value("removed",   LogosList::array()));
-    const auto reloaded  = names_of(result.value("reloaded",  LogosList::array()));
+    const auto installed = namesOf(result.value("installed", LogosList::array()));
+    const auto removed   = namesOf(result.value("removed",   LogosList::array()));
+    const auto reloaded  = namesOf(result.value("reloaded",  LogosList::array()));
+    const auto stopped   = namesOf(result.value("stopped_dependents", LogosList::array()));
 
     if (!installed.empty())
         output().printRaw(fmt::format("Installed: {}", fmt::join(installed, ", ")));
@@ -452,6 +465,11 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
         output().printRaw(fmt::format("Removed: {}", fmt::join(removed, ", ")));
     if (!reloaded.empty())
         output().printRaw(fmt::format("Restarted: {}", fmt::join(reloaded, ", ")));
+    if (!stopped.empty()) {
+        output().printRaw(fmt::format("Stopped, not restarted: {}", fmt::join(stopped, ", ")));
+        for (const auto& m : stopped)
+            output().printRaw(fmt::format("Load it again with: logosctl module load {}", m));
+    }
     for (const auto& s : result.value("skipped_optional", LogosList::array()))
         output().printRaw(fmt::format("Skipped optional {}: {}", s.value("name", std::string{}),
                                       s.value("error", std::string{})));
@@ -460,7 +478,9 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
     // happened to install ahead of it.
     if (!installed.empty()) {
         const std::string hint = names.empty() ? installed.front() : names.front();
-        output().printRaw(fmt::format("Load with: logosctl module load {}", hint));
+        // A restarted module is already running.
+        if (std::find(reloaded.begin(), reloaded.end(), hint) == reloaded.end())
+            output().printRaw(fmt::format("Load with: logosctl module load {}", hint));
     }
     return 0;
 }

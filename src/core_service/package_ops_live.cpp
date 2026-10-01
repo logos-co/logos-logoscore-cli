@@ -47,6 +47,17 @@ Backend liveBackend(LogosAPI* api)
         delete[] mods;
         return out;
     };
+    b.dependents = [](const std::string& m) {
+        std::vector<std::string> out;
+        char** deps = logos_core_get_module_dependents(m.c_str(), /*recursive=*/true);
+        if (!deps) return out;
+        for (int i = 0; deps[i]; ++i) {
+            out.emplace_back(deps[i]);
+            delete[] deps[i];
+        }
+        delete[] deps;
+        return out;
+    };
     b.unloadModule = [](const std::string& m) {
         logos_core_unload_module(m.c_str(), /*with_dependents=*/true);
     };

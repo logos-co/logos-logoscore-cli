@@ -16,6 +16,7 @@ struct FakeModules {
     std::set<std::string> failDownload, failInstall;
     json extraDownloads = json::array();               // rows the resolver adds on download
     std::vector<std::string> loaded;
+    std::map<std::string, std::vector<std::string>> dependentsOf;   // transitive
 
     std::vector<std::string> methods;                  // every call, in order
     std::vector<std::string> confirmedUpgrades, installedPaths, unloaded, reloaded;
@@ -52,6 +53,10 @@ struct FakeModules {
             return json{{"success", true}};   // request*/ack/confirm*/cancel*
         };
         b.loadedModules = [this] { return loaded; };
+        b.dependents = [this](const std::string& m) {
+            auto it = dependentsOf.find(m);
+            return it == dependentsOf.end() ? std::vector<std::string>{} : it->second;
+        };
         b.unloadModule = [this](const std::string& m) { unloaded.push_back(m); };
         b.loadModule = [this](const std::string& m) { reloaded.push_back(m); return true; };
         b.refreshModules = [this] { ++refreshes; };
@@ -158,6 +163,39 @@ TEST(PackageOpsApply, FailedOptionalDownloadIsSkippedAndModulesAreRestored)
     EXPECT_EQ(names(result["skipped_optional"]), std::vector<std::string>{"O"});
     EXPECT_EQ(pm.refreshes, 1);
     EXPECT_EQ(pm.reloaded, std::vector<std::string>{"L"});
+}
+
+// logos-tutorial's concurrent-dispatch: reinstalling a running worker unloads
+// its running driver too. The plan must say so, and only the worker restarts.
+TEST(PackageOpsApply, ReplacingARunningModuleStopsItsRunningDependentsAndReportsThem)
+{
+    FakeModules pm;
+    pm.installed = json::array({installedRow("W", "1.0.0"), installedRow("D", "1.0.0")});
+    pm.loaded = {"W", "D", "X"};
+    pm.dependentsOf = {{"W", {"D", "N"}}};   // N needs W too, but is not running
+    pm.resolve = [](const json&) { return json::array({row("W", "2.0.0", true)}); };
+    auto backend = pm.backend();
+
+    const auto plan = package_ops::plan(backend, Op::Upgrade, {"W"}, {});
+    EXPECT_EQ(names(plan["affected_loaded"]), std::vector<std::string>{"W"});
+    EXPECT_EQ(names(plan["stopped_dependents"]), std::vector<std::string>{"D"});
+
+    const auto result = package_ops::apply(backend, Op::Upgrade, {"W"}, {});
+    ASSERT_EQ(result.value("status", ""), "ok") << result.dump();
+    EXPECT_EQ(names(result["stopped_dependents"]), std::vector<std::string>{"D"});
+    EXPECT_EQ(pm.reloaded, std::vector<std::string>{"W"});
+}
+
+TEST(PackageOpsPlan, NoRunningDependentsMeansAnEmptyList)
+{
+    FakeModules pm;
+    pm.installed = json::array({installedRow("W", "1.0.0")});
+    pm.loaded = {"W"};
+    pm.resolve = [](const json&) { return json::array({row("W", "2.0.0", true)}); };
+    auto backend = pm.backend();
+    const auto plan = package_ops::plan(backend, Op::Upgrade, {"W"}, {});
+    ASSERT_TRUE(plan["stopped_dependents"].is_array());
+    EXPECT_TRUE(plan["stopped_dependents"].empty());
 }
 
 TEST(PackageOpsApply, FailedOptionalInstallIsSkipped)
