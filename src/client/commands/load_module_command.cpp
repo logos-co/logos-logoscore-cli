@@ -9,10 +9,12 @@ int LoadModuleCommand::execute(const std::vector<std::string>& args)
     cli.set_help_flag();
     std::string name;
     cli.add_option("name", name, "Module name")->required();
+    bool noOptional = false;
+    cli.add_flag("--no-optional", noOptional, "Load required dependencies only, not optional ones");
     try {
         parseArgs(cli, args);
     } catch (const CLI::ParseError&) {
-        output().printError("INVALID_ARGS", "Usage: logosctl module load <name>");
+        output().printError("INVALID_ARGS", "Usage: logosctl module load <name> [--no-optional]");
         return 1;
     }
 
@@ -20,7 +22,7 @@ int LoadModuleCommand::execute(const std::vector<std::string>& args)
     if (err != 0)
         return err;
 
-    LogosMap result = client().loadModule(name);
+    LogosMap result = client().loadModule(name, !noOptional);
 
     std::string status = result.value("status", std::string{});
     if (status == "error") {

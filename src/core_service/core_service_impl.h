@@ -14,7 +14,7 @@ public:
     std::function<void(const std::string& eventName, const std::string& data)> emitEvent;
 
     // Module lifecycle
-    StdLogosResult loadModule(const std::string& name);
+    StdLogosResult loadModule(const std::string& name, bool withOptional = true);
     // `withDependents` cascades the unload to every module that depends on
     // `name`, leaves-first. It defaults to true at the CLI layer: unloading a
     // module while its dependents keep running leaves them talking to a dead

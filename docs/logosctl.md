@@ -307,7 +307,7 @@ logosctl client config show
 # Modules — what is running right now
 logosctl module ls [--loaded]        # list known / loaded modules
 logosctl module show NAME            # methods, events, deps, crash detail
-logosctl module load NAME            # + dependencies, always (no opt-out)
+logosctl module load NAME [--no-optional]  # + dependencies; optional ones unless --no-optional
 logosctl module unload NAME          # + dependents  (--no-dependents to opt out)
 logosctl module reload NAME
 logosctl module stats                # per-module CPU / memory
@@ -383,7 +383,9 @@ some tools do:
   alone and leaving its dependents in place.
 - **`module load` always resolves dependencies.** There is no `--no-deps` on
   it — that flag exists only on `package install` / `package upgrade`, which
-  are about files on disk, not about what is running.
+  are about files on disk, not about what is running. Installed optional
+  dependencies load too, best effort; `--no-optional` loads the required ones
+  only.
 - **An argument ending in `.lgx` is a path, not a name.** `install` and
   `upgrade` read it as a file on disk and skip the catalog entirely, so a
   local package installs with no catalog configured and no network. `--file`
