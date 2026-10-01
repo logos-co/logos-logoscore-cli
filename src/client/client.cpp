@@ -207,9 +207,9 @@ std::string RpcClient::lastError() const
 // Module lifecycle — delegate to core_service
 // ---------------------------------------------------------------------------
 
-LogosMap RpcClient::loadModule(const std::string& name)
+LogosMap RpcClient::loadModule(const std::string& name, bool withOptional)
 {
-    nlohmann::json ret = d->invoke("loadModule", nlohmann::json::array({name}));
+    nlohmann::json ret = d->invoke("loadModule", nlohmann::json::array({name, withOptional}));
     if (ret.is_object()) return ret;
     return LogosMap{{"status","error"},{"code","RPC_FAILED"},
                     {"message", fmt::format("loadModule('{}') RPC call failed.", name)}};

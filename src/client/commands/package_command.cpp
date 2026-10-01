@@ -23,6 +23,16 @@ package_confirmation::Choice package_confirmation::parse(const std::string& inpu
     return Choice::Cancel;
 }
 
+std::string package_confirmation::optionalNote(const nlohmann::json& c)
+{
+    if (c.value("optional", false)) return " (optional)";
+    std::vector<std::string> roots;
+    for (const auto& r : c.value("requiredFor", nlohmann::json::array()))
+        if (r.is_string()) roots.push_back(r.get<std::string>());
+    return roots.empty() ? std::string{}
+                         : fmt::format(" (optional, required by {})", fmt::join(roots, ", "));
+}
+
 namespace {
 
 constexpr const char* kPm = "package_manager";
@@ -54,7 +64,7 @@ using InstallChoice = package_confirmation::Choice;
 InstallChoice confirmInstall()
 {
     if (!isatty(STDIN_FILENO)) return InstallChoice::Cancel;
-    std::cout << "Proceed? [all/only mandatory/n] (default: all) " << std::flush;
+    std::cout << "Proceed? [A]ll / only [M]andatory / [N]o (default: All) " << std::flush;
     std::string line;
     if (!std::getline(std::cin, line)) return InstallChoice::Cancel;
     return package_confirmation::parse(line);
@@ -284,9 +294,35 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
     for (const auto& c : changes)
         if (c.value("action", std::string{}) != "installed") anyChange = true;
 
+    // Optional packages the change table does not show: kept, not selected, or unavailable.
+    auto printOptionalPackages = [&](const nlohmann::json& rows) {
+        std::vector<nlohmann::json> rest;
+        if (rows.is_array())
+            for (const auto& o : rows) {
+                const std::string status = o.value("status", std::string{});
+                if (status == "installed" || status == "not selected" || status == "unavailable") rest.push_back(o);
+            }
+        if (rest.empty()) return;
+        output().printRaw("Optional packages not changed:");
+        for (const auto& o : rest) {
+            const std::string status = o.value("status", std::string{});
+            const std::string name = o.value("name", std::string{});
+            const std::string version = o.value("version", std::string{});
+            std::string detail;
+            if (status == "unavailable") detail = ": " + o.value("error", std::string{});
+            else if (status == "not selected")
+                detail = fmt::format(" — `logosctl package install {}` to add it", name);
+            output().printRaw(fmt::format("  {:<12} {}{}{}", status,
+                name, version.empty() || status == "unavailable" ? "" : " " + version, detail));
+        }
+    };
+
     if (!anyChange) {
         if (output().isJsonMode()) output().printSuccess(plan);
-        else output().printRaw("Nothing to do — already up to date.");
+        else {
+            output().printRaw("Nothing to do — already up to date.");
+            printOptionalPackages(plan["optional_packages"]);
+        }
         return 0;
     }
 
@@ -295,9 +331,8 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
         return 0;
     }
 
-    if (!output().isJsonMode()) {
-        output().printRaw(fmt::format("The following changes will be made ({}):", op));
-        for (const auto& c : changes) {
+    auto printChanges = [&](const nlohmann::json& rows) {
+        for (const auto& c : rows) {
             const std::string action = c.value("action", std::string{});
             if (action == "installed") continue;
             const std::string from = c.value("fromVersion", std::string{});
@@ -308,8 +343,17 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
                 to.empty() ? (from.empty() ? "" : fmt::format(" ({})", from))
                            : (from.empty() ? fmt::format(" {}", to)
                                            : fmt::format(" {} -> {}", from, to)),
-                c.value("optional", false) ? " (optional)" : ""));
+                package_confirmation::optionalNote(c)));
         }
+    };
+    bool anyOptional = false;
+    for (const auto& c : changes)
+        if (c.value("optional", false) && c.value("action", std::string{}) != "installed") anyOptional = true;
+
+    if (!output().isJsonMode()) {
+        output().printRaw(fmt::format("The following changes will be made ({}):", op));
+        printChanges(changes);
+        printOptionalPackages(plan["optional_packages"]);
         const auto& affected = plan["affected_loaded"];
         if (affected.is_array() && !affected.empty()) {
             std::vector<std::string> a;
@@ -331,7 +375,8 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
 
     InstallChoice choice = InstallChoice::All;
     if (!yes) {
-        choice = op == "remove" || !localFiles.empty()
+        // The three-way prompt (Enter = all) only when there is an optional choice to make.
+        choice = !anyOptional
             ? (confirm("Proceed?") ? InstallChoice::All : InstallChoice::Cancel)
             : confirmInstall();
     }
@@ -357,6 +402,11 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
             if (output().isJsonMode()) output().printSuccess(plan);
             else output().printRaw("Nothing to do — mandatory packages are already up to date.");
             return 0;
+        }
+        // Required children of optional packages drop out too; show what will run.
+        if (!output().isJsonMode()) {
+            output().printRaw("Installing mandatory packages only:");
+            printChanges(plan["changes"]);
         }
     }
 
@@ -402,6 +452,9 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
         output().printRaw(fmt::format("Removed: {}", fmt::join(removed, ", ")));
     if (!reloaded.empty())
         output().printRaw(fmt::format("Restarted: {}", fmt::join(reloaded, ", ")));
+    for (const auto& s : result.value("skipped_optional", LogosList::array()))
+        output().printRaw(fmt::format("Skipped optional {}: {}", s.value("name", std::string{}),
+                                      s.value("error", std::string{})));
     // Installing does not load — say so, or the next `call` failing is a
     // mystery. Name what the user asked for, not the first dependency that
     // happened to install ahead of it.

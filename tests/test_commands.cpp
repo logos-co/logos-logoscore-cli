@@ -66,6 +66,7 @@ public:
     std::string lastDownloadName;
     LogosMap    lastDownloadOpts;
     std::string lastLoadedModule;
+    bool lastLoadWithOptional = true;
     std::string lastUnloadedModule;
     // Defaults to true so a test that never sets --no-dependents still sees
     // the production default rather than a value-initialised false.
@@ -90,9 +91,10 @@ public:
     bool isConnected() const override { return m_connected; }
     std::string lastError() const override { return m_lastError; }
 
-    LogosMap loadModule(const std::string& name) override {
+    LogosMap loadModule(const std::string& name, bool withOptional = true) override {
         ++rpcCalls;
         lastLoadedModule = name;
+        lastLoadWithOptional = withOptional;
         return loadModuleResult;
     }
 
@@ -1595,6 +1597,24 @@ TEST_F(CommandTest, PackageInstallCanSelectOnlyMandatoryPackages) {
     captureOutput([&]() { EXPECT_EQ(cmd->execute({"install", "delivery_module", "-y", "--no-optional"}), 0); });
     EXPECT_FALSE(mockClient.lastPackageOpts.value("withOptional", true));
     EXPECT_TRUE(mockClient.lastPackageOpts.value("withDeps", false));
+}
+
+TEST_F(CommandTest, ModuleLoadCanSkipOptionalDependencies) {
+    mockClient.loadModuleResult = LogosMap{{"status", "ok"}, {"module", "chat"}, {"version", "1.0.0"}};
+    auto cmd = createCommand("load-module", mockClient, output);
+    captureOutput([&]() { EXPECT_EQ(cmd->execute({"chat"}), 0); });
+    EXPECT_TRUE(mockClient.lastLoadWithOptional);
+    captureOutput([&]() { EXPECT_EQ(cmd->execute({"chat", "--no-optional"}), 0); });
+    EXPECT_EQ(mockClient.lastLoadedModule, "chat");
+    EXPECT_FALSE(mockClient.lastLoadWithOptional);
+}
+
+TEST(PackageConfirmation, LabelsPackagesThatComeOnlyWithAnOptional) {
+    using package_confirmation::optionalNote;
+    EXPECT_EQ(optionalNote(LogosMap{{"name", "rln"}, {"optional", true}}), " (optional)");
+    EXPECT_EQ(optionalNote(LogosMap{{"name", "lez_rln"}, {"requiredFor", LogosList::array({"rln"})}}),
+              " (optional, required by rln)");
+    EXPECT_EQ(optionalNote(LogosMap{{"name", "delivery_module"}}), "");
 }
 
 TEST_F(CommandTest, PackageInstallNoDepsAlsoDisablesOptionals) {

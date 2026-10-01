@@ -112,7 +112,7 @@ std::string CoreServiceImpl::getModuleVersion(const std::string& name)
 // Module lifecycle
 // ---------------------------------------------------------------------------
 
-StdLogosResult CoreServiceImpl::loadModule(const std::string& name)
+StdLogosResult CoreServiceImpl::loadModule(const std::string& name, bool withOptional)
 {
     // Snapshot the loaded set before the call so we can report which
     // *dependencies* this load brought up as a side effect.
@@ -122,7 +122,8 @@ StdLogosResult CoreServiceImpl::loadModule(const std::string& name)
     // itself — was auto-resolved on its behalf.
     std::vector<std::string> before = getLoadedModuleNames();
 
-    bool ok = logos_core_load_module(name.c_str(), LOGOS_LOAD_REQUIRED_AND_OPTIONAL);
+    bool ok = logos_core_load_module(name.c_str(), withOptional ? LOGOS_LOAD_REQUIRED_AND_OPTIONAL
+                                                                : LOGOS_LOAD_REQUIRED_DEPS);
     if (!ok) {
         LogosMap errResult;
         errResult["status"] = "error";

@@ -1,15 +1,9 @@
 #include "package_ops.h"
 #include "optional_dependency_closure.h"
 #include "config.h"
-#include "logos_core.h"
-#include "rpc_deadlines.h"
-
-#include <logos_api.h>
-#include <logos_api_client.h>
-#include <logos_call_error.h>
-#include <logos_json_convert.h>
 
 #include <algorithm>
+#include <map>
 #include <cstdlib>
 #include <filesystem>
 #include <set>
@@ -28,31 +22,11 @@ LogosMap err(const std::string& code, const std::string& message)
     return LogosMap{{"status", "error"}, {"code", code}, {"message", message}};
 }
 
-// Thin call helper. Returns a null json when the call itself failed — module
-// unreachable, transport error, deadline — which every caller treats as a hard
-// failure; `why` receives the transport's reason. The deadline is per method
-// (rpc_deadlines.h): the package modules do the whole download or archive walk
-// inside the call, and the transport default is 20 s.
-nlohmann::json call(LogosAPI* api, const char* module, const std::string& method,
+nlohmann::json call(Backend& api, const char* module, const std::string& method,
                     const LogosList& args = LogosList::array(),
                     std::string* why = nullptr)
 {
-    if (!api) return nullptr;
-    LogosAPIClient* client = api->getClient(module);
-    if (!client) {
-        if (why) *why = std::string(module) + " is not reachable";
-        return nullptr;
-    }
-    logos::CallError err;
-    const QVariant ret = client->invokeRemoteMethod(
-        QString::fromStdString(module), QString::fromStdString(method),
-        logos::nlohmannArgsToQVariantList(args),
-        rpc_deadlines::forPackageCall(method), &err);
-    if (!err.ok()) {
-        if (why) *why = err.message;
-        return nullptr;
-    }
-    return logos::qvariantToNlohmann(ret);
+    return api.call(module, method, args, why);
 }
 
 std::string withReason(const std::string& base, const std::string& why)
@@ -76,20 +50,7 @@ bool ok(const nlohmann::json& r, std::string* errorOut = nullptr)
     return false;
 }
 
-std::vector<std::string> loadedModules()
-{
-    std::vector<std::string> out;
-    char** mods = logos_core_get_loaded_modules();
-    if (!mods) return out;
-    for (int i = 0; mods[i]; ++i) {
-        out.emplace_back(mods[i]);
-        delete[] mods[i];
-    }
-    delete[] mods;
-    return out;
-}
-
-LogosList installedPackages(LogosAPI* api)
+LogosList installedPackages(Backend& api)
 {
     nlohmann::json r = call(api, kPm, "getInstalledPackages");
     return r.is_array() ? r : LogosList::array();
@@ -129,14 +90,45 @@ std::string dependenciesJson(const std::vector<std::string>& names,
     return deps.dump();
 }
 
-LogosList optionalOffers(const nlohmann::json& resolved)
+// Every optional package once, with what the plan does with it: the change
+// action (install, upgrade, ...), "installed" (kept as it is), "not selected",
+// or "unavailable" with the reason. An available offer wins over an unavailable one.
+LogosList optionalPackages(const nlohmann::json& resolved, const LogosList& changes)
 {
-    LogosList offers = LogosList::array();
-    if (resolved.is_array())
-        for (const auto& entry : resolved)
-            for (const auto& offer : entry.value("optionalDependencies", LogosList::array()))
-                offers.push_back(offer);
-    return offers;
+    std::map<std::string, std::string> changed;
+    for (const auto& c : changes)
+        if (c.value("optional", false))
+            changed[c.value("name", std::string{})] = c.value("action", std::string{});
+    std::map<std::string, LogosMap> byName;
+    if (resolved.is_array()) {
+        for (const auto& entry : resolved) {
+            for (const auto& offer : entry.value("optionalDependencies", LogosList::array())) {
+                const std::string name = offer.value("name", std::string{});
+                const std::string version = offer.value("version", std::string{});
+                LogosMap row{{"name", name}, {"version", version},
+                             {"requiredBy", offer.value("requiredBy", std::string{})}};
+                if (offer.contains("installedVersion")) row["installedVersion"] = offer["installedVersion"];
+                if (offer.contains("error")) {
+                    row["status"] = "unavailable";
+                    row["error"] = offer["error"];
+                } else if (changed.count(name)) {
+                    row["status"] = changed[name];
+                } else if (offer.contains("installedVersion")
+                           && offer.value("installedVersion", std::string{}) == version) {
+                    row["status"] = "installed";
+                } else {
+                    row["status"] = "not selected";
+                }
+                auto it = byName.find(name);
+                if (it == byName.end()
+                    || (it->second.value("status", std::string{}) == "unavailable" && !offer.contains("error")))
+                    byName[name] = row;
+            }
+        }
+    }
+    LogosList out = LogosList::array();
+    for (auto& [name, row] : byName) out.push_back(row);
+    return out;
 }
 
 // Same classification basecamp's confirmation dialog uses
@@ -175,9 +167,9 @@ std::map<std::string, InstalledInfo> byName(const LogosList& installed)
 
 // Which of `affected` are running right now. These get stopped before the
 // files move and restarted afterwards; everything else is untouched.
-std::vector<std::string> affectedLoaded(const std::vector<std::string>& affected)
+std::vector<std::string> affectedLoaded(Backend& api, const std::vector<std::string>& affected)
 {
-    const auto loaded = loadedModules();
+    const auto loaded = api.loadedModules();
     const std::unordered_set<std::string> loadedSet(loaded.begin(), loaded.end());
     std::vector<std::string> out;
     for (const auto& n : affected)
@@ -187,7 +179,7 @@ std::vector<std::string> affectedLoaded(const std::vector<std::string>& affected
 
 // Resolve the install/upgrade closure. Returns the resolver's array, or a
 // null json on failure.
-nlohmann::json resolveClosure(LogosAPI* api,
+nlohmann::json resolveClosure(Backend& api,
                               const std::vector<std::string>& names,
                               const Options& opts,
                               const LogosList& installed,
@@ -206,15 +198,20 @@ nlohmann::json resolveClosure(LogosAPI* api,
         return filtered;
     }
     const std::string installedJson = installedPackagesJson(installed);
+    // Like Basecamp for an installed app: optionals it does not have stay unselected.
+    bool anyNamedInstalled = false;
+    for (const auto& p : installed)
+        if (std::find(names.begin(), names.end(), p.value("name", std::string{})) != names.end())
+            anyNamedInstalled = true;
     return resolveOptionalClosure(LogosList::parse(dependenciesJson(names, opts)), opts.withOptional,
         [&](const nlohmann::json& inputs) {
             return call(api, kPd, "resolveDependencies", LogosList{inputs.dump(), installedJson}, why);
-        });
+        }, !anyNamedInstalled);
 }
 
 // The cascade set for a removal: the package plus everything that depends on
 // it, dependents first so nothing is removed while something still needs it.
-std::vector<std::string> removalSet(LogosAPI* api, const std::string& name,
+std::vector<std::string> removalSet(Backend& api, const std::string& name,
                                     bool withDependents, std::string* errorOut)
 {
     if (!withDependents) return {name};
@@ -241,7 +238,7 @@ std::vector<std::string> removalSet(LogosAPI* api, const std::string& name,
 // plan
 // ---------------------------------------------------------------------------
 
-LogosMap plan(LogosAPI* api, Op op,
+LogosMap plan(Backend& api, Op op,
               const std::vector<std::string>& names,
               const Options& opts)
 {
@@ -335,18 +332,19 @@ LogosMap plan(LogosAPI* api, Op op,
                     {"repository", e.value("repositoryUrl", std::string{})},
                     {"rootHash", rh},
                     {"optional", e.value("optional", false)},
+                    {"requiredFor", e.value("requiredFor", LogosList::array())},
                     {"topLevel", e.value("topLevel", false)},
                 });
                 // A package already at the resolved version isn't touched, so
                 // it doesn't need stopping and restarting.
                 if (action != "installed") affected.push_back(n);
             }
-            out["optional_dependencies"] = optionalOffers(resolved);
+            out["optional_packages"] = optionalPackages(resolved, changes);
         }
     }
 
     out["changes"] = changes;
-    out["affected_loaded"] = affectedLoaded(affected);
+    out["affected_loaded"] = affectedLoaded(api, affected);
     return out;
 }
 
@@ -360,7 +358,7 @@ namespace {
 // ack timer inside requestX and cancels the whole operation if nothing
 // acknowledges; in-process that window is never at risk, but the ack is still
 // required — confirmX refuses an un-acked pending action.
-bool openGate(LogosAPI* api, Op op, const std::string& name,
+bool openGate(Backend& api, Op op, const std::string& name,
               const std::string& depChangesJson, std::string* errorOut)
 {
     nlohmann::json r;
@@ -384,7 +382,7 @@ bool openGate(LogosAPI* api, Op op, const std::string& name,
     return true;
 }
 
-void closeGate(LogosAPI* api, Op op, const std::string& name)
+void closeGate(Backend& api, Op op, const std::string& name)
 {
     switch (op) {
     case Op::Install: call(api, kPm, "cancelInstall",   LogosList{name}); break;
@@ -395,7 +393,7 @@ void closeGate(LogosAPI* api, Op op, const std::string& name)
 
 } // namespace
 
-LogosMap apply(LogosAPI* api, Op op,
+LogosMap apply(Backend& api, Op op,
                const std::vector<std::string>& names,
                const Options& opts)
 {
@@ -449,12 +447,12 @@ LogosMap apply(LogosAPI* api, Op op,
         // Stop them before their files disappear, dependents first — which is
         // the order `victims` is already in.
         for (const auto& v : victims)
-            logos_core_unload_module(v.c_str(), /*with_dependents=*/true);
+            api.unloadModule(v);
 
         nlohmann::json confirmR = call(api, kPm, "confirmMultiUninstall", victimArgs);
         if (!ok(confirmR, &e)) return fail("confirm", e);
 
-        logos_core_refresh_modules();
+        api.refreshModules();
         result["removed"] = victims;
         // Nothing to restore: every affected module was just removed.
         result["reloaded"] = LogosList::array();
@@ -474,7 +472,7 @@ LogosMap apply(LogosAPI* api, Op op,
                 return fail("request", e);
 
             for (const auto& m : toRestore)
-                logos_core_unload_module(m.c_str(), /*with_dependents=*/true);
+                api.unloadModule(m);
 
             nlohmann::json confirmR = (op == Op::Upgrade)
                 ? call(api, kPm, "confirmUpgrade", LogosList{name, std::string{}})
@@ -491,15 +489,23 @@ LogosMap apply(LogosAPI* api, Op op,
             installedNow.push_back(name);
         }
     } else {
+        std::set<std::string> unchanged, optionalNames;
+        for (const auto& c : result["changes"]) {
+            const std::string name = c.value("name", std::string{});
+            if (c.value("action", std::string{}) == "installed") unchanged.insert(name);
+            if (c.value("optional", false)) optionalNames.insert(name);
+        }
         // Gate per top-level package: the module allows exactly one pending
         // operation globally, so a multi-package request has to be sequenced.
         for (const auto& name : names) {
+            // confirmUpgrade would uninstall a copy that nothing below reinstalls.
+            if (op == Op::Upgrade && unchanged.count(name)) continue;
             std::string e;
             if (!openGate(api, op, name, depChanges, &e))
                 return fail("request", e);
 
             for (const auto& m : toRestore)
-                logos_core_unload_module(m.c_str(), /*with_dependents=*/true);
+                api.unloadModule(m);
 
             // confirmUpgrade removes a user-installed copy in-module, but
             // leaves an embedded copy intact. The download+install below
@@ -515,12 +521,16 @@ LogosMap apply(LogosAPI* api, Op op,
         // Download the same optional selection the plan resolved. Pin each
         // artifact so the installed set matches the reviewed plan.
         LogosList downloadInputs = LogosList::array();
+        std::set<std::string> planned;
         for (const auto& c : result["changes"]) {
             if (c.value("action", std::string{}) == "installed") continue;
-            downloadInputs.push_back(LogosMap{{"name", c.at("name")},
-                                              {"version", c.at("toVersion")},
-                                              {"repositoryUrl", c.at("repository")},
-                                              {"rootHash", c.at("rootHash")}});
+            LogosMap input{{"name", c.at("name")},
+                           {"version", c.at("toVersion")},
+                           {"repositoryUrl", c.at("repository")},
+                           {"rootHash", c.at("rootHash")}};
+            if (c.value("optional", false)) input["optional"] = true;
+            downloadInputs.push_back(input);
+            planned.insert(c.value("name", std::string{}));
         }
         nlohmann::json downloaded = call(api, kPd, "downloadResolvedDependencies",
                                          LogosList{downloadInputs.dump(),
@@ -532,35 +542,52 @@ LogosMap apply(LogosAPI* api, Op op,
             return fail("download",
                         withReason("package_downloader did not return a download set", why));
 
+        // A failed optional package is reported, not fatal: the required
+        // packages still install and stopped modules are still restarted.
+        LogosList skippedOptional = LogosList::array();
         for (const auto& d : downloaded) {
-            if (d.contains("error") && !d.value("error", std::string{}).empty())
-                return fail("download", d.value("name", std::string("?")) + ": "
+            const std::string name = d.value("name", std::string{});
+            if (d.contains("error") && !d.value("error", std::string{}).empty()) {
+                if (optionalNames.count(name)) {
+                    skippedOptional.push_back(LogosMap{{"name", name}, {"error", d.value("error", std::string{})}});
+                    continue;
+                }
+                return fail("download", (name.empty() ? std::string("?") : name) + ": "
                                         + d.value("error", std::string{}));
+            }
             const std::string path = d.value("path", std::string{});
             if (path.empty()) continue;   // already satisfied, nothing fetched
+            // The resolver may add transitive rows (e.g. with --no-deps); install only the plan.
+            if (!planned.count(name)) continue;
 
             std::string why;
             nlohmann::json ins = call(api, kPm, "installPlugin", LogosList{path, false}, &why);
             if (!ins.is_object() || !ins.value("error", std::string{}).empty()) {
-                return fail("install", d.value("name", std::string("?")) + ": "
-                    + (ins.is_object() ? ins.value("error", std::string("install failed"))
-                                       : withReason("package_manager did not respond", why)));
+                const std::string error = ins.is_object()
+                    ? ins.value("error", std::string("install failed"))
+                    : withReason("package_manager did not respond", why);
+                if (optionalNames.count(name)) {
+                    skippedOptional.push_back(LogosMap{{"name", name}, {"error", error}});
+                    continue;
+                }
+                return fail("install", (name.empty() ? std::string("?") : name) + ": " + error);
             }
-            installedNow.push_back(d.value("name", std::string{}));
+            installedNow.push_back(name);
         }
+        if (!skippedOptional.empty()) result["skipped_optional"] = skippedOptional;
     }
 
     // Make the new files discoverable without a restart. Without this the
     // daemon's known-module set still reflects the pre-install scan, so a
     // freshly installed module could not be loaded at all.
-    logos_core_refresh_modules();
+    api.refreshModules();
 
     // Restart what was running before — and only that. A newly installed
     // package is left unloaded: installing puts files on disk, loading is a
     // separate explicit act.
     LogosList reloaded = LogosList::array();
     for (const auto& m : toRestore) {
-        if (logos_core_load_module(m.c_str(), LOGOS_LOAD_REQUIRED_AND_OPTIONAL))
+        if (api.loadModule(m))
             reloaded.push_back(m);
     }
 
@@ -569,7 +596,7 @@ LogosMap apply(LogosAPI* api, Op op,
     return result;
 }
 
-LogosMap download(LogosAPI* api, const std::string& name,
+LogosMap download(Backend& api, const std::string& name,
                   const Options& opts, const std::string& destDir)
 {
     std::string why;

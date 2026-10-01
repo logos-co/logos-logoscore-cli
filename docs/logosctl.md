@@ -307,7 +307,7 @@ logosctl client config show
 # Modules — what is running right now
 logosctl module ls [--loaded]        # list known / loaded modules
 logosctl module show NAME            # methods, events, deps, crash detail
-logosctl module load NAME            # + dependencies, always (no opt-out)
+logosctl module load NAME [--no-optional]  # + dependencies; optional ones unless --no-optional
 logosctl module unload NAME          # + dependents  (--no-dependents to opt out)
 logosctl module reload NAME
 logosctl module stats                # per-module CPU / memory
@@ -383,7 +383,9 @@ some tools do:
   alone and leaving its dependents in place.
 - **`module load` always resolves dependencies.** There is no `--no-deps` on
   it — that flag exists only on `package install` / `package upgrade`, which
-  are about files on disk, not about what is running.
+  are about files on disk, not about what is running. Installed optional
+  dependencies load too, best effort; `--no-optional` loads the required ones
+  only.
 - **An argument ending in `.lgx` is a path, not a name.** `install` and
   `upgrade` read it as a file on disk and skip the catalog entirely, so a
   local package installs with no catalog configured and no network. `--file`
@@ -522,12 +524,24 @@ rather than assumed — a script that forgot `--yes` should fail loudly.
 
 Catalog installs and upgrades also offer available `optional_dependencies`,
 including those declared by a required dependency of an app. The change table
-marks their changes `(optional)`. The prompt offers `all`, `only mandatory`
-(or `m`), and `n`; pressing Enter selects **all**. `-y` also selects all available
-optionals. Use `--no-optional` to keep only mandatory packages in scripts or
+marks their changes `(optional)`, and packages that come only with a selected
+optional package `(optional, required by <package>)`. When the plan includes
+optional packages, the prompt offers `[A]ll`, `only [M]andatory`, and `[N]o`
+(full words or the letter, any case); pressing Enter selects **all**. Otherwise it is the usual `[y/N]`. `-y` also selects all
+available optionals. Choosing `only mandatory` prints the reduced plan before
+applying it. Use `--no-optional` to keep only mandatory packages in scripts or
 dry runs. An unavailable optional package, or one with unavailable required
-dependencies, never blocks the mandatory install. Optional packages already
-installed at a compatible version are kept as they are.
+dependencies, never blocks the mandatory install; one that fails to download or
+install is reported as skipped. Optional packages already installed at a
+compatible version are kept as they are.
+
+Like Basecamp, the plan accounts for every optional package
+(`optional_packages` in `--json`): the change it gets, `installed` (kept),
+`not selected`, or `unavailable` with the reason. Those without a change are
+listed under `Optional packages not changed`. When a named package is
+already installed, optional packages it does not have yet are not selected;
+install one by name to add it. logosctl has no per-package or version
+selection for optional packages; Basecamp's dialogs do.
 
 Package signatures are verified against the session's own keyring:
 
