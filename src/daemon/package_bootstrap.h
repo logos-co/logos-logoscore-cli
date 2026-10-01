@@ -45,6 +45,9 @@ struct Hooks {
 struct Dirs {
     std::string embeddedModules;
     std::string embeddedUiPlugins;
+    // <bin>/../modules (capability_module, modules_state): loaded by the runtime
+    // itself, but still embedded, so the resolver must see them as installed.
+    std::string bundledModules;
     std::string userModules;
     std::string userUiPlugins;
     std::string keyring;

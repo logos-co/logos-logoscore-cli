@@ -65,6 +65,8 @@ Outcome run(const Hooks& hooks, const Dirs& dirs,
         set("setEmbeddedModulesDirectory",   {dirs.embeddedModules});
         set("setEmbeddedUiPluginsDirectory", {dirs.embeddedUiPlugins});
     }
+    if (!dirs.bundledModules.empty())
+        set("addEmbeddedModulesDirectory", {dirs.bundledModules});
     set("setUserModulesDirectory",   {dirs.userModules});
     set("setUserUiPluginsDirectory", {dirs.userUiPlugins});
 

@@ -285,12 +285,13 @@ void bootstrapPackageModules(LogosAPI* api,
     };
 
     package_bootstrap::Dirs dirs;
-    // bundledDir is <bin>/../modules; its plugins sibling is alongside it.
+    // bundledDir is <bin>/../modules-pkg; its plugins sibling is alongside it.
     if (!bundledDir.empty()) {
         dirs.embeddedModules   = bundledDir;
         dirs.embeddedUiPlugins =
             (std::filesystem::path(bundledDir).parent_path() / "plugins").string();
     }
+    dirs.bundledModules = paths::bundledModulesDir();
     dirs.userModules   = Config::modulesDir();
     dirs.userUiPlugins = Config::pluginsDir();
     dirs.keyring       = Config::keyringDir();
