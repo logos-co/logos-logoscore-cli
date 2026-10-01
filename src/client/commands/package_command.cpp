@@ -177,15 +177,19 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
     cli.add_flag("-y,--yes", yes, "Do not prompt for confirmation");
     cli.add_flag("--dry-run", dryRun, "Show what would change and stop");
     cli.add_flag("--no-deps", noDeps, "Do not pull in dependencies");
-    cli.add_flag("--no-optional", noOptional, "Install only mandatory packages");
+    cli.add_flag("--no-optional,--no-optionals", noOptional, "Install only mandatory packages");
     cli.add_flag("--no-dependents", noDependents, "Do not remove dependents");
 
     try {
         parseArgs(cli, args);
-    } catch (const CLI::ParseError&) {
-        output().printError("INVALID_ARGS",
-            "Usage: logosctl package " + op + " <name|file.lgx ...> "
-            "[--version V] [-y] [--dry-run]");
+    } catch (const CLI::ParseError& e) {
+        // Name every option, and say what was wrong.
+        const std::string usage = op == "remove"
+            ? "Usage: logosctl package remove <name ...> [-y] [--dry-run] [--no-dependents]"
+            : "Usage: logosctl package " + op + " <name|file.lgx ...> [--file X.lgx] [--dir D]"
+              " [--version V] [--root-hash H] [--catalog C] [-y] [--dry-run] [--no-deps]"
+              " [--no-optional]";
+        output().printError("INVALID_ARGS", std::string(e.what()) + "\n" + usage);
         return 1;
     }
 

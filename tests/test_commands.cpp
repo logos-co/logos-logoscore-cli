@@ -1617,6 +1617,22 @@ TEST(PackageConfirmation, LabelsPackagesThatComeOnlyWithAnOptional) {
     EXPECT_EQ(optionalNote(LogosMap{{"name", "delivery_module"}}), "");
 }
 
+TEST_F(CommandTest, PackageInstallAcceptsThePluralNoOptionals) {
+    mockClient.planPackageResult = LogosMap{{"status", "ok"},
+        {"changes", LogosList::array()}, {"affected_loaded", LogosList::array()}};
+    auto cmd = createCommand("package", mockClient, output);
+    captureOutput([&]() { EXPECT_EQ(cmd->execute({"install", "delivery_module", "--dry-run", "--no-optionals"}), 0); });
+    EXPECT_FALSE(mockClient.lastPackageOpts.value("withOptional", true));
+}
+
+TEST_F(CommandTest, PackageInstallUsageNamesEveryOptionAndTheProblem) {
+    auto cmd = createCommand("package", mockClient, output);
+    std::string out = captureOutput([&]() { EXPECT_EQ(cmd->execute({"install", "x", "--bogus"}), 1); });
+    EXPECT_NE(out.find("--bogus"), std::string::npos) << out;
+    for (const char* opt : {"--no-optional", "--no-deps", "--root-hash", "--catalog", "--file", "--dir"})
+        EXPECT_NE(out.find(opt), std::string::npos) << opt << " missing from: " << out;
+}
+
 TEST_F(CommandTest, PackageInstallNoDepsAlsoDisablesOptionals) {
     mockClient.planPackageResult = LogosMap{{"status", "ok"},
         {"changes", LogosList::array()}, {"affected_loaded", LogosList::array()}};
