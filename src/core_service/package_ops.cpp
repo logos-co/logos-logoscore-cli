@@ -3,6 +3,7 @@
 #include "config.h"
 
 #include <algorithm>
+#include <map>
 #include <cstdlib>
 #include <filesystem>
 #include <set>
@@ -89,14 +90,45 @@ std::string dependenciesJson(const std::vector<std::string>& names,
     return deps.dump();
 }
 
-LogosList optionalOffers(const nlohmann::json& resolved)
+// Every optional package once, with what the plan does with it: the change
+// action (install, upgrade, ...), "installed" (kept as it is), "not selected",
+// or "unavailable" with the reason. An available offer wins over an unavailable one.
+LogosList optionalPackages(const nlohmann::json& resolved, const LogosList& changes)
 {
-    LogosList offers = LogosList::array();
-    if (resolved.is_array())
-        for (const auto& entry : resolved)
-            for (const auto& offer : entry.value("optionalDependencies", LogosList::array()))
-                offers.push_back(offer);
-    return offers;
+    std::map<std::string, std::string> changed;
+    for (const auto& c : changes)
+        if (c.value("optional", false))
+            changed[c.value("name", std::string{})] = c.value("action", std::string{});
+    std::map<std::string, LogosMap> byName;
+    if (resolved.is_array()) {
+        for (const auto& entry : resolved) {
+            for (const auto& offer : entry.value("optionalDependencies", LogosList::array())) {
+                const std::string name = offer.value("name", std::string{});
+                const std::string version = offer.value("version", std::string{});
+                LogosMap row{{"name", name}, {"version", version},
+                             {"requiredBy", offer.value("requiredBy", std::string{})}};
+                if (offer.contains("installedVersion")) row["installedVersion"] = offer["installedVersion"];
+                if (offer.contains("error")) {
+                    row["status"] = "unavailable";
+                    row["error"] = offer["error"];
+                } else if (changed.count(name)) {
+                    row["status"] = changed[name];
+                } else if (offer.contains("installedVersion")
+                           && offer.value("installedVersion", std::string{}) == version) {
+                    row["status"] = "installed";
+                } else {
+                    row["status"] = "not selected";
+                }
+                auto it = byName.find(name);
+                if (it == byName.end()
+                    || (it->second.value("status", std::string{}) == "unavailable" && !offer.contains("error")))
+                    byName[name] = row;
+            }
+        }
+    }
+    LogosList out = LogosList::array();
+    for (auto& [name, row] : byName) out.push_back(row);
+    return out;
 }
 
 // Same classification basecamp's confirmation dialog uses
@@ -166,10 +198,15 @@ nlohmann::json resolveClosure(Backend& api,
         return filtered;
     }
     const std::string installedJson = installedPackagesJson(installed);
+    // Like Basecamp for an installed app: optionals it does not have stay unselected.
+    bool anyNamedInstalled = false;
+    for (const auto& p : installed)
+        if (std::find(names.begin(), names.end(), p.value("name", std::string{})) != names.end())
+            anyNamedInstalled = true;
     return resolveOptionalClosure(LogosList::parse(dependenciesJson(names, opts)), opts.withOptional,
         [&](const nlohmann::json& inputs) {
             return call(api, kPd, "resolveDependencies", LogosList{inputs.dump(), installedJson}, why);
-        });
+        }, !anyNamedInstalled);
 }
 
 // The cascade set for a removal: the package plus everything that depends on
@@ -301,7 +338,7 @@ LogosMap plan(Backend& api, Op op,
                 // it doesn't need stopping and restarting.
                 if (action != "installed") affected.push_back(n);
             }
-            out["optional_dependencies"] = optionalOffers(resolved);
+            out["optional_packages"] = optionalPackages(resolved, changes);
         }
     }
 

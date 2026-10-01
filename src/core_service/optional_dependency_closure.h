@@ -17,9 +17,13 @@ namespace package_ops {
 // offer is selected unless the package is already a required dependency of
 // something in the plan, in which case it installs as that dependency instead
 // of as a pinned root.
+//
+// `selectNew` false leaves optionals that are not installed unselected, as
+// Basecamp does for a package that is already installed.
 inline nlohmann::json resolveOptionalClosure(
     nlohmann::json inputs, bool withOptional,
-    const std::function<nlohmann::json(const nlohmann::json&)>& resolve)
+    const std::function<nlohmann::json(const nlohmann::json&)>& resolve,
+    bool selectNew = true)
 {
     using nlohmann::json;
     auto nameOf = [](const json& entry) {
@@ -43,6 +47,7 @@ inline nlohmann::json resolveOptionalClosure(
             for (const auto& offer : entry.value("optionalDependencies", json::array())) {
                 const std::string name = offer.value("name", std::string{});
                 if (offer.contains("error") || name.empty() || requested.count(name)) continue;
+                if (!selectNew && !offer.contains("installedVersion")) continue;
                 // An installed optional at its installed release is kept as it is.
                 if (offer.contains("installedVersion")
                     && offer.value("version", std::string{}) == offer.value("installedVersion", std::string{}))

@@ -123,3 +123,14 @@ TEST(OptionalClosure, InstalledOptionalAtItsInstalledReleaseIsKept) {
     EXPECT_EQ(calls, 1);
     EXPECT_EQ(plan.size(), 1u);
 }
+
+TEST(OptionalClosure, NewOptionalsCanStayUnselected) {
+    int calls = 0;
+    auto s = row("S");
+    s["optionalDependencies"] = json::array({offer("rln")});
+    const auto plan = package_ops::resolveOptionalClosure(json::array({"S"}), true,
+        [&](const json& inputs) { ++calls; EXPECT_EQ(inputs.size(), 1u); return json::array({s}); },
+        /*selectNew=*/false);
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(plan.size(), 1u);
+}

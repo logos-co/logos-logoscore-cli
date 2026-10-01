@@ -532,6 +532,13 @@ dependencies, never blocks the mandatory install; one that fails to download or
 install is reported as skipped. Optional packages already installed at a
 compatible version are kept as they are.
 
+Like Basecamp, the plan lists every optional package under `Optional packages`
+(`optional_packages` in `--json`): the change it gets, `installed` (kept),
+`not selected`, or `unavailable` with the reason. When a named package is
+already installed, optional packages it does not have yet are not selected;
+install one by name to add it. logosctl has no per-package or version
+selection for optional packages; Basecamp's dialogs do.
+
 Package signatures are verified against the session's own keyring:
 
 ```bash

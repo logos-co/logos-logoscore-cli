@@ -284,9 +284,31 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
     for (const auto& c : changes)
         if (c.value("action", std::string{}) != "installed") anyChange = true;
 
+    // Every optional package and what this plan does with it, as Basecamp lists them.
+    auto printOptionalPackages = [&](const nlohmann::json& rows) {
+        if (!rows.is_array() || rows.empty()) return;
+        output().printRaw("Optional packages:");
+        for (const auto& o : rows) {
+            const std::string status = o.value("status", std::string{});
+            const std::string name = o.value("name", std::string{});
+            const std::string version = o.value("version", std::string{});
+            std::string detail;
+            if (status == "unavailable") detail = ": " + o.value("error", std::string{});
+            else if (status == "not selected")
+                detail = fmt::format(" — `logosctl package install {}` to add it", name);
+            output().printRaw(fmt::format("  {:<12} {}{}{}",
+                status == "installed" || status == "not selected" || status == "unavailable"
+                    ? status : actionVerb(status),
+                name, version.empty() || status == "unavailable" ? "" : " " + version, detail));
+        }
+    };
+
     if (!anyChange) {
         if (output().isJsonMode()) output().printSuccess(plan);
-        else output().printRaw("Nothing to do — already up to date.");
+        else {
+            output().printRaw("Nothing to do — already up to date.");
+            printOptionalPackages(plan["optional_packages"]);
+        }
         return 0;
     }
 
@@ -317,6 +339,7 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
     if (!output().isJsonMode()) {
         output().printRaw(fmt::format("The following changes will be made ({}):", op));
         printChanges(changes);
+        printOptionalPackages(plan["optional_packages"]);
         const auto& affected = plan["affected_loaded"];
         if (affected.is_array() && !affected.empty()) {
             std::vector<std::string> a;

@@ -83,6 +83,20 @@ std::function<json(const json&)> subjectWithOptional(const std::string& version 
     };
 }
 
+// `rows` plus `subject` offering optional O; selecting O adds it as a top-level row.
+std::function<json(const json&)> planWithOptional(json rows, const std::string& subject)
+{
+    return [rows, subject](const json& inputs) {
+        json out = rows;
+        for (auto& r : out)
+            if (r["name"] == subject)
+                r["optionalDependencies"] = json::array({json{{"name", "O"}, {"requiredBy", subject},
+                    {"request", {{"name", "O"}, {"version", "1.0.0"}, {"optional", true}}}}});
+        if (inputs.size() > 1) out.push_back(row("O", "1.0.0", true));
+        return out;
+    };
+}
+
 std::vector<std::string> names(const json& arr)
 {
     std::vector<std::string> out;
@@ -94,27 +108,28 @@ std::vector<std::string> names(const json& arr)
 
 TEST(PackageOpsApply, UpgradeKeepsANamedPackageThatIsAlreadyCurrent)
 {
+    // S is current; its missing dependency D is the only change.
     FakeModules pm;
     pm.installed = json::array({installedRow("S", "2.0.0")});
-    pm.resolve = subjectWithOptional("2.0.0");
+    pm.resolve = [](const json&) { return json::array({row("D", "1.0.0"), row("S", "2.0.0", true)}); };
     auto backend = pm.backend();
     const auto result = package_ops::apply(backend, Op::Upgrade, {"S"}, {});
     ASSERT_EQ(result.value("status", ""), "ok") << result.dump();
     // confirmUpgrade uninstalls the user copy; nothing would reinstall a current S.
     EXPECT_TRUE(pm.confirmedUpgrades.empty());
-    EXPECT_EQ(pm.installedPaths, std::vector<std::string>{"/dl/O.lgx"});
+    EXPECT_EQ(pm.installedPaths, std::vector<std::string>{"/dl/D.lgx"});
 }
 
 TEST(PackageOpsApply, UpgradeStillReplacesAChangedNamedPackage)
 {
     FakeModules pm;
     pm.installed = json::array({installedRow("S", "1.0.0")});
-    pm.resolve = subjectWithOptional("2.0.0");
+    pm.resolve = [](const json&) { return json::array({row("D", "1.0.0"), row("S", "2.0.0", true)}); };
     auto backend = pm.backend();
     const auto result = package_ops::apply(backend, Op::Upgrade, {"S"}, {});
     ASSERT_EQ(result.value("status", ""), "ok") << result.dump();
     EXPECT_EQ(pm.confirmedUpgrades, std::vector<std::string>{"S"});
-    EXPECT_EQ(pm.installedPaths, (std::vector<std::string>{"/dl/S.lgx", "/dl/O.lgx"}));
+    EXPECT_EQ(pm.installedPaths, (std::vector<std::string>{"/dl/D.lgx", "/dl/S.lgx"}));
 }
 
 TEST(PackageOpsApply, DownloadRequestsMarkOnlyOptionalRows)
@@ -130,18 +145,19 @@ TEST(PackageOpsApply, DownloadRequestsMarkOnlyOptionalRows)
 
 TEST(PackageOpsApply, FailedOptionalDownloadIsSkippedAndModulesAreRestored)
 {
+    // Installing T upgrades the loaded dependency L, which must be restarted.
     FakeModules pm;
-    pm.installed = json::array({installedRow("S", "1.0.0")});
-    pm.loaded = {"S"};
-    pm.resolve = subjectWithOptional("2.0.0");
+    pm.installed = json::array({installedRow("L", "1.0.0")});
+    pm.loaded = {"L"};
+    pm.resolve = planWithOptional(json::array({row("L", "2.0.0"), row("T", "1.0.0", true)}), "T");
     pm.failDownload = {"O"};
     auto backend = pm.backend();
-    const auto result = package_ops::apply(backend, Op::Upgrade, {"S"}, {});
+    const auto result = package_ops::apply(backend, Op::Install, {"T"}, {});
     ASSERT_EQ(result.value("status", ""), "ok") << result.dump();
-    EXPECT_EQ(names(result["installed"]), std::vector<std::string>{"S"});
+    EXPECT_EQ(names(result["installed"]), (std::vector<std::string>{"L", "T"}));
     EXPECT_EQ(names(result["skipped_optional"]), std::vector<std::string>{"O"});
     EXPECT_EQ(pm.refreshes, 1);
-    EXPECT_EQ(pm.reloaded, std::vector<std::string>{"S"});
+    EXPECT_EQ(pm.reloaded, std::vector<std::string>{"L"});
 }
 
 TEST(PackageOpsApply, FailedOptionalInstallIsSkipped)
@@ -179,4 +195,53 @@ TEST(PackageOpsApply, NoDepsInstallsOnlyThePlannedRows)
     const auto result = package_ops::apply(backend, Op::Install, {"S"}, opts);
     ASSERT_EQ(result.value("status", ""), "ok") << result.dump();
     EXPECT_EQ(pm.installedPaths, std::vector<std::string>{"/dl/S.lgx"});
+}
+
+namespace {
+// S offers O (new), I (installed at 1.0.0) and U (unavailable).
+json offersOfS(bool selectedO)
+{
+    auto s = row("S", "2.0.0", true);
+    s["optionalDependencies"] = json::array({
+        json{{"name", "O"}, {"version", "1.0.0"}, {"requiredBy", "S"},
+             {"request", {{"name", "O"}, {"version", "1.0.0"}, {"optional", true}}}},
+        json{{"name", "I"}, {"version", "1.0.0"}, {"installedVersion", "1.0.0"}, {"requiredBy", "S"},
+             {"request", {{"name", "I"}, {"version", "1.0.0"}, {"optional", true}}}},
+        json{{"name", "U"}, {"requiredBy", "S"}, {"error", "no candidate matches 'U'"},
+             {"request", {{"name", "U"}}}}});
+    json out = json::array({s});
+    if (selectedO) out.push_back(row("O", "1.0.0", true));
+    return out;
+}
+
+std::map<std::string, std::string> statuses(const json& plan)
+{
+    std::map<std::string, std::string> out;
+    for (const auto& o : plan["optional_packages"]) out[o["name"]] = o["status"];
+    return out;
+}
+} // namespace
+
+TEST(PackageOpsPlan, ListsEveryOptionalPackageWithItsStatus)
+{
+    FakeModules pm;
+    pm.installed = json::array({installedRow("I", "1.0.0")});
+    pm.resolve = [](const json& inputs) { return offersOfS(inputs.size() > 1); };
+    auto backend = pm.backend();
+    const auto plan = package_ops::plan(backend, Op::Install, {"S"}, {});
+    ASSERT_EQ(plan.value("status", ""), "ok") << plan.dump();
+    EXPECT_EQ(statuses(plan), (std::map<std::string, std::string>{
+        {"I", "installed"}, {"O", "install"}, {"U", "unavailable"}}));
+}
+
+TEST(PackageOpsPlan, NewOptionalsOfAnInstalledPackageAreNotSelected)
+{
+    FakeModules pm;
+    pm.installed = json::array({installedRow("S", "2.0.0"), installedRow("I", "1.0.0")});
+    pm.resolve = [](const json& inputs) { return offersOfS(inputs.size() > 1); };
+    auto backend = pm.backend();
+    const auto plan = package_ops::plan(backend, Op::Install, {"S"}, {});
+    ASSERT_EQ(plan.value("status", ""), "ok") << plan.dump();
+    EXPECT_EQ(statuses(plan)["O"], "not selected");
+    for (const auto& c : plan["changes"]) EXPECT_NE(c["name"], "O");
 }
