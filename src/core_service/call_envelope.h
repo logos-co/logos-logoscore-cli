@@ -54,18 +54,10 @@ struct CallFailure {
 //                       `logosctl call test_basic_module isPositive` with the
 //                       argument missing exited 0 with status "ok" and the
 //                       refusal object as its result.
-//   "unknown_method"  — NOTHING EMITS THIS YET. Listed now because widening a
-//                       detector is backwards-compatible on its own, whereas a
-//                       new provider code shipped against narrow detectors
-//                       arrives at consumers as data.
-//
-// WHEN A PROVIDER STARTS EMITTING "unknown_method", READ THIS. It will fold to
-// METHOD_FAILED here, not to the METHOD_NOT_FOUND envelope callEnvelope already
-// builds from introspection below — the two paths are independent today and
-// nothing makes them agree. Deliberately left alone: no provider emits the code,
-// so any routing written now would be untested against a real provider, and
-// choosing between the two envelopes is part of the provider-contract change,
-// not of widening a detector.
+//   "unknown_method"  — no method by that NAME. callEnvelope answers it with the
+//                       same METHOD_NOT_FOUND envelope it builds from
+//                       introspection for an older module's bare null, so the
+//                       answer does not depend on which build the module is.
 //
 // The match is otherwise unchanged and stays NARROW — exactly three fields, all
 // strings — for the same reason the generated detector is: a map return
