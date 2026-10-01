@@ -23,6 +23,16 @@ package_confirmation::Choice package_confirmation::parse(const std::string& inpu
     return Choice::Cancel;
 }
 
+std::string package_confirmation::optionalNote(const nlohmann::json& c)
+{
+    if (c.value("optional", false)) return " (optional)";
+    std::vector<std::string> roots;
+    for (const auto& r : c.value("requiredFor", nlohmann::json::array()))
+        if (r.is_string()) roots.push_back(r.get<std::string>());
+    return roots.empty() ? std::string{}
+                         : fmt::format(" (optional, required by {})", fmt::join(roots, ", "));
+}
+
 namespace {
 
 constexpr const char* kPm = "package_manager";
@@ -54,7 +64,7 @@ using InstallChoice = package_confirmation::Choice;
 InstallChoice confirmInstall()
 {
     if (!isatty(STDIN_FILENO)) return InstallChoice::Cancel;
-    std::cout << "Proceed? [all/only mandatory/n] (default: all) " << std::flush;
+    std::cout << "Proceed? [A]ll / only [M]andatory / [N]o (default: All) " << std::flush;
     std::string line;
     if (!std::getline(std::cin, line)) return InstallChoice::Cancel;
     return package_confirmation::parse(line);
@@ -284,11 +294,17 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
     for (const auto& c : changes)
         if (c.value("action", std::string{}) != "installed") anyChange = true;
 
-    // Every optional package and what this plan does with it, as Basecamp lists them.
+    // Optional packages the change table does not show: kept, not selected, or unavailable.
     auto printOptionalPackages = [&](const nlohmann::json& rows) {
-        if (!rows.is_array() || rows.empty()) return;
-        output().printRaw("Optional packages:");
-        for (const auto& o : rows) {
+        std::vector<nlohmann::json> rest;
+        if (rows.is_array())
+            for (const auto& o : rows) {
+                const std::string status = o.value("status", std::string{});
+                if (status == "installed" || status == "not selected" || status == "unavailable") rest.push_back(o);
+            }
+        if (rest.empty()) return;
+        output().printRaw("Optional packages not changed:");
+        for (const auto& o : rest) {
             const std::string status = o.value("status", std::string{});
             const std::string name = o.value("name", std::string{});
             const std::string version = o.value("version", std::string{});
@@ -296,9 +312,7 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
             if (status == "unavailable") detail = ": " + o.value("error", std::string{});
             else if (status == "not selected")
                 detail = fmt::format(" — `logosctl package install {}` to add it", name);
-            output().printRaw(fmt::format("  {:<12} {}{}{}",
-                status == "installed" || status == "not selected" || status == "unavailable"
-                    ? status : actionVerb(status),
+            output().printRaw(fmt::format("  {:<12} {}{}{}", status,
                 name, version.empty() || status == "unavailable" ? "" : " " + version, detail));
         }
     };
@@ -329,7 +343,7 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
                 to.empty() ? (from.empty() ? "" : fmt::format(" ({})", from))
                            : (from.empty() ? fmt::format(" {}", to)
                                            : fmt::format(" {} -> {}", from, to)),
-                c.value("optional", false) ? " (optional)" : ""));
+                package_confirmation::optionalNote(c)));
         }
     };
     bool anyOptional = false;

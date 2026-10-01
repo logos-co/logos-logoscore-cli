@@ -1597,6 +1597,14 @@ TEST_F(CommandTest, PackageInstallCanSelectOnlyMandatoryPackages) {
     EXPECT_TRUE(mockClient.lastPackageOpts.value("withDeps", false));
 }
 
+TEST(PackageConfirmation, LabelsPackagesThatComeOnlyWithAnOptional) {
+    using package_confirmation::optionalNote;
+    EXPECT_EQ(optionalNote(LogosMap{{"name", "rln"}, {"optional", true}}), " (optional)");
+    EXPECT_EQ(optionalNote(LogosMap{{"name", "lez_rln"}, {"requiredFor", LogosList::array({"rln"})}}),
+              " (optional, required by rln)");
+    EXPECT_EQ(optionalNote(LogosMap{{"name", "delivery_module"}}), "");
+}
+
 TEST_F(CommandTest, PackageInstallNoDepsAlsoDisablesOptionals) {
     mockClient.planPackageResult = LogosMap{{"status", "ok"},
         {"changes", LogosList::array()}, {"affected_loaded", LogosList::array()}};

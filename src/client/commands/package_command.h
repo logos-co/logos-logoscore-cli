@@ -6,6 +6,9 @@
 namespace package_confirmation {
 enum class Choice { All, Mandatory, Cancel };
 Choice parse(const std::string& input);
+// Suffix for a change row: " (optional)", or " (optional, required by X)" for a
+// package that comes only with selected optional packages.
+std::string optionalNote(const nlohmann::json& change);
 }
 
 // The `package` group: install, upgrade, remove, ls, show, deps, search,

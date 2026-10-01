@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 #include <functional>
+#include <map>
 #include <set>
 #include <string>
 #include <utility>
@@ -43,6 +44,7 @@ inline nlohmann::json resolveOptionalClosure(
             if (entry.contains("error")) return resolved;
 
         std::set<std::string> children;
+        std::map<std::string, std::set<std::string>> graph;
         for (const auto& entry : resolved) {
             for (const auto& offer : entry.value("optionalDependencies", json::array())) {
                 const std::string name = offer.value("name", std::string{});
@@ -54,8 +56,12 @@ inline nlohmann::json resolveOptionalClosure(
                     continue;
                 if (offeredNames.insert(name).second) offered.emplace_back(name, offer.at("request"));
             }
-            for (const auto& deps : entry.value("dependencyGraph", json::object()))
-                for (const auto& dep : deps) children.insert(nameOf(dep));
+            const auto edges = entry.value("dependencyGraph", json::object());
+            for (auto it = edges.begin(); it != edges.end(); ++it)
+                for (const auto& dep : it.value()) {
+                    children.insert(nameOf(dep));
+                    graph[it.key()].insert(nameOf(dep));
+                }
         }
 
         json next = inputs;
@@ -63,8 +69,27 @@ inline nlohmann::json resolveOptionalClosure(
         for (const auto& [name, request] : offered)
             if (!children.count(name)) { next.push_back(request); selected.insert(name); }
         if (next == current) {
-            for (auto& entry : resolved)
-                entry["optional"] = selected.count(entry.value("name", std::string{})) > 0;
+            auto reach = [&](const std::set<std::string>& roots) {
+                std::set<std::string> seen;
+                std::vector<std::string> stack(roots.begin(), roots.end());
+                while (!stack.empty()) {
+                    const std::string n = stack.back(); stack.pop_back();
+                    if (!seen.insert(n).second) continue;
+                    for (const auto& d : graph[n]) stack.push_back(d);
+                }
+                return seen;
+            };
+            const auto mandatory = reach(requested);
+            for (auto& entry : resolved) {
+                const std::string name = entry.value("name", std::string{});
+                entry["optional"] = selected.count(name) > 0;
+                // Required only by selected optionals: "only mandatory" drops it too.
+                if (selected.count(name) || mandatory.count(name)) continue;
+                json requiredFor = json::array();
+                for (const auto& o : selected)
+                    if (reach({o}).count(name)) requiredFor.push_back(o);
+                if (!requiredFor.empty()) entry["requiredFor"] = requiredFor;
+            }
             return resolved;
         }
         // A selection that keeps flipping falls back to the required plan.

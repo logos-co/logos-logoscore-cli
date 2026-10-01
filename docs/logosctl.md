@@ -522,9 +522,10 @@ rather than assumed — a script that forgot `--yes` should fail loudly.
 
 Catalog installs and upgrades also offer available `optional_dependencies`,
 including those declared by a required dependency of an app. The change table
-marks their changes `(optional)`. When the plan includes optional packages,
-the prompt offers `all`, `only mandatory` (or `m`), and `n`; pressing Enter
-selects **all**. Otherwise it is the usual `[y/N]`. `-y` also selects all
+marks their changes `(optional)`, and packages that come only with a selected
+optional package `(optional, required by <package>)`. When the plan includes
+optional packages, the prompt offers `[A]ll`, `only [M]andatory`, and `[N]o`
+(full words or the letter, any case); pressing Enter selects **all**. Otherwise it is the usual `[y/N]`. `-y` also selects all
 available optionals. Choosing `only mandatory` prints the reduced plan before
 applying it. Use `--no-optional` to keep only mandatory packages in scripts or
 dry runs. An unavailable optional package, or one with unavailable required
@@ -532,9 +533,10 @@ dependencies, never blocks the mandatory install; one that fails to download or
 install is reported as skipped. Optional packages already installed at a
 compatible version are kept as they are.
 
-Like Basecamp, the plan lists every optional package under `Optional packages`
+Like Basecamp, the plan accounts for every optional package
 (`optional_packages` in `--json`): the change it gets, `installed` (kept),
-`not selected`, or `unavailable` with the reason. When a named package is
+`not selected`, or `unavailable` with the reason. Those without a change are
+listed under `Optional packages not changed`. When a named package is
 already installed, optional packages it does not have yet are not selected;
 install one by name to add it. logosctl has no per-package or version
 selection for optional packages; Basecamp's dialogs do.

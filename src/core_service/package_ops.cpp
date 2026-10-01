@@ -332,6 +332,7 @@ LogosMap plan(Backend& api, Op op,
                     {"repository", e.value("repositoryUrl", std::string{})},
                     {"rootHash", rh},
                     {"optional", e.value("optional", false)},
+                    {"requiredFor", e.value("requiredFor", LogosList::array())},
                     {"topLevel", e.value("topLevel", false)},
                 });
                 // A package already at the resolved version isn't touched, so

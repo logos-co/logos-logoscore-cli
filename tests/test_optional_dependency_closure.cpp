@@ -40,6 +40,8 @@ TEST(OptionalClosure, AllResolvesRlnRequiredChildAndNestedOptionals) {
     ASSERT_EQ(plan.size(), 4u);
     EXPECT_EQ(plan[1]["name"], "lez_rln");
     EXPECT_FALSE(plan[1]["optional"].get<bool>());
+    EXPECT_EQ(plan[1]["requiredFor"], json::array({"rln"}));
+    EXPECT_FALSE(plan[3].contains("requiredFor"));
     EXPECT_TRUE(plan[2]["optional"].get<bool>());
     EXPECT_TRUE(plan[0]["optional"].get<bool>());
     EXPECT_FALSE(plan[3]["optional"].get<bool>());
