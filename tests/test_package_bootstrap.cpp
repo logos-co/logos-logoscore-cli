@@ -119,6 +119,24 @@ TEST(PackageBootstrap, UnsetPolicyIsLeftToTheModuleDefault)
     EXPECT_TRUE(out.managerLoaded);
 }
 
+TEST(PackageBootstrap, RuntimeBundledModulesAreAddedAfterTheEmbeddedDir)
+{
+    // modules_state lives in <bin>/../modules; unreported, it was offered as unavailable.
+    Harness h;
+    package_bootstrap::Dirs dirs = sessionDirs();
+    dirs.bundledModules = "/opt/logos/modules-runtime";
+    package_bootstrap::run(h.hooks(), dirs, "");
+
+    EXPECT_EQ(h.argsOf("addEmbeddedModulesDirectory"),
+              std::vector<std::string>{"/opt/logos/modules-runtime"});
+    // set* replaces the list, so it must come first.
+    auto at = [&](const std::string& m) {
+        return std::find_if(h.configured.begin(), h.configured.end(),
+                            [&](const auto& c) { return c.first == m; });
+    };
+    EXPECT_LT(at("setEmbeddedModulesDirectory"), at("addEmbeddedModulesDirectory"));
+}
+
 TEST(PackageBootstrap, EmptyBundledDirSkipsOnlyTheEmbeddedCalls)
 {
     Harness h;
