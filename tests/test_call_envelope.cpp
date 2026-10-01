@@ -166,10 +166,9 @@ TEST(CallEnvelope, InvalidArgsIsMethodFailed)
     EXPECT_FALSE(env.contains("result"));
 }
 
-// Every code in the closed set folds, not just dispatch_failed. "unknown_method"
-// is here before any provider emits it — that readiness is the point of doing
-// the detectors first.
-TEST(CallEnvelope, EveryRejectionCodeIsMethodFailed)
+// Every code in the closed set folds, not just dispatch_failed. The two that
+// refuse the ARGUMENTS are METHOD_FAILED; unknown_method has its own envelope.
+TEST(CallEnvelope, EveryRejectionCodeFolds)
 {
     for (const char* code : {"dispatch_failed", "invalid_args", "unknown_method"}) {
         CallFailure out;
@@ -186,7 +185,9 @@ TEST(CallEnvelope, EveryRejectionCodeIsMethodFailed)
                                                          {"message", "m"},
                                                          {"origin", "o"}},
                                           CallFailure{}, kBasicModule.fn());
-        EXPECT_EQ(env.value("code", std::string{}), "METHOD_FAILED") << code;
+        EXPECT_EQ(env.value("code", std::string{}),
+                  std::string(code) == "unknown_method" ? "METHOD_NOT_FOUND" : "METHOD_FAILED")
+            << code;
     }
 }
 
@@ -255,9 +256,8 @@ TEST(CallEnvelope, DispatchRejectionMatchStaysNarrow)
 
 TEST(CallEnvelope, UnknownMethodIsMethodNotFound)
 {
-    // Providers answer an unknown method with a bare null and no error — see
-    // logos_protocol.h and lidl_gen_cdylib.cpp's `return nullptr; // unknown
-    // method`. Only the module's own method list can settle it.
+    // A module built before providers refused unknown names answers one with a
+    // bare null and no error. Only the module's own method list can settle it.
     Lister lister{{"returnTrue", "echo"}};
     const LogosMap env = callEnvelope("test_basic_module", "noSuchMethod",
                                       nlohmann::json(), CallFailure{}, lister.fn());
@@ -270,6 +270,45 @@ TEST(CallEnvelope, UnknownMethodIsMethodNotFound)
     EXPECT_EQ(env["available_methods"],
               nlohmann::json::array({"returnTrue", "echo"}));
     EXPECT_EQ(lister.calls, 1) << "introspection must be consulted exactly once";
+}
+
+TEST(CallEnvelope, AProvidersUnknownMethodRefusalIsMethodNotFound)
+{
+    // A current provider says so itself. Same envelope as the rescue above, so a
+    // caller gets one answer whichever build the module is.
+    Lister lister{{"list_modules", "name", "version"}};
+    const nlohmann::json refusal{{"code", "unknown_method"},
+                                 {"message", "unknown method 'add'"},
+                                 {"origin", "modules_state"}};
+    const LogosMap env = callEnvelope("modules_state", "add", refusal,
+                                      CallFailure{}, lister.fn());
+
+    EXPECT_EQ(env.value("status", std::string{}), "error");
+    EXPECT_EQ(env.value("code", std::string{}), "METHOD_NOT_FOUND");
+    EXPECT_EQ(env.value("message", std::string{}),
+              "Method 'add' not found on module 'modules_state'.");
+    ASSERT_TRUE(env.contains("available_methods"));
+    EXPECT_EQ(env["available_methods"],
+              nlohmann::json::array({"list_modules", "name", "version"}));
+    EXPECT_FALSE(env.contains("result"));
+    EXPECT_FALSE(env.contains("error"));
+    EXPECT_EQ(lister.calls, 1) << "introspection must be consulted exactly once";
+}
+
+TEST(CallEnvelope, AProvidersRefusalNeedsNoListingToBeBelieved)
+{
+    // Unlike a bare null, the refusal is the provider's own word: an empty or
+    // missing listing leaves it METHOD_NOT_FOUND, just with nothing to suggest.
+    const nlohmann::json refusal{{"code", "unknown_method"},
+                                 {"message", "unknown method 'add'"},
+                                 {"origin", "m"}};
+    Lister empty{{}};
+    for (const LogosMap& env : {callEnvelope("m", "add", refusal, CallFailure{}, empty.fn()),
+                                callEnvelope("m", "add", refusal, CallFailure{}, nullptr)}) {
+        EXPECT_EQ(env.value("code", std::string{}), "METHOD_NOT_FOUND");
+        ASSERT_TRUE(env.contains("available_methods"));
+        EXPECT_TRUE(env["available_methods"].empty());
+    }
 }
 
 TEST(CallEnvelope, UnprovableMissingMethodStaysOk)

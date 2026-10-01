@@ -7,7 +7,7 @@ namespace {
 
 // The CLOSED SET of provider-refusal codes, in one place so it cannot drift
 // against the rest of the function. See call_envelope.h for why the set is
-// closed and why "unknown_method" is listed before anything emits it.
+// closed and which envelope each code becomes.
 const char* const kRejectionCodes[] = {
     "dispatch_failed", "invalid_args", "unknown_method",
 };
@@ -17,6 +17,17 @@ bool isRejectionCode(const std::string& c)
     for (const char* k : kRejectionCodes)
         if (c == k) return true;
     return false;
+}
+
+LogosMap methodNotFound(const std::string& module, const std::string& method,
+                        const std::vector<std::string>& names)
+{
+    LogosMap result;
+    result["status"]            = "error";
+    result["code"]              = "METHOD_NOT_FOUND";
+    result["message"]           = "Method '" + method + "' not found on module '" + module + "'.";
+    result["available_methods"] = names;   // docs/spec.md's envelope
+    return result;
 }
 
 } // namespace
@@ -47,6 +58,11 @@ LogosMap callEnvelope(const std::string& module,
     // the call and must read identically to whoever asked.
     if (failure.ok()) dispatchRejection(ret, failure);
 
+    // The provider refused the NAME: same envelope as the null-return rescue below.
+    if (failure.code == "unknown_method")
+        return methodNotFound(module, method,
+                              listMethods ? listMethods() : std::vector<std::string>{});
+
     if (!failure.ok()) {
         // ONE code for every transport-detected failure, exactly as before:
         // object_unavailable / timeout / transport_error / call_failed /
@@ -64,16 +80,11 @@ LogosMap callEnvelope(const std::string& module,
         return result;
     }
 
-    // The one ambiguity the wire really does have.
-    //
-    // Every provider flavour answers an unknown method name with a bare null,
-    // byte-identical to a method that legitimately returns null.
-    // logos_protocol.h says so in as many words ("NOT reported, and it is not
-    // an oversight: an unknown method name"), and the cdylib dispatch ends in
-    // `return nullptr;  // unknown method` (lidl_gen_cdylib.cpp). No transport
-    // can separate the two — but core_service can ASK, because the module
-    // publishes its own method list. That happens only on a null return, so
-    // the ordinary path is unaffected.
+    // A module built before providers refused unknown names answers one with a
+    // bare null, byte-identical to a method that legitimately returns null. No
+    // transport can separate the two — but core_service can ASK, because the
+    // module publishes its own method list. That happens only on a null return,
+    // so the ordinary path is unaffected.
     //
     // Stay silent when introspection fails or comes back empty: an unproven
     // METHOD_NOT_FOUND would just be the old null-means-failure guess wearing a
@@ -81,15 +92,8 @@ LogosMap callEnvelope(const std::string& module,
     if (ret.is_null() && listMethods) {
         const std::vector<std::string> names = listMethods();
         if (!names.empty()
-            && std::find(names.begin(), names.end(), method) == names.end()) {
-            const std::string msg =
-                "Method '" + method + "' not found on module '" + module + "'.";
-            result["status"]            = "error";
-            result["code"]              = "METHOD_NOT_FOUND";
-            result["message"]           = msg;
-            result["available_methods"] = names;   // docs/spec.md's envelope
-            return result;
-        }
+            && std::find(names.begin(), names.end(), method) == names.end())
+            return methodNotFound(module, method, names);
     }
 
     // Success — INCLUDING a null result. `null` is a value here: an empty

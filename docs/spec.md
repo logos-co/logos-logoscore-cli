@@ -943,8 +943,9 @@ carries which one, verbatim from the protocol's call-error vocabulary:
 `object_unavailable`, `timeout`, `transport_error`, `call_failed`,
 `unauthorized`, plus the codes a provider that RAN and refused answers as its
 result rather than on the error channel: `dispatch_failed` (it refused the
-argument VALUES) and `invalid_args` (wrong argument COUNT). `unknown_method` is
-recognised too, ahead of any provider emitting it.
+argument VALUES) and `invalid_args` (wrong argument COUNT). The third code in
+that set, `unknown_method` (no method by that name), is reported as
+`METHOD_NOT_FOUND` instead, the envelope shown above.
 
 That in-band set is CLOSED, deliberately. A method may legitimately return a
 `{code, message, origin}` map of its own; matching the shape rather than the
@@ -958,9 +959,10 @@ code would turn its data into an error. Anything outside the set comes back as
 
 A result of `null` is **not** a failure. It is a value — an empty optional, or a
 method that returns nothing in particular — and reports `status: "ok"` with
-`"result": null`. The one case `null` cannot express is an unknown method name,
-which no provider distinguishes on the wire; `call` resolves that by asking the
-module for its method list, which is where `METHOD_NOT_FOUND` above comes from.
+`"result": null`. A module built before providers refused unknown names still
+answers one with a bare `null`; for those, `call` asks the module for its method
+list and reports `METHOD_NOT_FOUND` when the name is absent, so both builds
+give the same answer.
 
 **Timeout error (JSON):**
 ```

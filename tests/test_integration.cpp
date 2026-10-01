@@ -622,11 +622,9 @@ TEST_F(ErrorPathTest, UnknownMethodOnLoadedModule) {
                      &out, kNegativeBudgetSecs), 0)
         << "unknown method on a loaded module should not succeed.\n" << out;
 
-    // …and it says WHY. A provider answers an unknown method with a bare null
-    // and no transport error (logos_protocol.h: "NOT reported, and it is not an
-    // oversight"), so this envelope can only come from core_service asking the
-    // module for its method list — which makes it the end-to-end proof that the
-    // introspection fallback works against a real module over a real transport.
+    // …and it says WHY. A current provider refuses the name as unknown_method;
+    // one built earlier answers a bare null and core_service asks the module
+    // for its method list. Both reach this envelope, over a real transport.
     // Before the error-channel switch this read METHOD_FAILED / "Call to
     // test_basic_module.thisMethodDoesNotExist failed." with no list.
     const nlohmann::json env = lastJsonObject(out);
