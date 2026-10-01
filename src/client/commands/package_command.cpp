@@ -10,6 +10,19 @@
 #include <iostream>
 #include <unistd.h>
 
+package_confirmation::Choice package_confirmation::parse(const std::string& input)
+{
+    std::string line = input;
+    const auto first = line.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return Choice::All;
+    line = line.substr(first, line.find_last_not_of(" \t\r\n") - first + 1);
+    std::transform(line.begin(), line.end(), line.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    if (line == "all" || line == "a" || line == "y" || line == "yes") return Choice::All;
+    if (line == "only mandatory" || line == "mandatory" || line == "m") return Choice::Mandatory;
+    return Choice::Cancel;
+}
+
 namespace {
 
 constexpr const char* kPm = "package_manager";
@@ -34,6 +47,17 @@ bool confirm(const std::string& prompt)
     std::string line;
     if (!std::getline(std::cin, line)) return false;
     return line == "y" || line == "Y" || line == "yes" || line == "Yes";
+}
+
+using InstallChoice = package_confirmation::Choice;
+
+InstallChoice confirmInstall()
+{
+    if (!isatty(STDIN_FILENO)) return InstallChoice::Cancel;
+    std::cout << "Proceed? [all/only mandatory/n] (default: all) " << std::flush;
+    std::string line;
+    if (!std::getline(std::cin, line)) return InstallChoice::Cancel;
+    return package_confirmation::parse(line);
 }
 
 const char* actionVerb(const std::string& action)
@@ -139,10 +163,11 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
     cli.add_option("--version", version, "Pin an exact version");
     cli.add_option("--root-hash", rootHash, "Disambiguate releases sharing a version");
     cli.add_option("--catalog", catalog, "Restrict to one catalog (url or name)");
-    bool yes = false, dryRun = false, noDeps = false, noDependents = false;
+    bool yes = false, dryRun = false, noDeps = false, noDependents = false, noOptional = false;
     cli.add_flag("-y,--yes", yes, "Do not prompt for confirmation");
     cli.add_flag("--dry-run", dryRun, "Show what would change and stop");
     cli.add_flag("--no-deps", noDeps, "Do not pull in dependencies");
+    cli.add_flag("--no-optional", noOptional, "Install only mandatory packages");
     cli.add_flag("--no-dependents", noDependents, "Do not remove dependents");
 
     try {
@@ -235,6 +260,7 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
 
     LogosMap opts{
         {"withDeps", !noDeps},
+        {"withOptional", !noOptional && !noDeps},
         {"withDependents", !noDependents},
         {"version", version},
         {"rootHash", rootHash},
@@ -276,12 +302,13 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
             if (action == "installed") continue;
             const std::string from = c.value("fromVersion", std::string{});
             const std::string to   = c.value("toVersion", std::string{});
-            output().printRaw(fmt::format("  {:<10} {}{}",
+            output().printRaw(fmt::format("  {:<10} {}{}{}",
                 actionVerb(action),
                 c.value("name", std::string{}),
                 to.empty() ? (from.empty() ? "" : fmt::format(" ({})", from))
                            : (from.empty() ? fmt::format(" {}", to)
-                                           : fmt::format(" {} -> {}", from, to))));
+                                           : fmt::format(" {} -> {}", from, to)),
+                c.value("optional", false) ? " (optional)" : ""));
         }
         const auto& affected = plan["affected_loaded"];
         if (affected.is_array() && !affected.empty()) {
@@ -302,11 +329,35 @@ int PackageCommand::mutate(const std::string& op, const std::vector<std::string>
         return 0;
     }
 
-    if (!yes && !confirm("Proceed?")) {
+    InstallChoice choice = InstallChoice::All;
+    if (!yes) {
+        choice = op == "remove" || !localFiles.empty()
+            ? (confirm("Proceed?") ? InstallChoice::All : InstallChoice::Cancel)
+            : confirmInstall();
+    }
+    if (choice == InstallChoice::Cancel) {
         output().printError("CANCELLED",
             isatty(STDIN_FILENO) ? "Cancelled."
                                  : "Refusing to proceed without confirmation. Pass -y to continue.");
         return 1;
+    }
+
+    if (choice == InstallChoice::Mandatory && opts.value("withOptional", false)) {
+        opts["withOptional"] = false;
+        plan = client().planPackageOperation(op, nameList, opts);
+        if (plan.value("status", std::string{}) == "error") {
+            output().printError(plan.value("code", std::string("PLAN_FAILED")),
+                                plan.value("message", std::string{}), plan);
+            return 1;
+        }
+        bool mandatoryChange = false;
+        for (const auto& c : plan["changes"])
+            if (c.value("action", std::string{}) != "installed") mandatoryChange = true;
+        if (!mandatoryChange) {
+            if (output().isJsonMode()) output().printSuccess(plan);
+            else output().printRaw("Nothing to do — mandatory packages are already up to date.");
+            return 0;
+        }
     }
 
     LogosMap result = client().applyPackageOperation(op, nameList, opts);
