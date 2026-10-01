@@ -110,3 +110,16 @@ TEST(OptionalClosure, MalformedGraphEntriesAreIgnored) {
     ASSERT_EQ(plan.size(), 1u);
     EXPECT_FALSE(plan[0]["optional"].get<bool>());
 }
+
+TEST(OptionalClosure, InstalledOptionalAtItsInstalledReleaseIsKept) {
+    int calls = 0;
+    auto installed = offer("rln");
+    installed["version"] = "0.10.0";
+    installed["installedVersion"] = "0.10.0";
+    auto s = row("S");
+    s["optionalDependencies"] = json::array({installed});
+    const auto plan = package_ops::resolveOptionalClosure(json::array({"S"}), true,
+        [&](const json& inputs) { ++calls; EXPECT_EQ(inputs.size(), 1u); return json::array({s}); });
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(plan.size(), 1u);
+}

@@ -43,6 +43,10 @@ inline nlohmann::json resolveOptionalClosure(
             for (const auto& offer : entry.value("optionalDependencies", json::array())) {
                 const std::string name = offer.value("name", std::string{});
                 if (offer.contains("error") || name.empty() || requested.count(name)) continue;
+                // An installed optional at its installed release is kept as it is.
+                if (offer.contains("installedVersion")
+                    && offer.value("version", std::string{}) == offer.value("installedVersion", std::string{}))
+                    continue;
                 if (offeredNames.insert(name).second) offered.emplace_back(name, offer.at("request"));
             }
             for (const auto& deps : entry.value("dependencyGraph", json::object()))
