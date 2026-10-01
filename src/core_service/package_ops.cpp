@@ -1,16 +1,8 @@
 #include "package_ops.h"
 #include "optional_dependency_closure.h"
 #include "config.h"
-#include "logos_core.h"
-#include "rpc_deadlines.h"
-
-#include <logos_api.h>
-#include <logos_api_client.h>
-#include <logos_call_error.h>
-#include <logos_json_convert.h>
 
 #include <algorithm>
-#include <set>
 #include <cstdlib>
 #include <filesystem>
 #include <set>
@@ -29,31 +21,11 @@ LogosMap err(const std::string& code, const std::string& message)
     return LogosMap{{"status", "error"}, {"code", code}, {"message", message}};
 }
 
-// Thin call helper. Returns a null json when the call itself failed — module
-// unreachable, transport error, deadline — which every caller treats as a hard
-// failure; `why` receives the transport's reason. The deadline is per method
-// (rpc_deadlines.h): the package modules do the whole download or archive walk
-// inside the call, and the transport default is 20 s.
-nlohmann::json call(LogosAPI* api, const char* module, const std::string& method,
+nlohmann::json call(Backend& api, const char* module, const std::string& method,
                     const LogosList& args = LogosList::array(),
                     std::string* why = nullptr)
 {
-    if (!api) return nullptr;
-    LogosAPIClient* client = api->getClient(module);
-    if (!client) {
-        if (why) *why = std::string(module) + " is not reachable";
-        return nullptr;
-    }
-    logos::CallError err;
-    const QVariant ret = client->invokeRemoteMethod(
-        QString::fromStdString(module), QString::fromStdString(method),
-        logos::nlohmannArgsToQVariantList(args),
-        rpc_deadlines::forPackageCall(method), &err);
-    if (!err.ok()) {
-        if (why) *why = err.message;
-        return nullptr;
-    }
-    return logos::qvariantToNlohmann(ret);
+    return api.call(module, method, args, why);
 }
 
 std::string withReason(const std::string& base, const std::string& why)
@@ -77,20 +49,7 @@ bool ok(const nlohmann::json& r, std::string* errorOut = nullptr)
     return false;
 }
 
-std::vector<std::string> loadedModules()
-{
-    std::vector<std::string> out;
-    char** mods = logos_core_get_loaded_modules();
-    if (!mods) return out;
-    for (int i = 0; mods[i]; ++i) {
-        out.emplace_back(mods[i]);
-        delete[] mods[i];
-    }
-    delete[] mods;
-    return out;
-}
-
-LogosList installedPackages(LogosAPI* api)
+LogosList installedPackages(Backend& api)
 {
     nlohmann::json r = call(api, kPm, "getInstalledPackages");
     return r.is_array() ? r : LogosList::array();
@@ -176,9 +135,9 @@ std::map<std::string, InstalledInfo> byName(const LogosList& installed)
 
 // Which of `affected` are running right now. These get stopped before the
 // files move and restarted afterwards; everything else is untouched.
-std::vector<std::string> affectedLoaded(const std::vector<std::string>& affected)
+std::vector<std::string> affectedLoaded(Backend& api, const std::vector<std::string>& affected)
 {
-    const auto loaded = loadedModules();
+    const auto loaded = api.loadedModules();
     const std::unordered_set<std::string> loadedSet(loaded.begin(), loaded.end());
     std::vector<std::string> out;
     for (const auto& n : affected)
@@ -188,7 +147,7 @@ std::vector<std::string> affectedLoaded(const std::vector<std::string>& affected
 
 // Resolve the install/upgrade closure. Returns the resolver's array, or a
 // null json on failure.
-nlohmann::json resolveClosure(LogosAPI* api,
+nlohmann::json resolveClosure(Backend& api,
                               const std::vector<std::string>& names,
                               const Options& opts,
                               const LogosList& installed,
@@ -215,7 +174,7 @@ nlohmann::json resolveClosure(LogosAPI* api,
 
 // The cascade set for a removal: the package plus everything that depends on
 // it, dependents first so nothing is removed while something still needs it.
-std::vector<std::string> removalSet(LogosAPI* api, const std::string& name,
+std::vector<std::string> removalSet(Backend& api, const std::string& name,
                                     bool withDependents, std::string* errorOut)
 {
     if (!withDependents) return {name};
@@ -242,7 +201,7 @@ std::vector<std::string> removalSet(LogosAPI* api, const std::string& name,
 // plan
 // ---------------------------------------------------------------------------
 
-LogosMap plan(LogosAPI* api, Op op,
+LogosMap plan(Backend& api, Op op,
               const std::vector<std::string>& names,
               const Options& opts)
 {
@@ -347,7 +306,7 @@ LogosMap plan(LogosAPI* api, Op op,
     }
 
     out["changes"] = changes;
-    out["affected_loaded"] = affectedLoaded(affected);
+    out["affected_loaded"] = affectedLoaded(api, affected);
     return out;
 }
 
@@ -361,7 +320,7 @@ namespace {
 // ack timer inside requestX and cancels the whole operation if nothing
 // acknowledges; in-process that window is never at risk, but the ack is still
 // required — confirmX refuses an un-acked pending action.
-bool openGate(LogosAPI* api, Op op, const std::string& name,
+bool openGate(Backend& api, Op op, const std::string& name,
               const std::string& depChangesJson, std::string* errorOut)
 {
     nlohmann::json r;
@@ -385,7 +344,7 @@ bool openGate(LogosAPI* api, Op op, const std::string& name,
     return true;
 }
 
-void closeGate(LogosAPI* api, Op op, const std::string& name)
+void closeGate(Backend& api, Op op, const std::string& name)
 {
     switch (op) {
     case Op::Install: call(api, kPm, "cancelInstall",   LogosList{name}); break;
@@ -396,7 +355,7 @@ void closeGate(LogosAPI* api, Op op, const std::string& name)
 
 } // namespace
 
-LogosMap apply(LogosAPI* api, Op op,
+LogosMap apply(Backend& api, Op op,
                const std::vector<std::string>& names,
                const Options& opts)
 {
@@ -450,12 +409,12 @@ LogosMap apply(LogosAPI* api, Op op,
         // Stop them before their files disappear, dependents first — which is
         // the order `victims` is already in.
         for (const auto& v : victims)
-            logos_core_unload_module(v.c_str(), /*with_dependents=*/true);
+            api.unloadModule(v);
 
         nlohmann::json confirmR = call(api, kPm, "confirmMultiUninstall", victimArgs);
         if (!ok(confirmR, &e)) return fail("confirm", e);
 
-        logos_core_refresh_modules();
+        api.refreshModules();
         result["removed"] = victims;
         // Nothing to restore: every affected module was just removed.
         result["reloaded"] = LogosList::array();
@@ -475,7 +434,7 @@ LogosMap apply(LogosAPI* api, Op op,
                 return fail("request", e);
 
             for (const auto& m : toRestore)
-                logos_core_unload_module(m.c_str(), /*with_dependents=*/true);
+                api.unloadModule(m);
 
             nlohmann::json confirmR = (op == Op::Upgrade)
                 ? call(api, kPm, "confirmUpgrade", LogosList{name, std::string{}})
@@ -508,7 +467,7 @@ LogosMap apply(LogosAPI* api, Op op,
                 return fail("request", e);
 
             for (const auto& m : toRestore)
-                logos_core_unload_module(m.c_str(), /*with_dependents=*/true);
+                api.unloadModule(m);
 
             // confirmUpgrade removes a user-installed copy in-module, but
             // leaves an embedded copy intact. The download+install below
@@ -583,14 +542,14 @@ LogosMap apply(LogosAPI* api, Op op,
     // Make the new files discoverable without a restart. Without this the
     // daemon's known-module set still reflects the pre-install scan, so a
     // freshly installed module could not be loaded at all.
-    logos_core_refresh_modules();
+    api.refreshModules();
 
     // Restart what was running before — and only that. A newly installed
     // package is left unloaded: installing puts files on disk, loading is a
     // separate explicit act.
     LogosList reloaded = LogosList::array();
     for (const auto& m : toRestore) {
-        if (logos_core_load_module(m.c_str(), LOGOS_LOAD_REQUIRED_AND_OPTIONAL))
+        if (api.loadModule(m))
             reloaded.push_back(m);
     }
 
@@ -599,7 +558,7 @@ LogosMap apply(LogosAPI* api, Op op,
     return result;
 }
 
-LogosMap download(LogosAPI* api, const std::string& name,
+LogosMap download(Backend& api, const std::string& name,
                   const Options& opts, const std::string& destDir)
 {
     std::string why;

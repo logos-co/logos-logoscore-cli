@@ -15,6 +15,8 @@ set(TEST_LIB_SOURCES
     # it can link here at all — and why the ok / METHOD_FAILED / METHOD_NOT_FOUND
     # decision is unit-tested rather than only reachable from a live daemon.
     ${CMAKE_SOURCE_DIR}/src/core_service/call_envelope.cpp
+    # Package orchestration behind its Backend seam; the live wiring stays out.
+    ${CMAKE_SOURCE_DIR}/src/core_service/package_ops.cpp
     ${CMAKE_SOURCE_DIR}/src/client/client_state.cpp
     ${CMAKE_SOURCE_DIR}/src/client/output.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/command.cpp
@@ -62,6 +64,7 @@ add_executable(unit_tests
     test_output.cpp
     test_commands.cpp
     test_optional_dependency_closure.cpp
+    test_package_ops.cpp
     test_mode_detection.cpp
     test_token_store.cpp
     test_port_allocator.cpp
