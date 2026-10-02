@@ -110,6 +110,11 @@ int Command::ensureConnected()
     return 0;
 }
 
+void Command::startPackageDownloader()
+{
+    m_client.callModuleMethod("package_downloader", "start", LogosList::array());
+}
+
 std::vector<std::string> knownSubcommands()
 {
     return {

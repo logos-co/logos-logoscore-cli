@@ -60,6 +60,8 @@ public:
     // for a command whose method takes no distinguishing argument.
     int  connectAttempts = 0;
     int  rpcCalls = 0;
+    // Every callModuleMethod, as "module.method", in order.
+    std::vector<std::string> calledMethods;
     bool shutdownCalled = false;
     bool refreshModulesCalled = false;
     bool applyPackageCalled = false;
@@ -167,6 +169,7 @@ public:
     LogosMap callModuleMethod(const std::string& module, const std::string& method,
                                const LogosList& args) override {
         ++rpcCalls;
+        calledMethods.push_back(module + "." + method);
         lastCallModule = module;
         lastCallMethod = method;
         lastCallArgs   = args;
@@ -2170,6 +2173,54 @@ TEST_F(CommandTest, CatalogSource_SurfacesTheDownloaderError)
 
     EXPECT_NE(out.find("CATALOG_FAILED"), std::string::npos) << out;
     EXPECT_NE(out.find("cannot write config file"), std::string::npos) << out;
+}
+
+// ── package_downloader is started before its first call ─────────────────────
+
+// It does nothing until a consumer starts it.
+TEST_F(CommandTest, CatalogList_StartsTheDownloaderFirst)
+{
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}, {"result", LogosList::array()}};
+
+    auto cmd = createCommand("catalog", mockClient, output);
+    captureOutput([&]() { EXPECT_EQ(cmd->execute({"ls"}), 0); });
+
+    EXPECT_EQ(mockClient.calledMethods, (std::vector<std::string>{
+        "package_downloader.start", "package_downloader.listRepositories"}));
+}
+
+TEST_F(CommandTest, CatalogSource_StartsTheDownloaderFirst)
+{
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}, {"result", "any"}};
+
+    auto cmd = createCommand("catalog", mockClient, output);
+    captureOutput([&]() { EXPECT_EQ(cmd->execute({"source"}), 0); });
+
+    EXPECT_EQ(mockClient.calledMethods, (std::vector<std::string>{
+        "package_downloader.start", "package_downloader.getDownloadSource"}));
+}
+
+TEST_F(CommandTest, PackageSearch_StartsTheDownloaderFirst)
+{
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}, {"result", LogosList::array()}};
+
+    auto cmd = createCommand("package", mockClient, output);
+    captureOutput([&]() { cmd->execute({"search"}); });
+
+    EXPECT_EQ(mockClient.calledMethods, (std::vector<std::string>{
+        "package_downloader.start", "package_downloader.getCatalog"}));
+}
+
+TEST_F(CommandTest, PackageShow_StartsTheDownloaderBeforeTheCatalog)
+{
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}, {"result", LogosList::array()}};
+
+    auto cmd = createCommand("package", mockClient, output);
+    captureOutput([&]() { cmd->execute({"show", "storage_module"}); });
+
+    EXPECT_EQ(mockClient.calledMethods, (std::vector<std::string>{
+        "package_manager.getInstalledPackages",
+        "package_downloader.start", "package_downloader.getCatalog"}));
 }
 
 // ── package search / show under a restrictive download source ───────────────

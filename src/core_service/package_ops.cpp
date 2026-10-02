@@ -29,6 +29,15 @@ nlohmann::json call(Backend& api, const char* module, const std::string& method,
     return api.call(module, method, args, why);
 }
 
+// package_downloader does nothing until a consumer starts it, and start() is
+// idempotent, so each operation asks before its first call into it. The answer
+// is not checked: one that predates start() refuses the method and is running
+// already, and any other failure surfaces on the call that follows.
+void startDownloader(Backend& api)
+{
+    call(api, kPd, "start");
+}
+
 std::string withReason(const std::string& base, const std::string& why)
 {
     return why.empty() ? base : base + ": " + why;
@@ -199,6 +208,7 @@ nlohmann::json resolveClosure(Backend& api,
                               const LogosList& installed,
                               std::string* why)
 {
+    startDownloader(api);
     if (!opts.withDeps) {
         // --no-deps: act only on what was named. Still shaped like resolver
         // output so the rest of the pipeline is identical.
@@ -615,6 +625,7 @@ LogosMap apply(Backend& api, Op op,
 LogosMap download(Backend& api, const std::string& name,
                   const Options& opts, const std::string& destDir)
 {
+    startDownloader(api);
     std::string why;
     nlohmann::json r = call(api, kPd, "downloadPinned",
                             LogosList{opts.catalog, name, opts.version, opts.rootHash},

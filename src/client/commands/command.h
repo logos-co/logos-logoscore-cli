@@ -60,6 +60,13 @@ protected:
     // definition for which commands that covers and why none opts out.
     int ensureConnected();
 
+    // package_downloader does nothing until a consumer starts it. A command
+    // calls this, once connected, before its first call into it. start() is
+    // idempotent, and its answer is not checked: one that predates it refuses
+    // the method and is running already, and any other failure surfaces on the
+    // call that follows.
+    void startPackageDownloader();
+
 private:
     Client& m_client;
     Output& m_output;

@@ -330,30 +330,21 @@ sections:
           - "package_downloader"
           - "storage_module"
 
-      - title: "The downloader starts the node"
+      - title: "The node waits for the downloader"
         text: |
-          The downloader sees the storage module become ready and starts its
-          node. Nobody starts the node by hand.
+          Loading the downloader starts nothing: it waits for a consumer to
+          start it, and the first `catalog` or `package` command does. Until
+          then the node is down.
         run: |
           set -eu
-
-          # The node takes a few seconds to join the network
-          for _ in $(seq 30); do
-            running=$(./result-portable/bin/logosctl --config-dir ./storage-session call storage_module isRunning)
-            case "$running" in *'"result":true'*) break ;; esac
-            sleep 1
-          done
-
-          echo "$running"
-        code_block: "logosctl call storage_module isRunning"
+          ./result-portable/bin/logosctl --config-dir ./storage-session call package_downloader getState
+          ./result-portable/bin/logosctl --config-dir ./storage-session call storage_module isRunning
+        code_block: |
+          logosctl call package_downloader getState
+          logosctl call storage_module isRunning
         expect_contains:
-          - "true"
-
-      - title: "The node is on the catalog's network"
-        run: "./result-portable/bin/logosctl --config-dir ./storage-session call storage_module network"
-        code_block: "logosctl call storage_module network"
-        expect_contains:
-          - "logos.dev"
+          - '"result":"stopped"'
+          - '"result":false'
 
   - title: "Find something to install"
     step: true
@@ -388,6 +379,35 @@ sections:
         code_block: "logosctl search openmetrics"
         expect_contains:
           - "openmetrics"
+
+  - title: "The downloader starts the node"
+    step: true
+    platform: [linux]
+    text: |
+      The catalog commands started the downloader. It saw the storage module
+      ready and started its node: nobody starts the node by hand.
+    steps:
+      - title: "The node is running"
+        run: |
+          set -eu
+
+          # The node takes a few seconds to join the network
+          for _ in $(seq 30); do
+            running=$(./result-portable/bin/logosctl --config-dir ./storage-session call storage_module isRunning)
+            case "$running" in *'"result":true'*) break ;; esac
+            sleep 1
+          done
+
+          echo "$running"
+        code_block: "logosctl call storage_module isRunning"
+        expect_contains:
+          - "true"
+
+      - title: "The node is on the catalog's network"
+        run: "./result-portable/bin/logosctl --config-dir ./storage-session call storage_module network"
+        code_block: "logosctl call storage_module network"
+        expect_contains:
+          - "logos.dev"
 
   - title: "Install over Logos Storage"
     step: true

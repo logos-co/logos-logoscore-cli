@@ -143,17 +143,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout localhost.key -out localhost.c
   -subj "/CN=localhost" -addext "subjectAltName=IP:127.0.0.1"
 ```
 
-### 3.2 Trust it next to the public CAs
-
-The daemon still needs the public CAs to reach the default catalog,
-so our certificate is added to them rather than replacing them.
-
-```bash
-nix build nixpkgs#cacert -o cacert
-cat cacert/etc/ssl/certs/ca-bundle.crt localhost.crt > ca-bundle.crt
-```
-
-### 3.3 Start the HTTPS server
+### 3.2 Start the HTTPS server
 
 It serves the `www` directory.
 
@@ -161,7 +151,7 @@ It serves the `www` directory.
 caddy run --config Caddyfile --adapter caddyfile &
 ```
 
-### 3.4 Build index.json
+### 3.3 Build index.json
 
 `index.json` lists the package with two URLs: the storage one first,
 the HTTPS one second. `logos.dev` is the network the storage node
@@ -173,7 +163,7 @@ curl -sSLO https://raw.githubusercontent.com/logos-co/logos-modules-release-tool
 python3 index.py build urls.txt --no-icons -o www/index.json
 ```
 
-### 3.5 Write logos-repo.json
+### 3.4 Write logos-repo.json
 
 `logos-repo.json` names the catalog and points at its index.
 
@@ -193,7 +183,7 @@ EOF
 
 ```
 
-### 3.6 The HTTPS URL is dead for now
+### 3.5 The HTTPS URL is dead for now
 
 The package is not in `www`, so a successful install can only come
 from the storage network.
@@ -235,7 +225,7 @@ The catalog is fetched with libcurl, which must trust our
 self-signed certificate.
 
 ```bash
-HOME=$(pwd)/storage-home SSL_CERT_FILE=$(pwd)/ca-bundle.crt logosctl --config-dir ./storage-session daemon start --detach
+HOME=$(pwd)/storage-home SSL_CERT_FILE=$(pwd)/localhost.crt logosctl --config-dir ./storage-session daemon start --detach
 ```
 
 ### 4.3 The storage module comes up with the downloader
@@ -244,32 +234,28 @@ HOME=$(pwd)/storage-home SSL_CERT_FILE=$(pwd)/ca-bundle.crt logosctl --config-di
 logosctl module ls --loaded
 ```
 
-### 4.4 The downloader starts the node
+### 4.4 The node waits for the downloader
 
-The downloader sees the storage module become ready and starts its
-node. Nobody starts the node by hand.
+Loading the downloader starts nothing: it waits for a consumer to
+start it, and the first `catalog` or `package` command does. Until
+then the node is down.
 
 ```bash
+logosctl call package_downloader getState
 logosctl call storage_module isRunning
-```
-
-### 4.5 The node is on the catalog's network
-
-```bash
-logosctl call storage_module network
 ```
 
 ---
 
 ## Step 5: Find something to install
 
-The default catalog is always present. It is disabled so that the
+The default catalog is always present. It is removed so that the
 package can only come from ours.
 
 ### 5.1 Use our catalog only
 
 ```bash
-logosctl catalog disable <default url>
+logosctl catalog remove <default url>
 logosctl catalog add https://127.0.0.1:8443/logos-repo.json
 logosctl catalog refresh
 logosctl catalog ls
@@ -283,9 +269,28 @@ logosctl search openmetrics
 
 ---
 
-## Step 6: Install over Logos Storage
+## Step 6: The downloader starts the node
 
-### 6.1 Watch the downloader's events
+The catalog commands started the downloader. It saw the storage module
+ready and started its node: nobody starts the node by hand.
+
+### 6.1 The node is running
+
+```bash
+logosctl call storage_module isRunning
+```
+
+### 6.2 The node is on the catalog's network
+
+```bash
+logosctl call storage_module network
+```
+
+---
+
+## Step 7: Install over Logos Storage
+
+### 7.1 Watch the downloader's events
 
 `downloadDone` carries the package name (`arg0`) and the URL that
 served it (`arg1`).
@@ -294,25 +299,25 @@ served it (`arg1`).
 logosctl --json watch package_downloader > events.txt &
 ```
 
-### 6.2 Preview the install
+### 7.2 Preview the install
 
 ```bash
 logosctl install openmetrics --dry-run
 ```
 
-### 6.3 Install for real
+### 7.3 Install for real
 
 ```bash
 logosctl install openmetrics -y
 ```
 
-### 6.4 It came from the storage network
+### 7.4 It came from the storage network
 
 ```bash
 jq -rs 'map(select(.event == "downloadDone")) | last | .data.arg1' events.txt
 ```
 
-### 6.5 The package's CID is the one served
+### 7.5 The package's CID is the one served
 
 ```bash
 jq -es --arg src "logos:logos.dev:$(cat cid.txt)" \
@@ -320,7 +325,7 @@ jq -es --arg src "logos:logos.dev:$(cat cid.txt)" \
 
 ```
 
-### 6.6 The session's node now holds the package
+### 7.6 The session's node now holds the package
 
 A node that downloads a file keeps it, and provides it to the
 network.
@@ -331,21 +336,21 @@ logosctl call storage_module exists "$(cat cid.txt)"
 
 ---
 
-## Step 7: Installed is not loaded
+## Step 8: Installed is not loaded
 
-### 7.1 Discoverable, not loaded
+### 8.1 Discoverable, not loaded
 
 ```bash
 logosctl module ls
 ```
 
-### 7.2 Load it
+### 8.2 Load it
 
 ```bash
 logosctl module load openmetrics
 ```
 
-### 7.3 Confirm it is running
+### 8.3 Confirm it is running
 
 ```bash
 logosctl module ls --loaded
@@ -353,36 +358,36 @@ logosctl module ls --loaded
 
 ---
 
-## Step 8: Fall back to HTTPS
+## Step 9: Fall back to HTTPS
 
 Without the storage module, the downloader skips the `logos:` URL and
 uses the HTTPS one.
 
-### 8.1 Remove the package
+### 9.1 Remove the package
 
 ```bash
 logosctl package remove openmetrics -y
 ```
 
-### 8.2 Unload the storage module
+### 9.2 Unload the storage module
 
 ```bash
 logosctl module unload storage_module
 ```
 
-### 8.3 Make the HTTPS URL live
+### 9.3 Make the HTTPS URL live
 
 ```bash
 cp openmetrics.lgx www/
 ```
 
-### 8.4 Install again
+### 9.4 Install again
 
 ```bash
 logosctl install openmetrics -y
 ```
 
-### 8.5 It came from HTTPS
+### 9.5 It came from HTTPS
 
 ```bash
 jq -rs 'map(select(.event == "downloadDone")) | last | .data.arg1' events.txt
@@ -390,15 +395,15 @@ jq -rs 'map(select(.event == "downloadDone")) | last | .data.arg1' events.txt
 
 ---
 
-## Step 9: Shut down
+## Step 10: Shut down
 
-### 9.1 Stop the daemon
+### 10.1 Stop the daemon
 
 ```bash
 logosctl daemon stop
 ```
 
-### 9.2 Stop the watcher, the provider and the HTTPS server
+### 10.2 Stop the watcher, the provider and the HTTPS server
 
 ```bash
 kill %1 %2 %3
