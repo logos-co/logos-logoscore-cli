@@ -14,6 +14,8 @@
 #include <csignal>
 #include <cstdlib>
 
+#include <fcntl.h>
+#include <string>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -101,5 +103,27 @@ TEST(ProcessUtil, AnUnreapedChildCountsAsExited)
 
     int status = 0;
     ::waitpid(pid, &status, 0);
+}
+#endif
+
+#if defined(__linux__)
+// `daemon stop` aborted with "basic_filebuf::underflow error reading the file:
+// No such process" when the daemon was reaped between opening /proc/<pid>/stat and reading it.
+TEST(ProcessUtil, AStatReadRacingTheReapReportsExitedInsteadOfThrowing)
+{
+    const pid_t pid = ::fork();
+    ASSERT_GE(pid, 0) << "fork failed";
+    if (pid == 0) { ::pause(); ::_exit(0); }
+
+    const int fd = ::open(("/proc/" + std::to_string(pid) + "/stat").c_str(), O_RDONLY);
+    ASSERT_GE(fd, 0);
+    ::kill(pid, SIGKILL);
+    int status = 0;
+    ::waitpid(pid, &status, 0);   // reaped: the read below fails with ESRCH
+
+    bool exited = false;
+    EXPECT_NO_THROW(exited = logosctl::procStatShowsExited(fd));
+    EXPECT_TRUE(exited);
+    ::close(fd);
 }
 #endif

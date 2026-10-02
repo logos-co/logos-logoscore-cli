@@ -30,24 +30,44 @@
 #include <sys/types.h>
 #endif
 #if defined(__linux__)
-#include <fstream>
-#include <iterator>
+#include <fcntl.h>
 #include <string>
+#include <unistd.h>
 #elif defined(__APPLE__)
 #include <sys/sysctl.h>
 #endif
 
 namespace logosctl {
 
+#if defined(__linux__)
+// Reads an open /proc/<pid>/stat. A read racing the reap fails with ESRCH: the
+// process is gone. Raw read(): std::filebuf throws on that error, which aborted `daemon stop`.
+inline bool procStatShowsExited(int fd)
+{
+    std::string s;
+    char buf[512];
+    for (;;) {
+        const ssize_t n = ::read(fd, buf, sizeof buf);
+        if (n > 0) { s.append(buf, static_cast<size_t>(n)); continue; }
+        if (n == 0) break;
+        if (errno == EINTR) continue;
+        return errno == ESRCH;
+    }
+    const auto comm = s.rfind(')');   // "pid (comm) state ..."
+    return comm != std::string::npos && comm + 2 < s.size() && s[comm + 2] == 'Z';
+}
+#endif
+
 // Exited but not yet reaped by its parent, e.g. a daemon a test harness
 // spawned. kill(pid, 0) still succeeds on one.
 inline bool processIsZombie(long long pid)
 {
 #if defined(__linux__)
-    std::ifstream f("/proc/" + std::to_string(pid) + "/stat");
-    const std::string s((std::istreambuf_iterator<char>(f)), {});
-    const auto comm = s.rfind(')');   // "pid (comm) state ..."
-    return comm != std::string::npos && comm + 2 < s.size() && s[comm + 2] == 'Z';
+    const int fd = ::open(("/proc/" + std::to_string(pid) + "/stat").c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    const bool exited = procStatShowsExited(fd);
+    ::close(fd);
+    return exited;
 #elif defined(__APPLE__)
     int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, static_cast<int>(pid)};
     struct kinfo_proc info{};
