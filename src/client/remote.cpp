@@ -6,10 +6,13 @@
 #include <logos/peering/local_identity.h>
 #include <logos/peering/service.h>
 
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <thread>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 #endif
 
 namespace logosctl::remote {
@@ -36,9 +39,14 @@ const CallerRef kSelf = CallerRef::module("logosctl");
 
 std::string hostName()
 {
+#ifdef _WIN32
+    const char* name = std::getenv("COMPUTERNAME");
+    std::string host = name ? name : "";
+#else
     char name[256] = {};
     if (gethostname(name, sizeof name - 1) != 0) return {};
     std::string host(name);
+#endif
     if (const auto dot = host.find('.'); dot != std::string::npos) host.resize(dot);
     return host;
 }
