@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-class LogosAPI;
+namespace logosctl { class PlainRpcContext; }
 
 // Daemon-side orchestration for the mutating package operations.
 //
@@ -23,8 +23,8 @@ namespace package_ops {
 
 enum class Op { Install, Upgrade, Remove };
 
-// The package modules and module runtime that plan/apply drive. The LogosAPI
-// overloads wire it to the daemon (package_ops_live.cpp); tests use a fake.
+// The package modules and module runtime that plan/apply drive. The
+// PlainRpcContext overloads wire it to the daemon (package_ops_live.cpp); tests use a fake.
 struct Backend {
     // A null json means the call itself failed; `why` (may be null) gets the reason.
     std::function<nlohmann::json(const char* module, const std::string& method,
@@ -64,7 +64,7 @@ struct Options {
 // the set of currently-loaded modules the operation will stop and restart.
 // `stopped_dependents` are running modules that depend on one of those: they
 // are stopped with it and NOT restarted.
-LogosMap plan(LogosAPI* api, Op op,
+LogosMap plan(logosctl::PlainRpcContext* api, Op op,
               const std::vector<std::string>& names,
               const Options& opts);
 LogosMap plan(Backend& backend, Op op,
@@ -78,7 +78,7 @@ LogosMap plan(Backend& backend, Op op,
 // Newly installed packages are deliberately NOT loaded — installing puts
 // files on disk, loading is a separate explicit act. Only the affected
 // modules that were running are restarted; their stopped dependents are not.
-LogosMap apply(LogosAPI* api, Op op,
+LogosMap apply(logosctl::PlainRpcContext* api, Op op,
                const std::vector<std::string>& names,
                const Options& opts);
 LogosMap apply(Backend& backend, Op op,
@@ -100,7 +100,7 @@ LogosMap apply(Backend& backend, Op op,
 // than silently writing somewhere else.
 //
 // Shape: { status, result: { name, version, path, repository, ... } }
-LogosMap download(LogosAPI* api, const std::string& name,
+LogosMap download(logosctl::PlainRpcContext* api, const std::string& name,
                   const Options& opts, const std::string& destDir);
 LogosMap download(Backend& backend, const std::string& name,
                   const Options& opts, const std::string& destDir);

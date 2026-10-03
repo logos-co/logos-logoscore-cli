@@ -50,13 +50,10 @@ public:
     // dir. start() calls it, and so does the `--detach` parent before it spawns.
     static bool refuseIfAlreadyRunning();
 
-#ifdef _WIN32
-    // Entry point for the Win32 console control handler, which lives in an
-    // anonymous namespace in daemon.cpp and so cannot reach the private
-    // handler directly. Posts quit() to the main thread; safe to call from the
-    // dedicated thread Windows runs the control routine on.
+    // Wake the plain daemon wait loop. requestShutdownAfter gives an RPC reply
+    // time to leave the provider before teardown closes its transport.
     static void requestShutdown();
-#endif
+    static void requestShutdownAfter(int delayMs);
 
 private:
     static void setupSignalHandlers();

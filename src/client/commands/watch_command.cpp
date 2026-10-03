@@ -1,8 +1,15 @@
 #include "watch_command.h"
 #include <CLI/CLI.hpp>
 #include <fmt/format.h>
-#include <QCoreApplication>
 #include <iostream>
+#include <memory>
+
+void waitForStop(std::mutex& mutex, std::condition_variable& wake,
+                 const std::function<bool()>& stopped)
+{
+    std::unique_lock<std::mutex> lock(mutex);
+    wake.wait(lock, stopped);
+}
 
 int WatchCommand::execute(const std::vector<std::string>& args)
 {
@@ -24,14 +31,26 @@ int WatchCommand::execute(const std::vector<std::string>& args)
     if (err != 0)
         return err;
 
+    // Shared with the protocol worker, which may still report a loss after a
+    // failed watch has returned.
+    struct Lost {
+        std::mutex mutex;
+        std::condition_variable wake;
+        bool gone = false;
+    };
+    auto lost = std::make_shared<Lost>();
     bool ok = client().watchModuleEvents(module, eventName,
         [this](const LogosMap& event) {
             output().printEvent(event);
         },
-        [this, module](const std::string& reason) {
+        [this, module, lost](const std::string& reason) {
             output().printError("NO_DAEMON",
                 fmt::format("The daemon went away ({}); stopped watching '{}'.", reason, module));
-            QCoreApplication::exit(2);
+            {
+                std::lock_guard<std::mutex> lock(lost->mutex);
+                lost->gone = true;
+            }
+            lost->wake.notify_all();
         });
 
     if (!ok) {
@@ -43,5 +62,8 @@ int WatchCommand::execute(const std::vector<std::string>& args)
     if (!output().isJsonMode())
         std::cerr << fmt::format("Watching events from '{}'... (Ctrl+C to stop)\n", module);
 
-    return QCoreApplication::exec();
+    // Event delivery is owned by the protocol worker. Keep the command alive
+    // until the daemon goes away, or the operating system handles Ctrl+C.
+    waitForStop(lost->mutex, lost->wake, [&] { return lost->gone; });
+    return 2;
 }

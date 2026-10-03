@@ -1,8 +1,14 @@
 #include <gtest/gtest.h>
+#include "test_platform.h"
 
 #include <filesystem>
 #include <logos_json.h>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -11,18 +17,15 @@
 #include <optional>
 #include <sstream>
 #include <string>
-#include <unistd.h>
 #include <vector>
 #include "client/client.h"
 #include "client/client_state.h"
 #include "client/output.h"
 #include "client/commands/command.h"
 #include "client/commands/package_command.h"
+#include "client/commands/watch_command.h"
 #include "config.h"
 #include "daemon/daemon_state.h"
-
-#include <QCoreApplication>
-#include <QTimer>
 
 // Mock client for testing commands without a real daemon
 class MockClient : public Client {
@@ -87,6 +90,11 @@ public:
     bool watchShouldSucceed = false;
     // Non-empty: a successful watch then reports the daemon lost with this reason.
     std::string watchLostReason;
+    std::thread watchLossThread;
+
+    ~MockClient() override {
+        if (watchLossThread.joinable()) watchLossThread.join();
+    }
 
     bool connect() override {
         ++connectAttempts;
@@ -192,8 +200,11 @@ public:
         lastWatchModule    = module;
         lastWatchEventName = eventName;
         const bool ok = m_connected && watchShouldSucceed;
+        // The loss arrives on another thread, as the protocol worker reports it.
         if (ok && !watchLostReason.empty())
-            QTimer::singleShot(0, [onDaemonLost, reason = watchLostReason] { onDaemonLost(reason); });
+            watchLossThread = std::thread([onDaemonLost, reason = watchLostReason] {
+                onDaemonLost(reason);
+            });
         return ok;
     }
 
@@ -222,17 +233,17 @@ protected:
         mockClient.shouldConnect = true;
 
         testDir = std::filesystem::temp_directory_path()
-                / ("logosctl_test_cmd_" + std::to_string(getpid()));
+                / ("logosctl_test_cmd_" + std::to_string(logosctl_test::currentPid()));
         std::filesystem::create_directories(testDir);
 
-        const char* home = std::getenv("HOME");
+        const char* home = std::getenv(logosctl_test::homeVar());
         origHome = home ? home : "";
-        setenv("HOME", testDir.c_str(), 1);
+        logosctl_test::setEnv(logosctl_test::homeVar(), testDir);
 
         const char* cd = std::getenv("LOGOSCTL_CONFIG_DIR");
         origConfigDirSet = cd != nullptr;
         origConfigDir = origConfigDirSet ? cd : "";
-        unsetenv("LOGOSCTL_CONFIG_DIR");
+        logosctl_test::unsetEnv("LOGOSCTL_CONFIG_DIR");
 
         Config::setConfigDir(testDir.string());
     }
@@ -240,11 +251,11 @@ protected:
     void TearDown() override {
         ClientStateFile::setOverride(std::nullopt);
         Config::setConfigDir("");
-        setenv("HOME", origHome.c_str(), 1);
+        logosctl_test::setEnv(logosctl_test::homeVar(), origHome);
         if (origConfigDirSet)
-            setenv("LOGOSCTL_CONFIG_DIR", origConfigDir.c_str(), 1);
+            logosctl_test::setEnv("LOGOSCTL_CONFIG_DIR", origConfigDir);
         else
-            unsetenv("LOGOSCTL_CONFIG_DIR");
+            logosctl_test::unsetEnv("LOGOSCTL_CONFIG_DIR");
         std::error_code ec;
         std::filesystem::remove_all(testDir, ec);
     }
@@ -1039,6 +1050,32 @@ TEST_F(CommandTest, Stats_Success)
 
 // ── watch ────────────────────────────────────────────────────────────────────
 
+// Detector: watch waited without a predicate, so a spurious wakeup (which the
+// waiter cannot tell from a notify) ended it with exit 0.
+TEST(WatchWait, AWakeupThatFindsNothingToStopWaitsAgain)
+{
+    std::mutex mutex;
+    std::condition_variable wake;
+    std::atomic<bool> stop{false};
+    std::atomic<bool> returned{false};
+    std::thread waiter([&] {
+        waitForStop(mutex, wake, [&] { return stop.load(); });
+        returned = true;
+    });
+    for (int i = 0; i < 20; ++i) {
+        wake.notify_all();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_FALSE(returned.load()) << "a wakeup ended the wait";
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        stop = true;
+    }
+    wake.notify_all();
+    waiter.join();
+    EXPECT_TRUE(returned.load());
+}
+
 TEST_F(CommandTest, Watch_MissingArgs)
 {
     auto cmd = createCommand("watch", mockClient, output);
@@ -1087,10 +1124,6 @@ TEST_F(CommandTest, Watch_ModuleNotLoaded_ReturnsExit3)
 // The daemon going away ends the watch with NO_DAEMON, exit 2, instead of leaving it running.
 TEST_F(CommandTest, Watch_DaemonGoesAway_ExitsWithNoDaemon)
 {
-    static int argc = 0;
-    static QCoreApplication* app = QCoreApplication::instance()
-        ? QCoreApplication::instance() : new QCoreApplication(argc, nullptr);
-    (void)app;
     mockClient.watchShouldSucceed = true;
     mockClient.watchLostReason = "provider_unavailable";
     auto cmd = createCommand("watch", mockClient, output);
@@ -1210,7 +1243,7 @@ TEST_F(CommandTest, Stop_LiveSession_StillStops)
 {
     // The control. A guard that refuses every session would satisfy the test
     // above and break the command; this pins the other side of the line.
-    seedSession("deadbeef1234", static_cast<long long>(getpid()));
+    seedSession("deadbeef1234", static_cast<long long>(logosctl_test::currentPid()));
     if (::testing::Test::HasFatalFailure()) return;
 
     mockClient.shutdownResult = LogosMap{
@@ -1367,7 +1400,7 @@ TEST_F(CommandTest, EveryRpcCommand_LiveSession_StillDials)
     for (const RpcCommand& c : kRpcCommands) {
         SCOPED_TRACE(c.typed);
 
-        seedSession("deadbeef1234", static_cast<long long>(getpid()));
+        seedSession("deadbeef1234", static_cast<long long>(logosctl_test::currentPid()));
         if (::testing::Test::HasFatalFailure()) return;
 
         MockClient mock;
@@ -1512,7 +1545,7 @@ TEST_F(CommandTest, Status_UnansweredRpc_ReportsNotRunningAndExitsNonZero)
 {
     // A live session, so `status` gets past "not_configured" and past the
     // stale-session guard and actually reaches the RPC.
-    seedSession("deadbeef1234", static_cast<long long>(getpid()));
+    seedSession("deadbeef1234", static_cast<long long>(logosctl_test::currentPid()));
     if (::testing::Test::HasFatalFailure()) return;
 
     mockClient.statusResult = LogosMap{
@@ -1534,7 +1567,7 @@ TEST_F(CommandTest, Status_UnansweredRpc_ReportsNotRunningAndExitsNonZero)
 
 TEST_F(CommandTest, Status_LiveDaemon_StillExitsZero)
 {
-    seedSession("deadbeef1234", static_cast<long long>(getpid()));
+    seedSession("deadbeef1234", static_cast<long long>(logosctl_test::currentPid()));
     if (::testing::Test::HasFatalFailure()) return;
 
     mockClient.statusResult = LogosMap{
@@ -1786,14 +1819,16 @@ TEST_F(CommandTest, PackageDownload_PassesOutputDirectoryThrough)
         {"status", "ok"},
         {"result", LogosMap{{"name", "storage_module"}, {"path", "/out/storage_module.lgx"}}}};
 
+    // Absolute on every platform: on Windows "/out" has no drive, so it is relative.
+    const std::string out = (std::filesystem::temp_directory_path() / "out").string();
     auto cmd = createCommand("package", mockClient, output);
     captureOutput([&]() {
-        int exitCode = cmd->execute({"download", "storage_module", "-o", "/out"});
+        int exitCode = cmd->execute({"download", "storage_module", "-o", out});
         EXPECT_EQ(exitCode, 0);
     });
 
     EXPECT_EQ(mockClient.lastDownloadName, "storage_module");
-    EXPECT_EQ(mockClient.lastDownloadOpts.value("output", std::string{}), "/out");
+    EXPECT_EQ(mockClient.lastDownloadOpts.value("output", std::string{}), out);
 }
 
 // A relative -o has to become absolute before it leaves this process: the

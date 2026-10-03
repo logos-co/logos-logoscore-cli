@@ -7,8 +7,15 @@
 #include <string>
 #include <vector>
 
+// What a client is told when the daemon answers but refuses its token.
+inline constexpr const char* kTokenRefusedMessage =
+    "The daemon refused this client's token. The boot token (client/auto.json) "
+    "is accepted over the local socket only: to reach a daemon over tcp or tls, "
+    "issue a named token there (`logosctl token issue --name NAME`) and use it as "
+    "this client's token file or $LOGOSCTL_TOKEN.";
+
 // Abstract client interface for communicating with daemon's core_service.
-// The real implementation (RpcClient) uses LogosAPIClient from logos-cpp-sdk.
+// The real implementation (RpcClient) uses the Qt-free logos-protocol C ABI.
 // Tests can provide mock implementations.
 class Client {
 public:
@@ -17,6 +24,8 @@ public:
     virtual bool connect() = 0;
     virtual bool isConnected() const = 0;
     virtual std::string lastError() const = 0;
+    // The last call was answered with a refusal of our token, not unanswered.
+    virtual bool tokenRefused() const { return false; }
 
     // Module lifecycle
     // Also loads installed optional dependencies unless `withOptional` is false.
@@ -73,8 +82,8 @@ public:
                                    std::function<void(const std::string& reason)> onDaemonLost) = 0;
 };
 
-// Real RPC client implementation that connects to the daemon.
-// Depends on logos-cpp-sdk (LogosAPIClient).
+// Real RPC client implementation that connects to the daemon through
+// qt_remote_plain. It does not link Qt or the SDK's Qt client classes.
 class RpcClient : public Client {
 public:
     RpcClient();
@@ -105,6 +114,7 @@ public:
                            const std::string& eventName,
                            std::function<void(const LogosMap&)> callback,
                            std::function<void(const std::string& reason)> onDaemonLost) override;
+    bool tokenRefused() const override;
 
 private:
     // Answer "is the daemon actually gone?" from evidence, after a shutdown

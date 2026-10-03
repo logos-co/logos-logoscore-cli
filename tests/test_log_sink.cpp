@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "test_platform.h"
 
 #include "daemon/log_sink.h"
 
@@ -8,7 +9,6 @@
 #include <string>
 #include <fcntl.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
 namespace fs = std::filesystem;
 
@@ -16,10 +16,9 @@ namespace {
 
 std::string uniqueDir(const char* tag)
 {
-    const char* t = std::getenv("TMPDIR");
-    std::string base = t && *t ? t : "/tmp";
-    if (!base.empty() && base.back() == '/') base.pop_back();
-    return base + "/logosctl_" + tag + "_" + std::to_string(::getpid());
+    return (fs::temp_directory_path() /
+            ("logosctl_" + std::string(tag) + "_" + std::to_string(logosctl_test::currentPid())))
+        .string();
 }
 
 // Counts real log files only. The stable name is a symlink into this same
@@ -60,6 +59,7 @@ TEST_F(LogSinkTest, CapturesStdoutAndStderr)
     o.dir = dir;
     o.console = false;   // don't spray the test runner's output
     ASSERT_TRUE(LogSink::instance().start(o));
+    const std::string file = LogSink::instance().currentFile();
 
     std::printf("hello-from-stdout\n");
     std::fprintf(stderr, "hello-from-stderr\n");
@@ -68,7 +68,7 @@ TEST_F(LogSinkTest, CapturesStdoutAndStderr)
 
     LogSink::instance().stop();   // drains the reader before we read the file
 
-    std::ifstream ifs(dir + "/daemon.log");
+    std::ifstream ifs(file);
     ASSERT_TRUE(ifs.good());
     const std::string body((std::istreambuf_iterator<char>(ifs)),
                             std::istreambuf_iterator<char>());
@@ -84,12 +84,13 @@ TEST_F(LogSinkTest, DoesNotRestampAlreadyFormattedLines)
     o.dir = dir;
     o.console = false;
     ASSERT_TRUE(LogSink::instance().start(o));
+    const std::string file = LogSink::instance().currentFile();
 
     std::printf("[2026-07-29 16:38:32.715] [info] [logos] already-formatted\n");
     std::fflush(stdout);
     LogSink::instance().stop();
 
-    std::ifstream ifs(dir + "/daemon.log");
+    std::ifstream ifs(file);
     std::string line;
     std::getline(ifs, line);
     EXPECT_EQ(line, "[2026-07-29 16:38:32.715] [info] [logos] already-formatted");
@@ -151,12 +152,16 @@ TEST_F(LogSinkTest, StampsTheFileAndLinksTheStableName)
     EXPECT_EQ(fs::path(real).extension().string(), ".log");
     EXPECT_EQ(base.size(), std::string("daemon_20260729_163832.log").size());
 
+#ifndef _WIN32
+    // Windows withholds symlinks from ordinary users, so there the stable name
+    // is best effort (log_sink.cpp) and may not exist.
     ASSERT_TRUE(fs::is_symlink(link));
     std::ifstream viaLink(link);
     const std::string body((std::istreambuf_iterator<char>(viaLink)),
                             std::istreambuf_iterator<char>());
     EXPECT_NE(body.find("marker-line"), std::string::npos)
         << "the stable name must resolve to this session's file";
+#endif
 }
 
 // spdlog's own max_files only prunes one sink's rotation set, and every start
@@ -177,19 +182,23 @@ TEST_F(LogSinkTest, RetentionPrunesAcrossSessions)
 
         // Stamps have one-second resolution, so without this two sessions
         // would collide on the same filename and the test would prove nothing.
-        if (session < 4) ::sleep(1);
+        if (session < 4) std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
     EXPECT_EQ(countLogFiles(dir, "daemon_"), 2u)
         << "five sessions with max_files: 2 should leave two log files";
+#ifndef _WIN32
     // The stable link must survive pruning and still resolve.
     const std::string link = LogSink::stablePath(dir, "daemon.log");
     EXPECT_TRUE(fs::is_symlink(link));
     EXPECT_TRUE(fs::exists(fs::read_symlink(link).is_absolute()
                                ? fs::read_symlink(link)
                                : fs::path(dir) / fs::read_symlink(link)));
+#endif
 }
 
+#ifndef _WIN32
+// Finds the startup file's descriptors by inode, which Windows does not report.
 // Detached, stdout/stderr are the --detach startup file, which the parent
 // deletes: the sink must not hold it open, mirror into it, or restore it.
 TEST_F(LogSinkTest, DetachedHoldsNoHandleOnTheOriginalStdio)
@@ -236,6 +245,7 @@ TEST_F(LogSinkTest, DetachedHoldsNoHandleOnTheOriginalStdio)
                             std::istreambuf_iterator<char>());
     EXPECT_NE(body.find("detached-line"), std::string::npos);
 }
+#endif
 
 // Disabled logging is a valid configuration, not an error, and must leave
 // stdout alone.

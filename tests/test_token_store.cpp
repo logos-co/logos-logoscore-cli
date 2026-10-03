@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
+#include "test_platform.h"
 
 #include "daemon/token_store.h"
 #include "daemon/daemon_state.h"
 #include "config.h"
 
-#include <unistd.h>
 
 #include <algorithm>
 #include <chrono>
@@ -27,7 +27,7 @@ protected:
         // Legacy so that anything which forgets to set it behaves like the
         // tool that exists today, so say which one we mean.
         Config::setFlavor(Config::Flavor::Modern);
-        dir = fs::temp_directory_path() / ("tokenstore-" + std::to_string(::getpid()) +
+        dir = fs::temp_directory_path() / ("tokenstore-" + std::to_string(logosctl_test::currentPid()) +
                                            "-" + std::to_string(rand()));
         fs::create_directories(dir);
         // Route TokensFile (which TokenStore persists into) at our
@@ -35,12 +35,12 @@ protected:
         // underlying file uses Config::daemonTokensPath().
         const char* cd = std::getenv("LOGOSCTL_CONFIG_DIR");
         origConfigDir = cd ? cd : "";
-        setenv("LOGOSCTL_CONFIG_DIR", dir.string().c_str(), 1);
+        logosctl_test::setEnv("LOGOSCTL_CONFIG_DIR", dir.string());
         Config::setConfigDir("");
     }
     void TearDown() override {
-        if (origConfigDir.empty()) unsetenv("LOGOSCTL_CONFIG_DIR");
-        else setenv("LOGOSCTL_CONFIG_DIR", origConfigDir.c_str(), 1);
+        if (origConfigDir.empty()) logosctl_test::unsetEnv("LOGOSCTL_CONFIG_DIR");
+        else logosctl_test::setEnv("LOGOSCTL_CONFIG_DIR", origConfigDir);
         std::error_code ec;
         fs::remove_all(dir, ec);
     }
@@ -317,15 +317,15 @@ TEST_F(TokenStoreTest, ReplaceWriteFailure_PreservesPriorRawToken)
                         std::istreambuf_iterator<char>());
     ASSERT_NE(before.find(first), std::string::npos);
 
-    // Make daemon/ (which holds tokens.json + its .tmp) read-only so the
-    // tokens.json write fails; tokens/ keeps its own 0700 and stays writable.
-    const fs::path daemonDir = fs::path(Config::daemonTokensPath()).parent_path();
-    ::chmod(daemonDir.c_str(), 0500);
+    // A directory where tokens.json's temp file goes, so that write fails on
+    // every platform while tokens/ stays writable for the raw file.
+    const fs::path tokensTmp = Config::daemonTokensPath() + ".tmp";
+    ASSERT_TRUE(fs::create_directory(tokensTmp));
 
     auto r = store.issueToken("alice", /*expiresAt=*/{},
                               /*localOnly=*/false, /*replace=*/true);
 
-    ::chmod(daemonDir.c_str(), 0700);  // restore for assertions/teardown
+    fs::remove(tokensTmp);  // restore for assertions/teardown
 
     EXPECT_EQ(r.status, TokenStore::IssueStatus::IoError)
         << "a tokens.json write failure during --replace must report IoError";

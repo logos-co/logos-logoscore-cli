@@ -7,17 +7,20 @@
 // rests on this function answering honestly in both directions.
 
 #include <gtest/gtest.h>
+#include "test_platform.h"
 
 #include <process_util.h>
 
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
-
-#include <fcntl.h>
 #include <string>
+
+#ifndef _WIN32
+#include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 namespace {
 
@@ -27,6 +30,33 @@ int elapsedMs(std::chrono::steady_clock::time_point t0)
         std::chrono::steady_clock::now() - t0).count());
 }
 
+#ifdef _WIN32
+// A child that exits after `lifetimeMs`: the test child, since there is no
+// fork(). Windows keeps no zombies, so there is nothing to reap.
+struct AutoReapedChild {
+    long long pid = -1;
+    HANDLE process = nullptr;
+
+    explicit AutoReapedChild(int lifetimeMs) {
+        std::wstring command = L"\"" + logosctl_test::childPath().wstring() + L"\" sleep-ms "
+                             + std::to_wstring(lifetimeMs);
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION info{};
+        if (::CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, 0, nullptr,
+                             nullptr, &startup, &info)) {
+            ::CloseHandle(info.hThread);
+            process = info.hProcess;
+            pid = static_cast<long long>(info.dwProcessId);
+        }
+    }
+    ~AutoReapedChild() {
+        if (!process) return;
+        if (pid > 0) ::TerminateProcess(process, 1);
+        ::CloseHandle(process);
+    }
+};
+#else
 // Spawn a child that exits after `lifetimeMs`, with SIGCHLD ignored so the
 // kernel reaps it for us.
 struct AutoReapedChild {
@@ -50,6 +80,7 @@ struct AutoReapedChild {
         sigaction(SIGCHLD, &saved, nullptr);
     }
 };
+#endif
 
 } // namespace
 
@@ -64,7 +95,7 @@ TEST(ProcessUtil, WaitForProcessExitRejectsNonPids)
 TEST(ProcessUtil, WaitForProcessExitReturnsFalseWhileTheProcessLives)
 {
     const auto t0 = std::chrono::steady_clock::now();
-    EXPECT_FALSE(logosctl::waitForProcessExit(::getpid(), 300));
+    EXPECT_FALSE(logosctl::waitForProcessExit(logosctl_test::currentPid(), 300));
     // It must actually have waited, not bailed out early on some other read
     // of "not exited yet".
     EXPECT_GE(elapsedMs(t0), 250);
@@ -73,7 +104,7 @@ TEST(ProcessUtil, WaitForProcessExitReturnsFalseWhileTheProcessLives)
 TEST(ProcessUtil, WaitForProcessExitNoticesTheExitPromptly)
 {
     AutoReapedChild child(200);
-    ASSERT_GT(child.pid, 0) << "fork failed";
+    ASSERT_GT(child.pid, 0) << "could not start the child";
 
     const auto t0 = std::chrono::steady_clock::now();
     EXPECT_TRUE(logosctl::waitForProcessExit(child.pid, 10000));
