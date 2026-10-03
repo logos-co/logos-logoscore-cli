@@ -363,6 +363,21 @@ TEST_F(CommandTest, Peer_AcceptingRuntimeControlPrintsAPolicyExample)
     EXPECT_NE(out.find("rt-1/logosctl"), std::string::npos) << out;
 }
 
+// --allow reaches the pairing calls; without it they keep their short forms.
+TEST_F(CommandTest, Peer_AllowGrantsTheListedModules)
+{
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}, {"result", {{"invite", "logos-pair:v1:x"}, {"ok", true}}}};
+    auto cmd = createCommand("peer", mockClient, output);
+    ASSERT_NE(cmd, nullptr);
+    captureOutput([&] { EXPECT_EQ(cmd->execute({"invite", "--allow", "a,b"}), 0); });
+    EXPECT_EQ(mockClient.lastCallArgs, LogosList::array({"peer", 0, LogosList::array({"a", "b"})}));
+    captureOutput([&] { EXPECT_EQ(cmd->execute({"accept", "p1", "--allow", "a"}), 0); });
+    EXPECT_EQ(mockClient.lastCallMethod, "confirmPairing");
+    EXPECT_EQ(mockClient.lastCallArgs, LogosList::array({"p1", LogosList::array({"a"})}));
+    captureOutput([&] { EXPECT_EQ(cmd->execute({"accept", "p1"}), 0); });
+    EXPECT_EQ(mockClient.lastCallArgs, LogosList::array({"p1"}));
+}
+
 // These tests build without libpeering: remote mode says so rather than failing late.
 TEST_F(CommandTest, Remote_WithoutLibpeeringSaysSo)
 {

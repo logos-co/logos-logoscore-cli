@@ -17,11 +17,13 @@ constexpr const char* kUsage =
     "  status | ls | pending | routes | exports | imports\n"
     "  pair-window SECONDS           admit code pairing for a while (0 closes)\n"
     "  pair HOST PORT                start pairing; compare the code, then accept\n"
-    "  accept ID | reject ID         decide a pending pairing\n"
-    "  invite [--runtime-control] [--ttl S]\n"
-    "                                print a single-use invite; --runtime-control is for a\n"
-    "                                remote logosctl, which may then call what `policy` grants\n"
-    "  redeem [FILE|-]               redeem an invite read from FILE or stdin\n"
+    "  accept ID [--allow M,N] | reject ID\n"
+    "                                decide a pending pairing; --allow lets the peer call M,N here\n"
+    "  invite [--runtime-control] [--ttl S] [--allow M,N]\n"
+    "                                print a single-use invite; its redeemer may call M,N here.\n"
+    "                                --runtime-control is for a remote logosctl, which may then\n"
+    "                                call what `policy` grants\n"
+    "  redeem [FILE|-] [--allow M,N] redeem an invite read from FILE or stdin\n"
     "  remove PEER | rename PEER ALIAS\n"
     "  export MODULE [--events] | unexport MODULE\n"
     "  import NAME --from PEER [--module M] [--allow A,B] [--events] [--prefer remote|local]\n"
@@ -120,7 +122,7 @@ int PeerCommand::execute(const std::vector<std::string>& args)
     if (verb == "pair-window" && rest.size() == 1 && number(rest[0]))
         return simple("openPairingWindow", LogosList::array({*number(rest[0])}));
     if (verb == "reject" && rest.size() == 1) return simple("rejectPairing", LogosList::array({rest[0]}));
-    if (verb == "accept" && rest.size() == 1) {
+    if (verb == "accept" && (rest.size() == 1 || (rest.size() == 3 && rest[1] == "--allow"))) {
         // A runtime-control client may call nothing until the remote policy grants it methods.
         std::string control;
         if (const auto pending = call("pending", LogosList::array()))
@@ -130,7 +132,9 @@ int PeerCommand::execute(const std::vector<std::string>& args)
                     && std::find(uses.begin(), uses.end(), "runtime-control") != uses.end())
                     control = p.value("peer_runtime_id", "");
             }
-        const auto result = call("confirmPairing", LogosList::array({rest[0]}));
+        const auto result = call("confirmPairing", rest.size() == 3
+                                                       ? LogosList::array({rest[0], splitComma(rest[2])})
+                                                       : LogosList::array({rest[0]}));
         if (!result) return 4;
         print(*result);
         if (!control.empty() && !output().isJsonMode())
@@ -159,12 +163,15 @@ int PeerCommand::execute(const std::vector<std::string>& args)
     if (verb == "invite") {
         std::string role = "peer";
         long long ttl = 0;
+        LogosList allow;
         for (std::size_t i = 0; i < rest.size(); ++i) {
             if (rest[i] == "--runtime-control") role = "runtime-control";
             else if (rest[i] == "--ttl" && i + 1 < rest.size() && number(rest[i + 1])) ttl = *number(rest[++i]);
+            else if (rest[i] == "--allow" && i + 1 < rest.size()) allow = splitComma(rest[++i]);
             else return usage();
         }
-        const auto result = call("createInvite", LogosList::array({role, ttl}));
+        const auto result = call("createInvite", allow.empty() ? LogosList::array({role, ttl})
+                                                               : LogosList::array({role, ttl, allow}));
         if (!result) return 4;
         if (output().isJsonMode()) return print(*result);
         output().printRaw(result->value("invite", ""));
@@ -172,13 +179,21 @@ int PeerCommand::execute(const std::vector<std::string>& args)
     }
 
     // Invites are secrets: read from a file or stdin, never taken from argv.
-    if (verb == "redeem" && rest.size() <= 1) {
+    if (verb == "redeem") {
+        std::string source = "-";
+        bool sourceGiven = false;
+        LogosList allow;
+        for (std::size_t i = 0; i < rest.size(); ++i) {
+            if (rest[i] == "--allow" && i + 1 < rest.size()) allow = splitComma(rest[++i]);
+            else if (!sourceGiven) { source = rest[i]; sourceGiven = true; }
+            else return usage();
+        }
         std::string text;
         bool read = false;
-        if (rest.empty() || rest[0] == "-") {
+        if (source == "-") {
             read = readAll(std::cin, text);
         } else {
-            std::ifstream file(rest[0]);
+            std::ifstream file(source);
             read = file.is_open() && readAll(file, text);
         }
         text = logosctl::remote::inviteText(strutil::trim(text));
@@ -186,7 +201,8 @@ int PeerCommand::execute(const std::vector<std::string>& args)
             output().printError("INVALID_ARGS", "No invite to redeem");
             return 1;
         }
-        return simple("redeemInvite", LogosList::array({text}));
+        return simple("redeemInvite", allow.empty() ? LogosList::array({text})
+                                                    : LogosList::array({text, allow}));
     }
 
     if (verb == "export" && !rest.empty()) {

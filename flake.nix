@@ -2,12 +2,12 @@
   description = "Logos logosctl CLI - headless module runtime";
 
   inputs = {
-    logos-nix.url = "github:logos-co/logos-nix";
+    logos-nix.url = "github:logos-co/logos-nix/feat/standalone-apps";
     nixpkgs.follows = "logos-nix/nixpkgs";
     # On the peering branches (logos-liblogos#230 and the PRs under it) until they merge.
-    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk/feat/peering";
-    logos-protocol.url = "github:logos-co/logos-protocol/feat/peering";
-    logos-liblogos.url = "github:logos-co/logos-liblogos/feat/peering";
+    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk/feat/standalone-apps";
+    logos-protocol.url = "github:logos-co/logos-protocol/feat/standalone-apps";
+    logos-liblogos.url = "github:logos-co/logos-liblogos/feat/standalone-apps";
     # liblogos and the CLI must share one instance of the plain protocol
     # runtime: that library owns the process-wide credential registry.
     logos-cpp-sdk.inputs.logos-protocol.follows = "logos-protocol";
@@ -31,13 +31,13 @@
     # nix-bundle-logos-module-install follows too: it RUNS lgpm at build time to
     # produce the installed tree, so its pin decides which installer builds the
     # bundle, and it was the most stale of the three.
-    logos-package-manager.url = "github:logos-co/logos-package-manager";
+    logos-package-manager.url = "github:logos-co/logos-package-manager/feat/standalone-apps";
     logos-liblogos.inputs.logos-package-manager.follows = "logos-package-manager";
     logos-package-manager-module.inputs.logos-package-manager.follows = "logos-package-manager";
     nix-bundle-logos-module-install.inputs.logos-package-manager.follows = "logos-package-manager";
     # Decides peering's routes and scopes each import's facade (engine entries on feat/peering).
-    logos-capability-module.url = "github:logos-co/logos-capability-module/feat/peering";
-    logos-modules-state-module.url = "github:logos-co/logos-modules-state-module/feat/drop-legacy-mode";
+    logos-capability-module.url = "github:logos-co/logos-capability-module/feat/standalone-apps";
+    logos-modules-state-module.url = "github:logos-co/logos-modules-state-module/feat/standalone-apps";
     logos-package-manager-module.url = "github:logos-co/logos-package-manager-module/feat/drop-legacy-mode";
     logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module/feat/drop-legacy-mode";
     # The downloader fetches `logos:` urls through storage_module, an optional
@@ -54,7 +54,7 @@
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
     # peering_module, peering_identity and the facade host, logos_host_remote.
-    logos-peering.url = "github:logos-co/logos-peering";
+    logos-peering.url = "github:logos-co/logos-peering/feat/standalone-apps";
     logos-peering.inputs.logos-nix.follows = "logos-nix";
     # One libpeering source: liblogos builds its in-process facades from it.
     logos-liblogos.inputs.logos-peering.follows = "logos-peering";
