@@ -229,6 +229,21 @@
           peering = if isWindows then null else logos-peering.packages.${system};
           peeringLibs = if peering == null then [ ]
             else [ peering.peering_identity-lib peering.peering_module-lib ];
+          # The facade host an import runs in, built here against our protocol and the loader-qt
+          # that spawns it; logos-peering's own build pins its own. Both bin packages ship it.
+          hostRemote = if peering == null then null
+            else (import "${logos-peering}/nix/libpeering.nix" {
+              inherit pkgs;
+              logosProtocol = protocolPkg;
+              withTests = false;
+            }).overrideAttrs (old: {
+              pname = "logos-host-remote";
+              cmakeFlags = old.cmakeFlags ++ [
+                "-DLOGOS_MODULE_LOADER_QT_ROOT=${logos-liblogos.inputs.default-module-loader.packages.${system}.logos-module-loader-qt-lib}"
+              ];
+              propagatedBuildInputs = [ ];
+              postInstall = "rm -rf $out/lib $out/include";
+            });
           bundledInstallsDev = map installDev ([ capabilityModuleLib modulesStateModuleLib ] ++ peeringLibs);
           # Kept out of modules/ deliberately: logoscore scans that directory, so
           # anything extra there changes what it reports by default. (The doc-tests
@@ -352,8 +367,8 @@
                 [ -f "$host" ] || continue
                 cp -L "$host" $out/bin/
               done
-              ${pkgs.lib.optionalString (peering != null) ''
-                cp -L ${peering.logos_host_remote}/bin/logos_host_remote $out/bin/
+              ${pkgs.lib.optionalString (hostRemote != null) ''
+                cp -L ${hostRemote}/bin/logos_host_remote $out/bin/
               ''}
               chmod -R +w $out/bin
 
@@ -773,6 +788,9 @@ ${pkgs.lib.optionalString withPkgModules ''
                 [ -f "$host" ] || continue
                 cp -L "$host" $out/bin/
               done
+              ${pkgs.lib.optionalString (hostRemote != null) ''
+                cp -L ${hostRemote}/bin/logos_host_remote $out/bin/
+              ''}
 
               # Libraries — nix-bundle-dir will resolve and bundle all dependencies
               cp -L ${liblogosPortable}/lib/*.dylib $out/lib/ 2>/dev/null || true
