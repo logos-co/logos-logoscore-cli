@@ -112,6 +112,10 @@ struct DaemonConfig {
     // Inter-module access policy: resolved JSON text (from --access-policy
     // file or inline). Empty means none. Persisted across launches.
     std::string accessPolicy;
+    // Each module's configuration (`module_config:`), as the JSON text of that
+    // mapping: module name -> its one document, which the runtime delivers as
+    // the module starts. Empty means none. Never carries authority.
+    std::string moduleConfig;
     // Where modules run, as the runtime's placement policy JSON (--placement).
     // Empty keeps the runtime's default. Persisted across launches.
     std::string placement;

@@ -4,10 +4,11 @@
   inputs = {
     logos-nix.url = "github:logos-co/logos-nix";
     nixpkgs.follows = "logos-nix/nixpkgs";
-    # On the runtime-control branches (logos-liblogos#227 and the PRs under it) until they merge.
+    # On the runtime-control branches (logos-liblogos#227 and the PRs under it) until they
+    # merge; method scopes and module configuration on top (logos-protocol#101, liblogos).
     logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk/feat/runtime-delegate-export";
-    logos-protocol.url = "github:logos-co/logos-protocol/feat/drop-legacy-mode";
-    logos-liblogos.url = "github:logos-co/logos-liblogos/feat/runtime-process";
+    logos-protocol.url = "github:logos-co/logos-protocol/feat/method-scopes";
+    logos-liblogos.url = "github:logos-co/logos-liblogos/feat/method-scopes";
     # liblogos and the CLI must share one instance of the plain protocol
     # runtime: that library owns the process-wide credential registry.
     logos-cpp-sdk.inputs.logos-protocol.follows = "logos-protocol";
@@ -35,7 +36,8 @@
     logos-liblogos.inputs.logos-package-manager.follows = "logos-package-manager";
     logos-package-manager-module.inputs.logos-package-manager.follows = "logos-package-manager";
     nix-bundle-logos-module-install.inputs.logos-package-manager.follows = "logos-package-manager";
-    logos-capability-module.url = "github:logos-co/logos-capability-module/feat/drop-legacy-mode";
+    # Engine version 2 (logos-capability-module#37), which a version 2 access policy needs.
+    logos-capability-module.url = "github:logos-co/logos-capability-module/feat/method-scopes";
     logos-modules-state-module.url = "github:logos-co/logos-modules-state-module/feat/drop-legacy-mode";
     logos-package-manager-module.url = "github:logos-co/logos-package-manager-module/feat/drop-legacy-mode";
     logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module/feat/drop-legacy-mode";
@@ -45,7 +47,8 @@
     logos-package-downloader-module.inputs.storage_module.follows = "logos-storage-module";
     # The integration suites' test modules, as source only: the flake takes this
     # one back as an input, and that cycle unrolled this lock to 15k nodes.
-    logos-test-modules-src = { url = "github:logos-co/logos-test-modules"; flake = false; };
+    # feat/method-scopes carries test_probe_module_cpp, until it merges.
+    logos-test-modules-src = { url = "github:logos-co/logos-test-modules/feat/method-scopes"; flake = false; };
     nix-bundle-logos-module-install.url = "github:logos-co/nix-bundle-logos-module-install";
     # Payloads ship their own libiconv (nix-bundle-lgx#17); drop once the installer relocks.
     nix-bundle-lgx.url = "github:logos-co/nix-bundle-lgx/fix/ship-libiconv";
@@ -177,7 +180,9 @@
         ipcNewApi = mk "test-ipc-module-new-api" {
           flakeInputs = { test_basic_module = basic; test_extlib_module = extlib; };
         };
-      in [ basic extlib ipcNewApi ];
+        # Reports its configuration and caller: module_config and method grants.
+        probe = mk "test-probe-module-cpp" { };
+      in [ basic extlib ipcNewApi probe ];
     in
     {
       packages = forAllTargets ({ pkgs, system, cppSdk, protocolPkg, liblogos, liblogosLib, liblogosPortable, capabilityModuleLib, modulesStateModuleLib, packageManagerModuleLib, packageManagerModuleLibPortable, packageDownloaderModuleLib, storageModuleLib, installDev, installPortable, dirBundler, appBundler }:
@@ -618,6 +623,9 @@ ${pkgs.lib.optionalString withPkgModules ''
               # authority, runs in-process from here, so the daemon-backed suites
               # run the path users get. Without it nothing would load.
               cp -r ${modules}/modules $out/modules
+              # The package modules too, as the package ships them, so the policy
+              # suites can reach package_manager through core_service.
+              cp -r ${modules}/modules-pkg $out/modules-pkg
 
               if [ -d ${liblogosLib}/lib ]; then
                 cp -r ${liblogosLib}/lib/* $out/lib/ || true

@@ -14,6 +14,7 @@
 #include <unistd.h>     // getpid — for unique temp-file names
 
 #include <atomic>
+#include <cctype>
 #include <cerrno>
 #include <limits>
 #include <vector>
@@ -164,6 +165,8 @@ json daemonConfigToJson(const DaemonConfig& cfg, bool includeSecrets)
 
     obj["insecure_tcp"] = cfg.insecureTcp;
     if (!cfg.accessPolicy.empty()) obj["access_policy"] = cfg.accessPolicy;
+    // A mapping, as the operator wrote it, not the text it is carried as.
+    if (!cfg.moduleConfig.empty()) obj["module_config"] = json::parse(cfg.moduleConfig);
     if (!cfg.placement.empty())    obj["placement"]     = cfg.placement;
     if (!cfg.bundledModulesDirs.empty()) obj["bundled_modules_dirs"] = cfg.bundledModulesDirs;
     if (!cfg.accessGroup.empty())  obj["access_group"]  = cfg.accessGroup;
@@ -172,6 +175,15 @@ json daemonConfigToJson(const DaemonConfig& cfg, bool includeSecrets)
     // reader on the next load.
     if (!cfg.signaturePolicy.empty()) obj["signature_policy"] = cfg.signaturePolicy;
     return obj;
+}
+
+// A module name as the runtime takes one: [A-Za-z0-9_-], 1-64 characters.
+static bool isModuleName(const std::string& name)
+{
+    if (name.empty() || name.size() > 64) return false;
+    for (const unsigned char c : name)
+        if (!std::isalnum(c) && c != '_' && c != '-') return false;
+    return true;
 }
 
 // Inverse of daemonConfigToJson — used by both config.json and
@@ -278,6 +290,17 @@ std::optional<DaemonConfig> daemonConfigFromJson(const json& obj,
 
     cfg.insecureTcp  = r.boolean("insecure_tcp", false);
     cfg.accessPolicy = r.str("access_policy");
+    // Module names only, as the runtime takes them; each document is the
+    // module's own business, and the runtime refuses a module that cannot take it.
+    if (const json* moduleConfig = r.mapping("module_config", "a mapping of module names")) {
+        for (auto it = moduleConfig->begin(); it != moduleConfig->end(); ++it) {
+            if (!isModuleName(it.key())) {
+                errs.note(r.path("module_config") + "." + it.key() + ": not a module name.");
+                return std::nullopt;
+            }
+        }
+        if (!moduleConfig->empty()) cfg.moduleConfig = moduleConfig->dump();
+    }
     cfg.placement    = r.str("placement");
     cfg.bundledModulesDirs = r.stringList("bundled_modules_dirs");
     cfg.accessGroup  = r.str("access_group");

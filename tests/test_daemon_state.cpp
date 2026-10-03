@@ -262,6 +262,56 @@ TEST_F(DaemonStateTest, Config_RejectsUnknownSignaturePolicy)
     EXPECT_FALSE(DaemonConfigFile::read().has_value());
 }
 
+// -- module_config ---------------------------------------------------------
+//
+// One document per module, written as YAML, which the daemon hands the runtime
+// as its spawn's module_config: it must round-trip as a mapping, whatever each
+// document's shape, and refuse anything that is not a mapping of module names.
+
+TEST_F(DaemonStateTest, Config_ModuleConfigRoundTripsAsAMapping)
+{
+    fs::path p(DaemonConfigFile::filePath());
+    fs::create_directories(p.parent_path());
+    std::ofstream(p) << "version: " << kDaemonConfigSchemaVersion << "\n"
+                     << "module_config:\n"
+                     << "  test_probe_module_cpp:\n"
+                     << "    endpoint: https://example.test\n"
+                     << "    retries: 3\n"
+                     << "  other_module: [1, two]\n";
+    auto got = DaemonConfigFile::read();
+    ASSERT_TRUE(got.has_value());
+    const auto expected = nlohmann::json::parse(
+        R"({"test_probe_module_cpp":{"endpoint":"https://example.test","retries":3},)"
+        R"("other_module":[1,"two"]})");
+    ASSERT_FALSE(got->moduleConfig.empty());
+    EXPECT_EQ(nlohmann::json::parse(got->moduleConfig), expected);
+
+    // Written back as a mapping, not as the text it is carried in.
+    ASSERT_TRUE(DaemonConfigFile::write(*got));
+    std::ifstream in(p);
+    const std::string written((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const auto doc = yaml_json::parse(written);
+    ASSERT_TRUE(doc.has_value()) << written;
+    EXPECT_EQ(doc->value("module_config", nlohmann::json()), expected) << written;
+}
+
+TEST_F(DaemonStateTest, Config_ModuleConfigIsAMappingOfModuleNames)
+{
+    fs::path p(DaemonConfigFile::filePath());
+    fs::create_directories(p.parent_path());
+    for (const char* bad : {R"("module_config":"{}")", R"("module_config":[1])",
+                            R"("module_config":{"not a name":{}})", R"("module_config":{"":{}})"}) {
+        std::ofstream(p, std::ios::trunc) << R"({"version":)" << kDaemonConfigSchemaVersion
+                                          << "," << bad << "}\n";
+        EXPECT_FALSE(DaemonConfigFile::read().has_value()) << bad;
+    }
+    DaemonConfig cfg;
+    ASSERT_TRUE(DaemonConfigFile::write(cfg));
+    auto got = DaemonConfigFile::read();
+    ASSERT_TRUE(got.has_value());
+    EXPECT_TRUE(got->moduleConfig.empty()) << "unset stays unset";
+}
+
 TEST_F(DaemonStateTest, SignaturePolicy_AllowlistIsExactlyTheDocumentedThree)
 {
     EXPECT_TRUE(isValidSignaturePolicy("none"));

@@ -1626,6 +1626,171 @@ TEST_F(AccessPolicyFixture, EnforcePolicy_StillAllowsADeclaredPair) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Version 2 access policies and module_config, through test_probe_module_cpp
+//
+// The probe (logos-test-modules) reports its configuration, whether that came
+// before its context, and its caller with the runtime's "scoped" mark; ping and
+// secret are two methods a policy can grant or withhold. Operators are this
+// suite's callers: `logosctl call` reaches a module through core_service as the
+// session's operator token.
+// ═══════════════════════════════════════════════════════════════════════════
+namespace {
+
+// A policy document as config.yaml carries it: a JSON string.
+std::string policyYaml(const std::string& document)
+{
+    return "access_policy: '" + document + "'\n";
+}
+
+class ProbeFixture : public ::testing::Test {
+protected:
+    LogosctlDaemon d;
+
+    // Boots with `yaml` appended to config.yaml and `modules` loaded.
+    void bootWith(const std::string& yaml,
+                  const std::vector<std::string>& modules = {"test_probe_module_cpp"}) {
+        std::string why;
+        if (!d.envReady(why)) GTEST_SKIP() << why;
+        d.extraConfig = yaml;
+        d.start(::testing::UnitTest::GetInstance()->current_test_info()->name());
+        ASSERT_TRUE(d.waitReady())
+            << "daemon did not become reachable.\n--- daemon log ---\n" << slurp(d.daemonLog);
+        for (const std::string& module : modules) {
+            std::string out;
+            if (d.run("load-module " + module, &out, 30) != 0)
+                GTEST_SKIP() << module << " not available in this modules dir:\n" << out
+                             << "\n--- daemon log ---\n" << slurp(d.daemonLog);
+        }
+    }
+
+    // `call <module> <method> [args]`: the envelope, and the exit code in `rc`.
+    nlohmann::json call(const std::string& module, const std::string& methodAndArgs,
+                        int* rc = nullptr) {
+        std::string out;
+        const int code = d.run("call " + module + " " + methodAndArgs, &out, 20);
+        if (rc) *rc = code;
+        nlohmann::json env = lastJsonObject(out);
+        if (env.empty()) env["unparsed"] = out;
+        return env;
+    }
+
+    static bool refusedAsNotAuthorised(const nlohmann::json& env) {
+        return env.value("code", std::string{}) == "METHOD_FAILED"
+            && env.value("error", nlohmann::json::object()).value("code", std::string{})
+                   == "not_authorised";
+    }
+
+    void TearDown() override { d.shutdown(); }
+};
+
+constexpr const char* kProbe = "test_probe_module_cpp";
+
+} // namespace
+
+// An operator's method list is a scoped pair at the probe: what it lists works,
+// and the probe learns the call was checked against a list; anything else is
+// refused before the probe's code runs.
+TEST_F(ProbeFixture, EnforcePolicy_VersionTwoGrantsAnOperatorMethods) {
+    bootWith(policyYaml(R"({"version":2,"mode":"explicit","restrictions":{)"
+                        R"("test_probe_module_cpp":{"allowedCallers":{"@op:*":["ping","callerIdentity"]}}}})"));
+    if (::testing::Test::IsSkipped() || ::testing::Test::HasFatalFailure()) return;
+
+    int rc = -1;
+    const nlohmann::json pong = call(kProbe, "ping", &rc);
+    EXPECT_EQ(rc, 0) << pong.dump();
+    EXPECT_EQ(pong.value("result", nlohmann::json()), "pong") << pong.dump();
+
+    const nlohmann::json who = call(kProbe, "callerIdentity").value("result", nlohmann::json());
+    EXPECT_EQ(who.value("kind", std::string{}), "operator") << who.dump();
+    EXPECT_EQ(who.value("scoped", false), true) << who.dump();
+
+    const nlohmann::json secret = call(kProbe, "secret", &rc);
+    EXPECT_NE(rc, 0) << secret.dump();
+    EXPECT_TRUE(refusedAsNotAuthorised(secret)) << secret.dump();
+}
+
+// Version 2 binds operators: without an "@op:" entry, none reaches the target,
+// and explicit mode leaves the modules it does not name open.
+TEST_F(ProbeFixture, EnforcePolicy_VersionTwoBindsOperatorsAndExplicitLeavesTheRestOpen) {
+    bootWith(policyYaml(R"({"version":2,"mode":"explicit","restrictions":{)"
+                        R"("test_probe_module_cpp":{"allowedCallers":{"some_ui":"*"}}}})"),
+             {kProbe, "test_basic_module"});
+    if (::testing::Test::IsSkipped() || ::testing::Test::HasFatalFailure()) return;
+
+    int rc = -1;
+    const nlohmann::json refused = call(kProbe, "ping", &rc);
+    EXPECT_NE(rc, 0) << refused.dump();
+    EXPECT_EQ(refused.value("code", std::string{}), "FORBIDDEN") << refused.dump();
+
+    const nlohmann::json open = call("test_basic_module", "echo open", &rc);
+    EXPECT_EQ(rc, 0) << open.dump();
+    EXPECT_EQ(open.value("result", nlohmann::json()), "open") << open.dump();
+}
+
+// Detector: version 1 leaves operators unrestricted, but a rule naming only
+// package_manager_ui (Basecamp's own document) refused their package calls,
+// which reach package_manager as core_service.
+TEST_F(ProbeFixture, EnforcePolicy_VersionOneLeavesOperatorsThePackageModules) {
+    bootWith(policyYaml(R"({"version":1,"mode":"enforce","restrictions":{)"
+                        R"("package_manager":{"allowedCallers":["package_manager_ui"]}}})"),
+             {"package_manager"});
+    if (::testing::Test::IsSkipped() || ::testing::Test::HasFatalFailure()) return;
+
+    int rc = -1;
+    const nlohmann::json listed = call("package_manager", "getInstalledPackages", &rc);
+    EXPECT_EQ(rc, 0) << listed.dump();
+    EXPECT_EQ(listed.value("status", std::string{}), "ok") << listed.dump();
+}
+
+// Operators reach the package modules through core_service, which checks the
+// operator's own grant there before it forwards anything.
+TEST_F(ProbeFixture, EnforcePolicy_VersionTwoGrantsMethodsAtAPackageModule) {
+    bootWith(policyYaml(R"({"version":2,"mode":"explicit","restrictions":{)"
+                        R"("package_manager":{"allowedCallers":{"@op:*":["getInstalledPackages"]}}}})"),
+             {"package_manager"});
+    if (::testing::Test::IsSkipped() || ::testing::Test::HasFatalFailure()) return;
+
+    int rc = -1;
+    const nlohmann::json listed = call("package_manager", "getInstalledPackages", &rc);
+    EXPECT_EQ(rc, 0) << listed.dump();
+    EXPECT_EQ(listed.value("status", std::string{}), "ok") << listed.dump();
+
+    const nlohmann::json refused = call("package_manager", "inspectPackage x.lgx", &rc);
+    EXPECT_NE(rc, 0) << refused.dump();
+    EXPECT_TRUE(refusedAsNotAuthorised(refused)) << refused.dump();
+    EXPECT_EQ(refused.value("error", nlohmann::json::object()).value("origin", std::string{}),
+              "core_service") << refused.dump();
+}
+
+// config.yaml's module_config reaches the module before its context is set, so
+// before it serves anything.
+TEST_F(ProbeFixture, ModuleConfig_ReachesTheProbeBeforeItServes) {
+    bootWith("module_config:\n"
+             "  test_probe_module_cpp:\n"
+             "    endpoint: https://example.test\n"
+             "    retries: 3\n");
+    if (::testing::Test::IsSkipped() || ::testing::Test::HasFatalFailure()) return;
+
+    const nlohmann::json text = call(kProbe, "configurationText").value("result", nlohmann::json());
+    ASSERT_TRUE(text.is_string()) << text.dump();
+    EXPECT_EQ(nlohmann::json::parse(text.get<std::string>(), nullptr, false),
+              nlohmann::json::parse(R"({"endpoint":"https://example.test","retries":3})"));
+    EXPECT_EQ(call(kProbe, "configuredBeforeContext").value("result", nlohmann::json()), true);
+}
+
+// A module that cannot take its configuration fails to load, rather than
+// starting without it: test_basic_module is a Qt plugin.
+TEST_F(ProbeFixture, ModuleConfig_AModuleThatCannotTakeItFailsToLoad) {
+    bootWith("module_config:\n  test_basic_module:\n    a: 1\n", {});
+    if (::testing::Test::IsSkipped() || ::testing::Test::HasFatalFailure()) return;
+
+    std::string out;
+    EXPECT_NE(d.run("load-module test_basic_module", &out, 30), 0) << out;
+    ASSERT_EQ(d.run("list-modules --loaded", &out), 0) << out;
+    EXPECT_EQ(out.find("test_basic_module"), std::string::npos) << out;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Shutdown reply — the answer has to outlive the daemon that sent it
 //
 // `daemon stop` is the one call whose reply races its own delivery. The

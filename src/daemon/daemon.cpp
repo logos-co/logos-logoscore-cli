@@ -608,6 +608,9 @@ int Daemon::start(int argc, char* argv[],
 
     // 4b. The access policy, before any module loads. Empty => none.
     if (!cfg.accessPolicy.empty()) runtimeConfig["access_policy"] = cfg.accessPolicy;
+    // Each module's configuration, which the runtime hands it as it starts.
+    if (!cfg.moduleConfig.empty())
+        runtimeConfig["module_config"] = nlohmann::json::parse(cfg.moduleConfig);
 
     // 5. Materialize per-module transport sets BEFORE the runtime starts
     //    so capability_module (loaded as it starts) gets the
