@@ -802,50 +802,16 @@ TEST_F(ErrorPathTest, FailedCallReportsTheErrorChannelNotTheValue) {
     EXPECT_FALSE(diag.value("message", std::string{}).empty()) << out;
 }
 
-// Detector: a tcp client holding the boot token -- the setup the docs used to
-// describe, copying client/auto.json -- was refused by the daemon and reported
-// that as "not_running", sending the operator after a daemon that was running.
-class RemoteClientTest : public ::testing::Test {
-protected:
-    LogosctlDaemon d;
-
-    void SetUp() override {
-        std::string why;
-        if (!d.envReady(why)) GTEST_SKIP() << why;
-        d.extraConfig = "insecure_tcp: true\n"
-                        "modules:\n"
-                        "  core_service:\n"
-                        "    transports:\n"
-                        "      - protocol: local\n"
-                        "      - protocol: tcp\n"
-                        "        host: 127.0.0.1\n"
-                        "        port: 0\n";
-        d.start(::testing::UnitTest::GetInstance()->current_test_info()->name());
-        ASSERT_TRUE(d.waitReady())
-            << "daemon did not become reachable.\n--- daemon log ---\n"
-            << slurp(d.daemonLog);
-    }
-    void TearDown() override { d.shutdown(); }
-};
-
-TEST_F(RemoteClientTest, TheBootTokenOverTcpIsReportedAsRefused) {
-    std::ifstream stateFile(d.configDir / "daemon" / "state.json");
-    const nlohmann::json state = nlohmann::json::parse(stateFile, nullptr, false);
-    int port = 0;
-    for (const auto& t : state["resolved"]["modules"]["core_service"]["transports"])
-        if (t.value("protocol", std::string{}) == "tcp") port = t.value("port", 0);
-    ASSERT_GT(port, 0) << state.dump();
-
-    const fs::path remote = d.base / "remote";
-    fs::create_directories(remote / "client");
-    fs::copy_file(d.configDir / "client" / "auto.json", remote / "client" / "auto.json");
-    std::ofstream(remote / "client" / "config.yaml") << nlohmann::json{
-        {"version", 2}, {"token_file", "auto.json"},
-        {"daemon", {{"core_service",
-                     {{"transport", "tcp"}, {"host", "127.0.0.1"}, {"port", port}}}}}}.dump();
+// Detector: a client whose token the daemon refused was reported "not_running",
+// sending the operator after a daemon that was running.
+TEST_F(ErrorPathTest, ARefusedTokenIsReportedAsRefused) {
+    const fs::path other = d.base / "other";
+    fs::create_directories(other / "client");
+    fs::copy_file(d.configDir / "client" / "config.yaml", other / "client" / "config.yaml");
+    std::ofstream(other / "client" / "auto.json") << R"({"token":"not-one-it-issued"})";
 
     std::string out;
-    const int status = d.run("status", &out, 40, remote);
+    const int status = d.run("status", &out, 40, other);
 
     EXPECT_NE(status, 0) << out;
     EXPECT_EQ(lastJsonObject(out).value("code", std::string{}), "UNAUTHORIZED") << out;

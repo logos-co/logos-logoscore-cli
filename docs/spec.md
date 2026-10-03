@@ -43,10 +43,10 @@ The CLI follows a daemon + client architecture. A long-running daemon process ho
 **Daemon** (`logosctl daemon start`):
 - Starts the Logos Core runtime and the plain RPC workers.
 - Discovers modules in configured directories.
-- Writes `~/.logosctl/daemon/state.json` (live runtime state — instance_id, pid, started_at, resolved transports) on startup, removed on clean shutdown.
+- Writes `~/.logosctl/daemon/state.json` (live runtime state — instance_id, pid, started_at, the resolved config) on startup, removed on clean shutdown.
 - Maintains `~/.logosctl/daemon/tokens.json` (hashed-at-rest accepted-token list — survives restarts).
 - Persists `~/.logosctl/daemon/config.json` (operator preferences) only when the operator passed `--persist-config`.
-- Auto-issues an `auto` token for the local same-host client and emits `~/.logosctl/client/config.json` + `~/.logosctl/client/auto.json` on the first boot into an empty config dir.
+- Auto-issues an `auto` token for the local same-host client and emits `~/.logosctl/client/config.json` + `~/.logosctl/client/auto.json` on every boot.
 
 **Client commands** (all other subcommands):
 - Read `~/.logosctl/client/config.json` to learn how to dial the daemon and which token file to load.
@@ -80,9 +80,10 @@ The daemon and client use local `qt_remote_plain`. This Qt-free transport is
 wire-compatible with `qt_remote` in current Qt modules. Those modules remain
 inside `logos_host_qt`; the CLI process does not load Qt.
 
-The same Qt-free C ABI also supports `tcp` and `tcp_ssl` listeners and
-clients. The daemon emits the local client dial spec by default; remote
-clients can configure a network endpoint and TLS verification separately.
+The daemon listens on its local socket only. Remote Runtime Control
+(`logosctl remote pair`, then `--remote PEER`) and peering replace the removed
+`tcp` and `tcp_ssl` transports; see
+[Operating a daemon from another computer](logosctl.md#operating-a-daemon-from-another-computer).
 
 The daemon emits the local client dial spec and boot token automatically.
 Client commands need no manual transport setup.
@@ -267,7 +268,7 @@ Displays version, dependencies, available methods, and crash details (if applica
 Issue a new named token and write it to `<configDir>/daemon/tokens/<name>.json`.
 
 ```
-logosctl token issue --name <name> [--replace] [--expires <dur>] [--local-only]
+logosctl token issue --name <name> [--replace] [--expires <dur>]
 ```
 
 Appends an entry to `<configDir>/daemon/tokens.json["tokens"]` (a
@@ -278,8 +279,8 @@ existing token with the same name so a stale credential isn't silently
 invalidated; pass `--replace` to rotate.
 
 `--expires <dur>` sets a TTL after which the daemon rejects the token (e.g.
-`30d`, `12h`). `--local-only` marks the token as valid only over the local
-transport.
+`30d`, `12h`). Every token is valid over the local socket only; `--local-only`
+is still accepted, and recorded, but changes nothing.
 
 After copying `daemon/tokens/<name>.json` to another local client session, the
 operator may delete the daemon-side
@@ -422,20 +423,7 @@ The daemon dir splits by lifetime into three files:
   "resolved": {
     "modules_dirs": ["/path/to/modules"],
     "persistence_path": "/var/lib/logosctl",
-    "modules": {
-      "core_service": {
-        "transports": [
-          { "protocol": "local" }
-        ]
-      },
-      "capability_module": {
-        "transports": [
-          { "protocol": "local" }
-        ]
-      }
-    },
-    "ssl": { "cert": "", "key": "", "ca": "" },
-    "insecure_tcp": false
+    "logging": { "enabled": true, "file": "daemon.log", "max_size_mb": 10, "max_files": 5, "console": true }
   }
 }
 ```
@@ -445,18 +433,19 @@ The daemon dir splits by lifetime into three files:
 - `pid` lets co-resident clients detect a stale state file
   (`kill(pid, 0) == ESRCH` after a hard crash).
 - `config_source` records where the running daemon's config came from:
-  `cli` (any `--module-transport`/`--insecure-tcp`/etc. flag was
-  passed), `config.json` (loaded from disk only), or `defaults`.
-- `resolved.modules` is the post-bind transport set: `port: 0` in
-  config.json becomes the actually-bound port here.
+  `cli` (any daemon flag was passed), `config.json` (loaded from disk
+  only), or `defaults`.
 - `resolved` mirrors the shape of `daemon/config.json` (same field set,
   minus `version`).
 
 #### `daemon/config.json` (operator preferences)
 
-Same shape as `state.json`'s `resolved` block, plus `version`. Reflects
-*operator intent* — `port: 0` stays `0` (auto-pick) — not the resolved
-post-bind values. Written only when `--persist-config` is passed.
+Same shape as `state.json`'s `resolved` block, plus `version`. Written
+only when `--persist-config` is passed. Files written before the `tcp` and
+`tcp_ssl` transports were removed carry `modules` (local listeners), an
+empty `ssl` block and `insecure_tcp: false`; those still load, and are
+dropped. Any other value of those keys is refused by name, and the daemon
+does not start on a config it cannot load.
 
 #### `daemon/tokens.json`
 

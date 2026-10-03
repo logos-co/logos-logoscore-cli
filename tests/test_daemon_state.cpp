@@ -5,6 +5,7 @@
 #include <fstream>
 #include <map>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -12,6 +13,7 @@
 #include "client/client_state.h"
 #include "daemon/daemon_state.h"
 #include "config.h"
+#include "removed_transports.h"
 #include "yaml_json.h"
 
 namespace fs = std::filesystem;
@@ -71,33 +73,12 @@ DaemonConfig sampleConfig()
     DaemonConfig cfg;
     cfg.modulesDirs     = {"/path/a", "/path/b"};
     cfg.persistencePath = "/var/lib/logosctl";
-    cfg.modules["core_service"]      = {{"local"}, {"tcp", "127.0.0.1", 6001, "", true, "json"}};
-    cfg.modules["capability_module"] = {{"local"}};
-    cfg.sslCert = "/etc/ssl/cert.pem";
-    cfg.sslKey  = "/etc/ssl/key.pem";
-    cfg.sslCa   = "/etc/ssl/ca.pem";
-    cfg.insecureTcp = true;
     cfg.accessPolicy =
         R"({"version":1,"mode":"enforce","restrictions":)"
         R"({"package_manager":{"allowedCallers":["package_manager_ui"]}}})";
     cfg.signaturePolicy = "require";
     cfg.placement = R"({"default":"inproc"})";
     cfg.bundledModulesDirs = {"/opt/logos/modules"};
-    return cfg;
-}
-
-// A config whose only TLS material is the top-level `ssl:` block: two
-// listeners, neither naming its own cert/key/ca.
-DaemonConfig tlsConfigWithTopLevelSslOnly()
-{
-    DaemonConfig cfg;
-    cfg.sslCert = "/etc/ssl/cert.pem";
-    cfg.sslKey  = "/etc/ssl/key.pem";
-    cfg.sslCa   = "/etc/ssl/ca.pem";
-    cfg.modules["core_service"] =
-        {{"local"}, {"tcp_ssl", "0.0.0.0", 8645, "", true, "json"}};
-    cfg.modules["capability_module"] =
-        {{"tcp_ssl", "0.0.0.0", 8646, "", true, "json"}};
     return cfg;
 }
 
@@ -151,43 +132,6 @@ TEST_F(DaemonStateTest, RuntimeState_RejectsUnknownSchemaVersion)
     EXPECT_FALSE(DaemonRuntimeStateFile::read().fileOk);
 }
 
-TEST_F(DaemonStateTest, RuntimeState_ResolvedModulesRoundTripPerProtocol)
-{
-    DaemonRuntimeState s = minimalState("instX", {"/mods"});
-    std::vector<TransportInfo> coreTransports;
-    coreTransports.push_back({"local", "", 0, "", true, "json"});
-    coreTransports.push_back({"tcp",   "127.0.0.1", 6001, "", true, "json"});
-    coreTransports.push_back({"tcp_ssl", "0.0.0.0", 6443, "/tmp/ca.pem", true, "cbor"});
-    s.resolved.modules["core_service"] = std::move(coreTransports);
-    ASSERT_TRUE(DaemonRuntimeStateFile::write(s));
-
-    DaemonRuntimeState got = DaemonRuntimeStateFile::read();
-    ASSERT_EQ(got.resolved.modules.size(), 1u);
-    const auto& read = got.resolved.modules.at("core_service");
-    ASSERT_EQ(read.size(), 3u);
-    EXPECT_EQ(read[0].protocol, "local");
-    EXPECT_EQ(read[1].protocol, "tcp");
-    EXPECT_EQ(read[1].port, 6001);
-    EXPECT_EQ(read[2].protocol, "tcp_ssl");
-    EXPECT_EQ(read[2].caFile, "/tmp/ca.pem");
-    EXPECT_TRUE(read[2].verifyPeer);
-    EXPECT_EQ(read[2].codec, "cbor");
-}
-
-TEST_F(DaemonStateTest, RuntimeState_SslRoundTrip)
-{
-    DaemonRuntimeState s = minimalState("instSsl");
-    s.resolved.sslCert = "/etc/ssl/cert.pem";
-    s.resolved.sslKey  = "/etc/ssl/key.pem";
-    s.resolved.sslCa   = "/etc/ssl/ca.pem";
-    ASSERT_TRUE(DaemonRuntimeStateFile::write(s));
-
-    DaemonRuntimeState got = DaemonRuntimeStateFile::read();
-    EXPECT_EQ(got.resolved.sslCert, "/etc/ssl/cert.pem");
-    EXPECT_EQ(got.resolved.sslKey,  "/etc/ssl/key.pem");
-    EXPECT_EQ(got.resolved.sslCa,   "/etc/ssl/ca.pem");
-}
-
 // -- DaemonConfigFile (config.json) ---------------------------------------
 
 TEST_F(DaemonStateTest, Config_ReadReturnsNulloptWhenFileMissing)
@@ -204,12 +148,6 @@ TEST_F(DaemonStateTest, Config_RoundTripsEveryField)
     ASSERT_TRUE(got.has_value());
     EXPECT_EQ(got->modulesDirs.size(), 2u);
     EXPECT_EQ(got->persistencePath, "/var/lib/logosctl");
-    EXPECT_EQ(got->modules.size(), 2u);
-    EXPECT_EQ(got->modules.at("core_service").back().port, 6001);
-    EXPECT_EQ(got->sslCert, "/etc/ssl/cert.pem");
-    EXPECT_EQ(got->sslKey,  "/etc/ssl/key.pem");
-    EXPECT_EQ(got->sslCa,   "/etc/ssl/ca.pem");
-    EXPECT_TRUE(got->insecureTcp);
     EXPECT_EQ(got->accessPolicy, sampleConfig().accessPolicy);
     EXPECT_EQ(got->signaturePolicy, "require");
     EXPECT_EQ(got->placement, sampleConfig().placement);
@@ -271,134 +209,6 @@ TEST_F(DaemonStateTest, SignaturePolicy_AllowlistIsExactlyTheDocumentedThree)
         EXPECT_FALSE(isValidSignaturePolicy(bad)) << bad;
 }
 
-// -- top-level ssl: defaults ----------------------------------------------
-//
-// The block was parsed into DaemonConfig::sslCert/sslKey/sslCa and read by
-// nobody: only per-listener cert/key reached the transport set, so configuring
-// TLS the obvious way produced listeners with no certificate and a handshake
-// that died with "no shared cipher". It is now a default that per-listener
-// values override.
-
-TEST_F(DaemonStateTest, SslDefaults_FillListenersThatNameNoMaterial)
-{
-    DaemonConfig cfg = tlsConfigWithTopLevelSslOnly();
-    applySslDefaults(cfg);
-
-    const auto& core = cfg.modules.at("core_service");
-    ASSERT_EQ(core.size(), 2u);
-    // The local entry is untouched -- it has nowhere to put a certificate.
-    EXPECT_TRUE(core[0].certFile.empty());
-    EXPECT_TRUE(core[0].keyFile.empty());
-    EXPECT_EQ(core[1].certFile, "/etc/ssl/cert.pem");
-    EXPECT_EQ(core[1].keyFile,  "/etc/ssl/key.pem");
-    EXPECT_EQ(core[1].caFile,   "/etc/ssl/ca.pem");
-
-    // Every tcp_ssl listener is covered, not just the first module.
-    const auto& cap = cfg.modules.at("capability_module");
-    ASSERT_EQ(cap.size(), 1u);
-    EXPECT_EQ(cap[0].certFile, "/etc/ssl/cert.pem");
-    EXPECT_EQ(cap[0].keyFile,  "/etc/ssl/key.pem");
-}
-
-TEST_F(DaemonStateTest, SslDefaults_PerListenerMaterialWins)
-{
-    // A default that overrode what the listener named would make per-listener
-    // certs unusable the moment a top-level block existed.
-    DaemonConfig cfg = tlsConfigWithTopLevelSslOnly();
-    auto& core = cfg.modules.at("core_service");
-    core[1].certFile = "/own/cert.pem";
-    core[1].keyFile  = "/own/key.pem";
-    core[1].caFile   = "/own/ca.pem";
-    applySslDefaults(cfg);
-
-    EXPECT_EQ(core[1].certFile, "/own/cert.pem");
-    EXPECT_EQ(core[1].keyFile,  "/own/key.pem");
-    EXPECT_EQ(core[1].caFile,   "/own/ca.pem");
-    // ...and the listener that named nothing still inherits.
-    EXPECT_EQ(cfg.modules.at("capability_module")[0].certFile, "/etc/ssl/cert.pem");
-}
-
-TEST_F(DaemonStateTest, SslDefaults_FillPerFieldNotPerListener)
-{
-    // A listener that names only its cert still inherits the key: the merge is
-    // field-by-field, so a half-specified listener is completed rather than
-    // left to bind with a cert and no key.
-    DaemonConfig cfg = tlsConfigWithTopLevelSslOnly();
-    auto& core = cfg.modules.at("core_service");
-    core[1].certFile = "/own/cert.pem";
-    applySslDefaults(cfg);
-
-    EXPECT_EQ(core[1].certFile, "/own/cert.pem");
-    EXPECT_EQ(core[1].keyFile,  "/etc/ssl/key.pem");
-}
-
-TEST_F(DaemonStateTest, SslDefaults_LeaveNonTlsTransportsAlone)
-{
-    DaemonConfig cfg;
-    cfg.sslCert = "/etc/ssl/cert.pem";
-    cfg.sslKey  = "/etc/ssl/key.pem";
-    cfg.modules["core_service"] =
-        {{"local"}, {"tcp", "127.0.0.1", 6001, "", true, "json"}};
-    applySslDefaults(cfg);
-
-    for (const auto& t : cfg.modules.at("core_service")) {
-        EXPECT_TRUE(t.certFile.empty()) << t.protocol;
-        EXPECT_TRUE(t.keyFile.empty())  << t.protocol;
-    }
-}
-
-TEST_F(DaemonStateTest, SslDefaults_NoBlockIsANoOp)
-{
-    DaemonConfig cfg;
-    cfg.modules["core_service"] = {{"tcp_ssl", "0.0.0.0", 8645, "", true, "json"}};
-    applySslDefaults(cfg);
-    EXPECT_TRUE(cfg.modules.at("core_service")[0].certFile.empty());
-}
-
-TEST_F(DaemonStateTest, SslDefaults_SurviveTheConfigRoundTrip)
-{
-    // End to end over the real reader: a document whose only TLS material is
-    // the top-level block yields listeners that carry it.
-    DaemonConfig cfg = tlsConfigWithTopLevelSslOnly();
-    ASSERT_TRUE(DaemonConfigFile::write(cfg));
-
-    auto got = DaemonConfigFile::read();
-    ASSERT_TRUE(got.has_value());
-    ASSERT_FALSE(findTlsListenersMissingMaterial(*got).empty())
-        << "Pre-condition: the listeners start with no material of their own.";
-    applySslDefaults(*got);
-    EXPECT_TRUE(findTlsListenersMissingMaterial(*got).empty());
-    EXPECT_EQ(got->modules.at("capability_module")[0].certFile, "/etc/ssl/cert.pem");
-}
-
-TEST_F(DaemonStateTest, MissingTlsMaterial_NamesEveryCertlessListener)
-{
-    DaemonConfig cfg = tlsConfigWithTopLevelSslOnly();
-    cfg.sslCert.clear();
-    cfg.sslKey.clear();
-    applySslDefaults(cfg);
-
-    auto missing = findTlsListenersMissingMaterial(cfg);
-    ASSERT_EQ(missing.size(), 2u);
-    // The message has to identify which listener to go fix.
-    EXPECT_NE(missing[0].find("capability_module"), std::string::npos) << missing[0];
-    EXPECT_NE(missing[0].find("8646"), std::string::npos) << missing[0];
-    EXPECT_NE(missing[1].find("core_service"), std::string::npos) << missing[1];
-}
-
-TEST_F(DaemonStateTest, MissingTlsMaterial_KeyWithoutCertIsStillMissing)
-{
-    DaemonConfig cfg;
-    cfg.modules["core_service"] =
-        {{"local"}, {"tcp", "127.0.0.1", 6001, "", true, "json"},
-         {"tcp_ssl", "0.0.0.0", 8645, "", true, "json", "/own/cert.pem", ""}};
-    // local and plaintext tcp never need TLS material; the half-specified
-    // tcp_ssl listener does.
-    auto missing = findTlsListenersMissingMaterial(cfg);
-    ASSERT_EQ(missing.size(), 1u);
-    EXPECT_NE(missing[0].find("core_service"), std::string::npos) << missing[0];
-}
-
 TEST_F(DaemonStateTest, Config_OmitsAccessPolicyWhenEmpty)
 {
     DaemonConfig cfg = sampleConfig();
@@ -410,20 +220,6 @@ TEST_F(DaemonStateTest, Config_OmitsAccessPolicyWhenEmpty)
     auto got = DaemonConfigFile::read();
     ASSERT_TRUE(got.has_value());
     EXPECT_TRUE(got->accessPolicy.empty());
-}
-
-TEST_F(DaemonStateTest, Config_PreservesPortZeroIntent)
-{
-    // The whole point of separating config.json from state.json is
-    // that operator intent (port=0 = "auto-pick") survives the
-    // serialization round-trip; resolved-port lives in state.json.
-    DaemonConfig cfg;
-    cfg.modules["core_service"] = {{"tcp", "127.0.0.1", 0, "", true, "json"}};
-    ASSERT_TRUE(DaemonConfigFile::write(cfg));
-
-    auto got = DaemonConfigFile::read();
-    ASSERT_TRUE(got.has_value());
-    EXPECT_EQ(got->modules.at("core_service").front().port, 0);
 }
 
 TEST_F(DaemonStateTest, Config_RejectsUnknownSchemaVersion)
@@ -446,8 +242,6 @@ std::string slurp(const fs::path& p)
     return ss.str();
 }
 
-const std::vector<TransportInfo> kLocalOnly = { TransportInfo{"local"} };
-
 fs::path clientCfgPath()
 {
     return fs::path(Config::clientConfigPath());
@@ -457,8 +251,7 @@ bool writeArtifacts(const std::string& instanceId,
                     const std::string& accessGroup = {})
 {
     return DaemonRuntimeStateFile::writeLocalClientArtifacts(
-        instanceId, "raw-token", currentUtcIso8601(),
-        kLocalOnly, kLocalOnly, accessGroup);
+        instanceId, "raw-token", currentUtcIso8601(), accessGroup);
 }
 
 } // namespace
@@ -492,33 +285,39 @@ TEST_F(DaemonStateTest, ClientArtifacts_RefreshesStaleInstanceIdPreservingTokenF
     EXPECT_NE(body.find("alice.json"), std::string::npos);
 }
 
-TEST_F(DaemonStateTest, ClientArtifacts_LeavesMatchingInstanceIdUntouched)
+TEST_F(DaemonStateTest, ClientArtifacts_RewrittenEveryBootKeepingTheTokenFile)
 {
+    // The daemon owns the dial spec; the operator owns token_file.
     fs::create_directories(clientCfgPath().parent_path());
     std::ofstream(clientCfgPath())
-        << R"({"version":2,"token_file":"auto.json","instance_id":"SAME","custom":"keep"})"
+        << R"({"version":2,"token_file":"alice.json","instance_id":"SAME","custom":"x"})"
         << "\n";
 
     EXPECT_TRUE(writeArtifacts("SAME"));
 
-    // Instance already matches: no rewrite, operator's field survives.
-    EXPECT_NE(slurp(clientCfgPath()).find(R"("custom":"keep")"),
-              std::string::npos);
+    const std::string body = slurp(clientCfgPath());
+    EXPECT_EQ(body.find("custom"), std::string::npos) << body;
+    EXPECT_NE(body.find("alice.json"), std::string::npos) << body;
 }
 
-TEST_F(DaemonStateTest, ClientArtifacts_NeverClobbersOperatorRemoteConfig)
+TEST_F(DaemonStateTest, ClientArtifacts_ReplaceAnOldTcpDialSpec)
 {
+    // What a remote client used to hand-write: no instance_id, a tcp dial.
     fs::create_directories(clientCfgPath().parent_path());
-    // Operator-authored remote config: no instance_id field at all.
     std::ofstream(clientCfgPath())
         << R"({"version":2,"token_file":"my.json","daemon":{"core_service":{"transport":"tcp","host":"10.0.0.5","port":6000}}})"
         << "\n";
 
     EXPECT_TRUE(writeArtifacts("inst-Z"));
 
-    const std::string body = slurp(clientCfgPath());
-    EXPECT_NE(body.find("10.0.0.5"), std::string::npos);
-    EXPECT_EQ(body.find("inst-Z"), std::string::npos);
+    auto parsed = yaml_json::parse(slurp(clientCfgPath()));
+    ASSERT_TRUE(parsed.has_value());
+    std::string err;
+    auto state = parseClientStateDocument(*parsed, &err);
+    ASSERT_TRUE(state.has_value()) << err;
+    EXPECT_EQ(state->instanceId, "inst-Z");
+    EXPECT_EQ(state->tokenFile, "my.json");
+    EXPECT_EQ(state->daemon, (std::set<std::string>{"capability_module", "core_service"}));
 }
 
 #ifndef _WIN32
@@ -552,69 +351,6 @@ TEST_F(DaemonStateTest, ClientArtifacts_GroupReadableWithAccessGroup)
     EXPECT_EQ(tokSt.st_gid, ::getegid());
 }
 #endif
-
-// ── tcp_ssl cert/key ─────────────────────────────────────────────────────────
-//
-// The parser did not read `cert`/`key` at all. It never mattered while those
-// came from --module-transport on the command line, but once the config file
-// became the only place to set transports, every tcp_ssl listener bound with
-// no certificate: the daemon started, accepted connections, and failed every
-// handshake with "no shared cipher". TLS was unconfigurable and nothing said
-// so.
-TEST_F(DaemonStateTest, Config_RoundTripsTlsCertAndKey)
-{
-    DaemonConfig cfg;
-    TransportInfo t;
-    t.protocol = "tcp_ssl";
-    t.host     = "127.0.0.1";
-    t.port     = 6443;
-    t.certFile = "/etc/logos/server.pem";
-    t.keyFile  = "/etc/logos/server.key";
-    t.caFile   = "/etc/logos/ca.pem";
-    cfg.modules["core_service"] = { t };
-
-    ASSERT_TRUE(DaemonConfigFile::write(cfg));
-    auto got = DaemonConfigFile::read();
-    ASSERT_TRUE(got.has_value());
-    ASSERT_EQ(got->modules.count("core_service"), 1u);
-    ASSERT_EQ(got->modules["core_service"].size(), 1u);
-
-    const TransportInfo& r = got->modules["core_service"][0];
-    EXPECT_EQ(r.protocol, "tcp_ssl");
-    EXPECT_EQ(r.port,     6443);
-    EXPECT_EQ(r.certFile, "/etc/logos/server.pem")
-        << "the server certificate must survive a config round-trip";
-    EXPECT_EQ(r.keyFile,  "/etc/logos/server.key")
-        << "the server key must survive a config round-trip";
-    EXPECT_EQ(r.caFile,   "/etc/logos/ca.pem");
-}
-
-// state.json is a runtime record clients read, so the key path stays out of
-// it -- the config file is where that secret belongs.
-TEST_F(DaemonStateTest, RuntimeState_OmitsTlsCertAndKey)
-{
-    DaemonRuntimeState s = minimalState("inst-tls");
-    TransportInfo t;
-    t.protocol = "tcp_ssl";
-    t.host     = "127.0.0.1";
-    t.port     = 6443;
-    t.certFile = "/etc/logos/server.pem";
-    t.keyFile  = "/etc/logos/server.key";
-    t.caFile   = "/etc/logos/ca.pem";
-    s.resolved.modules["core_service"] = { t };
-    ASSERT_TRUE(DaemonRuntimeStateFile::write(s));
-
-    std::ifstream in(Config::daemonStatePath());
-    ASSERT_TRUE(in.good());
-    const std::string raw((std::istreambuf_iterator<char>(in)),
-                           std::istreambuf_iterator<char>());
-    EXPECT_EQ(raw.find("server.key"), std::string::npos)
-        << "state.json must not carry the server's private key path";
-    EXPECT_EQ(raw.find("server.pem"), std::string::npos)
-        << "state.json must not carry the server's certificate path";
-    // The CA is client-relevant, so it does belong here.
-    EXPECT_NE(raw.find("ca.pem"), std::string::npos);
-}
 
 // ── Type-mismatched values ───────────────────────────────────────────────────
 //
@@ -699,9 +435,6 @@ TEST_F(DaemonStateTest, Config_TypeMismatchNamesTheOffendingKey)
                            {"access_policy", {{"mode", "enforce"}}}}),
         "access_policy"));
     EXPECT_TRUE(namesKey(
-        daemonConfigError({{"version", 2}, {"insecure_tcp", "yes"}}),
-        "insecure_tcp"));
-    EXPECT_TRUE(namesKey(
         daemonConfigError({{"version", 2}, {"modules_dirs", {"/ok", 7}}}),
         "modules_dirs[1]"));
     // A version that isn't a number must be reported, not thrown on, and not
@@ -732,14 +465,8 @@ TEST_F(DaemonStateTest, Config_TypeMismatchInNestedBlocksIsRejected)
     EXPECT_TRUE(namesKey(
         daemonConfigError({{"version", 2}, {"dirs", {{"keyring", true}}}}),
         "dirs.keyring"));
-    EXPECT_TRUE(namesKey(
-        daemonConfigError({{"version", 2}, {"ssl", {{"cert", 1}}}}),
-        "ssl.cert"));
     // A whole block of the wrong type, too -- ignoring it would drop the
     // operator's intent with nothing to explain it.
-    EXPECT_TRUE(namesKey(
-        daemonConfigError({{"version", 2}, {"ssl", "/etc/ssl/cert.pem"}}),
-        "ssl"));
     EXPECT_TRUE(namesKey(
         daemonConfigError({{"version", 2}, {"logging", true}}),
         "logging"));
@@ -751,30 +478,18 @@ TEST_F(DaemonStateTest, Config_TypeMismatchInsideATransportIsRejected)
         daemonConfigError({{"version", 2}, {"modules", "core_service"}}),
         "modules"));
     EXPECT_TRUE(namesKey(
-        daemonConfigError({{"version", 2}, {"modules", {{"core_service", "tcp"}}}}),
+        daemonConfigError({{"version", 2}, {"modules", {{"core_service", "local"}}}}),
         "modules.core_service"));
     EXPECT_TRUE(namesKey(
         daemonConfigError({{"version", 2},
-                           {"modules", {{"core_service", {{"transports", "tcp"}}}}}}),
+                           {"modules", {{"core_service", {{"transports", "local"}}}}}}),
         "modules.core_service.transports"));
-    // A port typed as a string used to throw; an out-of-range one was rejected
-    // with no indication of which entry was at fault.
     EXPECT_TRUE(namesKey(
         daemonConfigError({{"version", 2},
                            {"modules", {{"core_service",
-                             json::array({{{"protocol", "tcp"}, {"port", "6001"}}})}}}}),
-        "modules.core_service.transports[0].port"));
-    EXPECT_TRUE(namesKey(
-        daemonConfigError({{"version", 2},
-                           {"modules", {{"core_service",
-                             json::array({{{"protocol", "tcp"}, {"port", 70000}}})}}}}),
-        "modules.core_service.transports[0].port"));
-    EXPECT_TRUE(namesKey(
-        daemonConfigError({{"version", 2},
-                           {"modules", {{"core_service",
-                             json::array({{{"protocol", "tcp"}, {"verify_peer", "no"}}})}}}}),
-        "modules.core_service.transports[0].verify_peer"));
-    // The pre-existing strict-allowlist rejection now says which entry it is.
+                             json::array({{{"protocol", 1}}})}}}}),
+        "modules.core_service.transports[0].protocol"));
+    // The strict-allowlist rejection says which entry it is.
     EXPECT_TRUE(namesKey(
         daemonConfigError({{"version", 2},
                            {"modules", {{"core_service",
@@ -795,7 +510,6 @@ TEST_F(DaemonStateTest, Config_EmptyValueMeansUnsetNotMistyped)
     ASSERT_TRUE(got.has_value()) << "an empty value is not a type mismatch";
     EXPECT_TRUE(got->modulesDirs.empty());
     EXPECT_TRUE(got->accessPolicy.empty());
-    EXPECT_TRUE(got->modules.empty());
 }
 
 TEST_F(DaemonStateTest, Config_WellFormedDocumentStillLoads)
@@ -804,22 +518,191 @@ TEST_F(DaemonStateTest, Config_WellFormedDocumentStillLoads)
     writeDaemonConfigText("version: 2\n"
                           "modules_dirs:\n"
                           "  - /opt/modules\n"
-                          "insecure_tcp: true\n"
                           "logging:\n"
                           "  max_size_mb: 25\n"
                           "  console: false\n"
-                          "modules:\n"
-                          "  core_service:\n"
-                          "    - protocol: tcp\n"
-                          "      host: 127.0.0.1\n"
-                          "      port: 8645\n");
+                          "signature_policy: require\n");
     auto got = DaemonConfigFile::read();
     ASSERT_TRUE(got.has_value());
     EXPECT_EQ(got->modulesDirs, std::vector<std::string>{"/opt/modules"});
-    EXPECT_TRUE(got->insecureTcp);
     EXPECT_EQ(got->logging.maxSizeMb, 25u);
     EXPECT_FALSE(got->logging.console);
-    EXPECT_EQ(got->modules.at("core_service").front().port, 8645);
+    EXPECT_EQ(got->signaturePolicy, "require");
+}
+
+// ── Settings removed with the tcp and tcp_ssl transports ─────────────────────
+//
+// Every config.json --persist-config wrote, and every state.json `resolved`
+// block, carries `ssl` with empty paths, `insecure_tcp: false` and local
+// listeners under `modules`. Those still load; in a config anything more is
+// refused by name, never dropped. state.json drops the keys whatever they hold.
+
+namespace {
+
+// What --persist-config and state.json wrote for a local-only daemon.
+json legacyDefaults()
+{
+    return {{"modules_dirs", json::array({"/opt/modules"})},
+            {"modules", {{"core_service", {{"transports", json::array({{{"protocol", "local"}}})}}},
+                         {"capability_module", {{"transports", json::array({{{"protocol", "local"}}})}}}}},
+            {"ssl", {{"cert", ""}, {"key", ""}, {"ca", ""}}},
+            {"insecure_tcp", false}};
+}
+
+::testing::AssertionResult refusedAsRemoved(const std::string& error, const std::string& key)
+{
+    ::testing::AssertionResult named = namesKey(error, "`" + key + "`");
+    if (!named) return named;
+    if (error.find("was removed with the tcp and tcp_ssl transports") == std::string::npos
+        || error.find("logosctl remote pair") == std::string::npos)
+        return ::testing::AssertionFailure() << "not the removal message: " << error;
+    return ::testing::AssertionSuccess();
+}
+
+} // namespace
+
+TEST_F(DaemonStateTest, RemovedKeys_TheirDefaultsStillLoad)
+{
+    json doc = legacyDefaults();
+    doc["version"] = 2;
+    std::string err;
+    auto cfg = parseDaemonConfigDocument(doc, &err);
+    ASSERT_TRUE(cfg.has_value()) << err;
+    EXPECT_EQ(cfg->modulesDirs, std::vector<std::string>{"/opt/modules"});
+
+    // The bare-list spelling of a local listener, and an empty block, too.
+    doc["modules"] = {{"core_service", json::array({{{"protocol", "local"}}})}};
+    doc["ssl"] = json::object();
+    EXPECT_TRUE(parseDaemonConfigDocument(doc, &err).has_value()) << err;
+}
+
+TEST_F(DaemonStateTest, RemovedKeys_APersistedConfigJsonStillLoads)
+{
+    json doc = legacyDefaults();
+    doc["version"] = 2;
+    writeDaemonConfigText(doc.dump(4));
+    auto got = DaemonConfigFile::read();
+    ASSERT_TRUE(got.has_value());
+    EXPECT_EQ(got->modulesDirs, std::vector<std::string>{"/opt/modules"});
+}
+
+TEST_F(DaemonStateTest, RemovedKeys_AnOldStateJsonStillLoads)
+{
+    fs::path p(DaemonRuntimeStateFile::filePath());
+    fs::create_directories(p.parent_path());
+    std::ofstream(p, std::ios::trunc)
+        << json{{"version", 2}, {"instance_id", "old123"}, {"pid", 4242},
+                {"started_at", "2026-01-01T00:00:00Z"}, {"resolved", legacyDefaults()}}.dump(4);
+
+    DaemonRuntimeState got = DaemonRuntimeStateFile::read();
+    EXPECT_TRUE(got.fileOk);
+    EXPECT_EQ(got.instanceId, "old123");
+    EXPECT_EQ(got.resolved.modulesDirs, std::vector<std::string>{"/opt/modules"});
+}
+
+TEST_F(DaemonStateTest, RemovedKeys_AreNoLongerWritten)
+{
+    ASSERT_TRUE(DaemonConfigFile::write(sampleConfig()));
+    auto config = yaml_json::parse(slurp(DaemonConfigFile::filePath()));
+    ASSERT_TRUE(config.has_value());
+
+    ASSERT_TRUE(DaemonRuntimeStateFile::write(minimalState("inst-w", {"/mods"})));
+    const json state = json::parse(slurp(DaemonRuntimeStateFile::filePath()));
+
+    for (const char* key : {"modules", "ssl", "insecure_tcp"}) {
+        EXPECT_FALSE(config->contains(key)) << key << " in " << config->dump();
+        EXPECT_FALSE(state["resolved"].contains(key)) << key << " in " << state.dump();
+    }
+}
+
+TEST_F(DaemonStateTest, RemovedKeys_AreRefusedByName)
+{
+    const auto withListener = [](json listener) {
+        return json{{"version", 2},
+                    {"modules", {{"core_service", {{"transports", json::array({listener})}}}}}};
+    };
+    EXPECT_TRUE(refusedAsRemoved(
+        daemonConfigError(withListener({{"protocol", "tcp"}, {"port", 6000}})),
+        "modules.core_service.transports[0].protocol: tcp"));
+    EXPECT_TRUE(refusedAsRemoved(
+        daemonConfigError(withListener({{"protocol", "tcp_ssl"}})),
+        "modules.core_service.transports[0].protocol: tcp_ssl"));
+    for (const char* field : {"host", "port", "codec", "ca_file", "verify_peer", "cert", "key"}) {
+        EXPECT_TRUE(refusedAsRemoved(
+            daemonConfigError(withListener({{"protocol", "local"}, {field, "x"}})),
+            std::string("modules.core_service.transports[0].") + field));
+    }
+    for (const char* field : {"cert", "key", "ca"}) {
+        EXPECT_TRUE(refusedAsRemoved(
+            daemonConfigError({{"version", 2}, {"ssl", {{field, "/etc/ssl/x.pem"}}}}),
+            std::string("ssl.") + field));
+    }
+    EXPECT_TRUE(refusedAsRemoved(
+        daemonConfigError({{"version", 2}, {"ssl", "/etc/ssl/cert.pem"}}), "ssl"));
+    EXPECT_TRUE(refusedAsRemoved(
+        daemonConfigError({{"version", 2}, {"insecure_tcp", true}}), "insecure_tcp"));
+    EXPECT_TRUE(refusedAsRemoved(
+        daemonConfigError({{"version", 2}, {"insecure_tcp", "no"}}), "insecure_tcp"));
+}
+
+TEST_F(DaemonStateTest, RemovedKeys_AreRefusedByTheLoaderToo)
+{
+    writeDaemonConfigText("version: 2\n"
+                          "modules:\n"
+                          "  core_service:\n"
+                          "    - protocol: tcp\n"
+                          "      host: 0.0.0.0\n");
+    EXPECT_FALSE(DaemonConfigFile::read().has_value());
+}
+
+TEST_F(DaemonStateTest, RemovedKeys_AnOlderDaemonWithTcpListenersStillReads)
+{
+    // A daemon started before the upgrade, still running: the "already
+    // running" guard and the stale-session checks must still see it.
+    json resolved = legacyDefaults();
+    resolved["modules"]["core_service"]["transports"].push_back(
+        {{"protocol", "tcp_ssl"}, {"host", "0.0.0.0"}, {"port", 6443}, {"ca_file", "/ca.pem"}});
+    resolved["ssl"] = {{"cert", "/etc/ssl/cert.pem"}, {"key", "/etc/ssl/key.pem"}, {"ca", ""}};
+    resolved["insecure_tcp"] = true;
+    fs::path p(DaemonRuntimeStateFile::filePath());
+    fs::create_directories(p.parent_path());
+    std::ofstream(p, std::ios::trunc)
+        << json{{"version", 2}, {"instance_id", "old456"}, {"pid", 4242},
+                {"started_at", "2026-01-01T00:00:00Z"}, {"resolved", resolved}}.dump(4);
+
+    DaemonRuntimeState got = DaemonRuntimeStateFile::read();
+    EXPECT_TRUE(got.fileOk);
+    EXPECT_EQ(got.pid, 4242);
+    EXPECT_EQ(got.instanceId, "old456");
+    EXPECT_EQ(got.resolved.modulesDirs, std::vector<std::string>{"/opt/modules"});
+}
+
+TEST_F(DaemonStateTest, RemovedKeys_ClientTransportsAreRefusedByName)
+{
+    const auto withEntry = [](json entry) {
+        return json{{"version", 2}, {"token_file", "auto.json"},
+                    {"daemon", {{"core_service", entry}}}};
+    };
+    EXPECT_TRUE(refusedAsRemoved(clientConfigError(withEntry({{"transport", "tcp"}})),
+                                 "daemon.core_service.transport: tcp"));
+    EXPECT_TRUE(refusedAsRemoved(clientConfigError(withEntry({{"transport", "tcp_ssl"}})),
+                                 "daemon.core_service.transport: tcp_ssl"));
+    for (const char* field : {"host", "port", "codec", "ca", "verify_peer"}) {
+        EXPECT_TRUE(refusedAsRemoved(
+            clientConfigError(withEntry({{"transport", "local"}, {field, "x"}})),
+            std::string("daemon.core_service.") + field));
+    }
+    // The dial spec every daemon wrote is still a dial spec.
+    EXPECT_EQ(clientConfigError(withEntry({{"transport", "local"}})), "");
+}
+
+TEST_F(DaemonStateTest, RemovedKeys_TheMessageNamesTheReplacements)
+{
+    const std::string message = removedWithTcpTransports("insecure_tcp");
+    for (const char* part : {"`insecure_tcp`", "local socket only", "Remote Runtime Control",
+                             "logosctl peer invite --runtime-control", "logosctl remote pair",
+                             "--remote", "peer the two"})
+        EXPECT_NE(message.find(part), std::string::npos) << part << " missing: " << message;
 }
 
 TEST_F(DaemonStateTest, RuntimeState_TypeMismatchIsRejectedNotFatal)
@@ -865,14 +748,12 @@ TEST_F(DaemonStateTest, ClientConfig_TypeMismatchNamesTheOffendingKey)
         "daemon"));
     EXPECT_TRUE(namesKey(
         clientConfigError({{"version", 2},
-                           {"daemon", {{"core_service",
-                             {{"transport", "tcp"}, {"port", "6001"}}}}}}),
-        "daemon.core_service.port"));
+                           {"daemon", {{"core_service", {{"transport", 42}}}}}}),
+        "daemon.core_service.transport"));
     EXPECT_TRUE(namesKey(
         clientConfigError({{"version", 2},
-                           {"daemon", {{"core_service",
-                             {{"transport", "tcp_ssl"}, {"verify_peer", "yes"}}}}}}),
-        "daemon.core_service.verify_peer"));
+                           {"daemon", {{"core_service", {{"transport", "locall"}}}}}}),
+        "daemon.core_service.transport"));
     EXPECT_TRUE(namesKey(clientConfigError({{"version", "two"}}), "version"));
 }
 
@@ -898,17 +779,13 @@ TEST_F(DaemonStateTest, ClientConfig_WellFormedDocumentStillLoads)
            "instance_id: inst-A\n"
            "daemon:\n"
            "  core_service:\n"
-           "    transport: tcp\n"
-           "    host: 10.0.0.5\n"
-           "    port: 6001\n";
+           "    transport: local\n";
 
     ClientState got = ClientStateFile::read();
     EXPECT_TRUE(got.fileOk);
     EXPECT_EQ(got.tokenFile, "auto.json");
     EXPECT_EQ(got.instanceId, "inst-A");
-    ASSERT_EQ(got.daemon.count("core_service"), 1u);
-    EXPECT_EQ(got.daemon.at("core_service").host, "10.0.0.5");
-    EXPECT_EQ(got.daemon.at("core_service").port, 6001);
+    EXPECT_EQ(got.daemon.count("core_service"), 1u);
 }
 
 TEST_F(DaemonStateTest, ClientConfig_MistypedTokenFieldIsNotAToken)
@@ -949,11 +826,11 @@ TEST_F(DaemonStateTest, YamlRoundTrip_LeavesRealScalarsAlone)
 {
     // The quoting is for strings that would be retyped, and nothing else: a
     // number stays a number, a bool stays a bool.
-    const json doc = {{"port", 6001}, {"verify_peer", true}, {"codec", "json"}};
+    const json doc = {{"max_size_mb", 25}, {"console", true}, {"file", "daemon.log"}};
     auto back = yaml_json::parse(yaml_json::dump(doc));
     ASSERT_TRUE(back.has_value());
-    EXPECT_TRUE((*back)["port"].is_number_integer());
-    EXPECT_EQ((*back)["port"].get<int>(), 6001);
-    EXPECT_TRUE((*back)["verify_peer"].is_boolean());
-    EXPECT_EQ((*back)["codec"].get<std::string>(), "json");
+    EXPECT_TRUE((*back)["max_size_mb"].is_number_integer());
+    EXPECT_EQ((*back)["max_size_mb"].get<int>(), 25);
+    EXPECT_TRUE((*back)["console"].is_boolean());
+    EXPECT_EQ((*back)["file"].get<std::string>(), "daemon.log");
 }

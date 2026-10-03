@@ -3,29 +3,15 @@
 
 #include <nlohmann/json_fwd.hpp>
 
-#include <map>
 #include <optional>
+#include <set>
 #include <string>
-#include <cstdint>
 
 // client/config.json schema version. Aligned with the daemon-side
 // v2 (config.json / state.json / tokens.json) for symmetry across
 // the four config-tree files. Bump when the on-disk shape changes;
 // readers reject anything else with a clear regenerate message.
 constexpr int kClientStateSchemaVersion = 2;
-
-// One resolved transport entry per module the client dials. Mirrors
-// the daemon's TransportInfo but is "client-side" — host/port/etc.
-// reflect the *dial* address rather than the bind address (which can
-// differ behind NAT, docker port-forwarding, SSH tunnels).
-struct ClientModuleTransport {
-    std::string protocol;   // "local" | "tcp" | "tcp_ssl"
-    std::string host;       // tcp / tcp_ssl
-    uint16_t    port = 0;   // tcp / tcp_ssl
-    std::string codec = "json";
-    std::string caFile;     // tcp_ssl
-    bool        verifyPeer = true; // tcp_ssl
-};
 
 // In-memory representation of <configDir>/client/config.json. Owned
 // and rewritten by client subcommands; the daemon never reads or
@@ -39,29 +25,21 @@ struct ClientState {
     // refuses to start.
     std::string tokenFile;
 
-    // Daemon instance id. Required for the LocalSocket dial path —
-    // the registry name is `local:logos_<module>_<instance_id>`. May
-    // be empty for remote clients dialing over TCP / TCP-SSL since
-    // the registry name there is the TCP endpoint, not the local
-    // socket. Daemon's auto-emitted client/config.json populates
-    // this so the local-client path doesn't need to read daemon-side
-    // files (daemon/state.json carries the same instance_id, but the
-    // client never reads it during normal RPC).
+    // Daemon instance id: the local socket is `logos_<module>_<instance_id>`.
+    // The daemon writes it here each boot; empty leaves it to $LOGOS_INSTANCE_ID.
     std::string instanceId;
 
-    // Per-module dial spec. `core_service` and `capability_module`
-    // are the two entries the SDK currently consults; future
-    // auto-dialed modules add keys here without changing the
-    // surrounding shape.
-    std::map<std::string, ClientModuleTransport> daemon;
+    // The modules this client dials, each on its local socket
+    // (`daemon.<module>.transport: local`). `core_service` is required.
+    std::set<std::string> daemon;
 };
 
 // Validate a client-config document (YAML already converted to JSON) and turn
 // it into a ClientState, without touching disk. Returns nullopt with a one-line
 // reason in `error` for anything the client could not dial from: a wrong
 // top-level type, an unsupported schema version, a value of the wrong type, or
-// an invalid `daemon.<module>` transport entry. The message names the offending
-// key by its dotted path.
+// a `daemon.<module>` entry that is not `transport: local` (tcp and tcp_ssl
+// were removed). The message names the offending key by its dotted path.
 //
 // Never throws: a hand-written config must not be able to terminate the
 // process. Shared by ClientStateFile::read and by `client config set`, which

@@ -2,7 +2,9 @@
 
 The original headless CLI. Its commands, flags, config format and
 `~/.logoscore` session directory are **unchanged** — everything here worked
-the same before the repo started shipping a second binary, and still does.
+the same before the repo started shipping a second binary, and still does —
+except the `tcp` and `tcp_ssl` transports, which are gone
+([From another computer](#from-another-computer)).
 
 `logoscore` is no longer released; releases ship [`logosctl`](logosctl.md)
 instead. It will be removed once `logosctl` has been validated in real use.
@@ -12,8 +14,8 @@ Build instructions, flake outputs and test targets are in the
 
 `logoscore` itself is Qt-free. Local RPC uses `qt_remote_plain`, which speaks
 the same wire protocol as current modules built with `qt_remote`; those modules
-run unchanged in the separate `logos_host_qt` compatibility process. The
-Qt-free runtime also supports `tcp` and `tcp_ssl` listeners and clients.
+run unchanged in the separate `logos_host_qt` compatibility process. The daemon
+listens on its local socket only; see [From another computer](#from-another-computer).
 
 ## Usage
 
@@ -47,13 +49,13 @@ Layout:
 │   └── tokens/
 │       └── <name>.json    # raw, operator-copyable per `issue-token <name>`. 0600 perms.
 └── client/
-    ├── config.json        # client-owned: dial spec + token_file (write only on --persist-config)
+    ├── config.json        # dial spec + token_file, rewritten by the daemon each boot
     └── auto.json          # raw token; daemon-emitted at boot for the local client
 ```
 
 Each daemon-side file has one writer and a clear lifetime:
 - **`config.json`** — operator-typed preferences such as module directories. Only written when the operator explicitly passes `--persist-config`.
-- **`state.json`** — what this specific daemon process resolved (instance_id, pid, started_at, *actually-bound* port). Created at boot, deleted at shutdown.
+- **`state.json`** — what this specific daemon process resolved (instance_id, pid, started_at, the merged config). Created at boot, deleted at shutdown.
 - **`tokens.json`** — the hashed-at-rest accepted-token list. Independent of the running daemon's lifetime.
 
 The daemon never reads `client/`; the client never reads `daemon/config.json` or `daemon/tokens.json`. (`status` consults `daemon/state.json` for a fast same-host liveness check via `kill(pid, 0)`, but never opens daemon-only secrets.)
@@ -183,12 +185,11 @@ logoscore call blobstore put 'json:@blob.json'   # {"_bytes":"..."} from a file
 
 #### Authentication
 
-For local same-host use, token management is automatic. At boot the daemon
-auto-issues a token named `auto` (with `local_only=true`), writes the hash into `daemon/tokens.json`, and emits the raw value
-into `client/auto.json`. On the *first* boot into an empty config dir it
-also writes a default `client/config.json` so local client commands work
-out of the box; subsequent boots leave an existing `client/config.json`
-alone (so an operator-written remote-client config isn't clobbered).
+Token management is automatic. At boot the daemon auto-issues a token named
+`auto`, writes the hash into `daemon/tokens.json`, and emits the raw value into
+`client/auto.json`. It also rewrites `client/config.json` every boot, for the
+new instance id, keeping the `token_file` an existing one names, so client
+commands work out of the box.
 
 For a same-host script that supplies a token explicitly:
 
@@ -216,7 +217,6 @@ so the operator can hand it off:
 logoscore issue-token --name alice
 logoscore issue-token --name alice --replace            # rotate
 logoscore issue-token --name ci    --expires 30d        # expires after 30 days
-logoscore issue-token --name probe --local-only         # only valid over LocalSocket
 
 # List all issued tokens (names, issued_at, expires_at, local_only flag)
 logoscore list-tokens
@@ -230,18 +230,22 @@ install it in another local client session.
 
 Operator-issued tokens authorize immediately — the daemon validates every RPC
 against `daemon/tokens.json` on the call path (a fresh hash lookup per call), so
-`issue-token` grants access, `revoke-token` removes it, and `--expires` and
-`--local-only` are enforced without a restart. A `--local-only` token is
-accepted only over the local socket. (The raw
+`issue-token` grants access, `revoke-token` removes it, and `--expires` is
+enforced without a restart. Every token is accepted over the local socket only,
+so `--local-only` is still accepted and changes nothing. (The raw
 `daemon/tokens/<name>.json` file may be deleted after handoff — validation uses
 the hash in `daemon/tokens.json`.)
 
-##### Network transports
+##### From another computer
 
-The Qt-free plain C ABI supports TCP and TLS (`tcp` and `tcp_ssl`) for
-providers and clients. Configure a certificate and private key for a TLS
-listener; clients can supply a CA file or disable peer verification for a
-self-signed test endpoint.
+The daemon listens on its local socket only. The `tcp` and `tcp_ssl`
+transports were removed, and what configured them is refused rather than
+ignored: `--module-transport` with anything but `NAME=local`, `--insecure-tcp`,
+`--client-transport`, `--client-tcp-host`, `--client-tcp-port`,
+`--client-codec`, `--no-verify-peer`, `--ssl-ca` and their `LOGOSCORE_CLIENT_*`
+variables, and the matching keys in a persisted `config.json`. To operate a
+daemon from another computer, or call its modules from another runtime, see
+[logosctl](logosctl.md#operating-a-daemon-from-another-computer).
 
 #### Parallel Daemons (`--config-dir`)
 
@@ -317,8 +321,6 @@ current `qt_remote` modules, so those modules continue to run in the separate
 
 The daemon writes the complete local dial spec to
 `<configDir>/client/config.json`. No manual transport configuration is needed.
-TCP and TLS will be reintroduced only after they have equivalent plain C ABI
-client and provider implementations.
 
 #### Agent / Script Example
 

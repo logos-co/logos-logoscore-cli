@@ -27,16 +27,13 @@ struct StaleSession {
 };
 
 // nullopt means "no evidence of a dead daemon", which is NOT the same as "a
-// daemon is running" -- it is also what a session with no state.json returns,
-// and what a remote client gets. Two deliberate no-ops:
+// daemon is running" -- it is also what a session with no state.json returns.
+// Two deliberate no-ops:
 //
 //   - No state.json (or no pid in it): nothing to be stale about.
-//   - The state file describes a DIFFERENT instance than the client dials.
-//     A remote client can have a co-resident daemon's leftovers sitting in its
-//     own session directory; those say nothing about the daemon at the far end
-//     of its TCP connection, and must not stop it from reaching it. The client
-//     config of such a client carries no instance_id at all, so the instance-id
-//     match in the definition is what keeps this function silent for it.
+//   - The state file describes a DIFFERENT instance than the client dials, or
+//     the client config names none (leaving it to $LOGOS_INSTANCE_ID): a dead
+//     pid there says nothing about the daemon the client actually dials.
 std::optional<StaleSession> detectStaleSession();
 
 class Command {

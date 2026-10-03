@@ -10,7 +10,7 @@ namespace {
 // YAML scalars are untyped text; the tag tells us whether the author wrote
 // `true`, `8645` or `"8645"`. yaml-cpp records that distinction, so we can
 // recover real JSON types instead of turning every value into a string —
-// which would silently break `port: 8645` and `verifyPeer: true`.
+// which would silently break `max_size_mb: 25` and `console: false`.
 nlohmann::json scalarToJson(const YAML::Node& node)
 {
     const std::string& tag = node.Tag();

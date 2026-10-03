@@ -90,23 +90,27 @@ int ConfigCommand::set(const std::vector<std::string>& args)
     }
 
     // Reject keys we don't understand. The loaders below ignore anything
-    // unrecognised, so without this a near-miss like `insecureTcp` (the key is
-    // `insecure_tcp`) would be accepted, silently dropped, and the daemon
+    // unrecognised, so without this a near-miss like `signaturePolicy` (the key
+    // is `signature_policy`) would be accepted, silently dropped, and the daemon
     // would boot with the operator's intent missing and nothing to explain it.
     {
         static const std::set<std::string> kDaemonKeys{
-            "version", "modules", "modules_dirs", "persistence_path", "ssl",
-            "insecure_tcp", "access_policy", "placement", "bundled_modules_dirs", "peering",
+            "version", "modules_dirs", "persistence_path",
+            "access_policy", "placement", "bundled_modules_dirs", "peering",
             "access_group", "dirs", "logging",
             "signature_policy",
         };
+        // Removed with tcp and tcp_ssl: not listed, but left to the loader,
+        // which takes their old defaults and refuses anything else by name.
+        static const std::set<std::string> kRemovedDaemonKeys{"modules", "ssl", "insecure_tcp"};
         static const std::set<std::string> kClientKeys{
             "version", "daemon", "token_file", "instance_id",
         };
         const auto& known = m_daemonSide ? kDaemonKeys : kClientKeys;
         std::vector<std::string> unknown;
         for (auto it = parsed->begin(); it != parsed->end(); ++it)
-            if (!known.count(it.key())) unknown.push_back(it.key());
+            if (!known.count(it.key()) && !(m_daemonSide && kRemovedDaemonKeys.count(it.key())))
+                unknown.push_back(it.key());
         if (!unknown.empty()) {
             output().printError("INVALID_CONFIG",
                 fmt::format("Unknown key(s): {}. Known keys are: {}.",

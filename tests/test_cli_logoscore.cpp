@@ -331,57 +331,69 @@ TEST_F(CLITest, DaemonFlags_WithClientSubcommand_Rejected) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// BUG-026: --module-transport port must reject trailing garbage
-// std::stoi("6000x") returns 6000 and std::stoi("0x1F90") returns 0; the
-// parser must require the WHOLE value to be a valid integer or error out,
-// so a typo can't silently bind a different (or auto-allocated) port.
+// The tcp and tcp_ssl transports are gone. The flags that configured them, and
+// their environment variables, are refused with one message rather than
+// ignored: a daemon or client that meant to use them must not quietly run
+// local-only. The timeout helper turns a daemon that started anyway into 124.
 // ═════════════════════════════════════════════════════════════════════════════
 
-// Use the timeout helper: a correct build REJECTS the bad port and exits 1
-// before the event loop; a buggy build parses the prefix, starts the daemon,
-// and would block — surfacing as timeout's exit 124 rather than a hung test.
-TEST_F(CLITest, ModuleTransportPort_TrailingGarbageRejected) {
-    std::string output;
-    int exitCode = runLogoscoreWithTimeout(
-        "-D --module-transport core_service=tcp,port=6000x", &output, 5);
-    EXPECT_EQ(exitCode, 1)
-        << "port=6000x must be rejected (exit 1), not parsed as 6000 and "
-           "started (124=timeout). Output:\n" << output;
-    EXPECT_NE(output.find("not a valid integer"), std::string::npos)
-        << "Output:\n" << output;
+static void expectRemovedWithTcp(const std::string& output, const std::string& key)
+{
+    EXPECT_NE(output.find("`" + key + "` was removed with the tcp and tcp_ssl transports"),
+              std::string::npos) << "Output:\n" << output;
+    EXPECT_NE(output.find("logosctl remote pair"), std::string::npos)
+        << "The refusal should point at Remote Runtime Control. Output:\n" << output;
 }
 
-TEST_F(CLITest, ModuleTransportPort_HexLikeRejected) {
-    std::string output;
-    int exitCode = runLogoscoreWithTimeout(
-        "-D --module-transport core_service=tcp,port=0x1F90", &output, 5);
-    EXPECT_EQ(exitCode, 1)
-        << "port=0x1F90 must be rejected (exit 1), not parsed as 0. "
-           "Output:\n" << output;
-    EXPECT_NE(output.find("not a valid integer"), std::string::npos)
-        << "Output:\n" << output;
+TEST_F(CLITest, ModuleTransport_TcpListenerIsRefused) {
+    for (const std::string spec : {"core_service=tcp,host=0.0.0.0,port=6000",
+                                   "core_service=tcp_ssl,cert=c.pem,key=k.pem",
+                                   "core_service=local,port=6000"}) {
+        std::string output;
+        const int exitCode = runLogoscoreWithTimeout("-D --module-transport " + spec, &output, 5);
+        EXPECT_EQ(exitCode, 1) << spec << " Output:\n" << output;
+        expectRemovedWithTcp(output, "--module-transport " + spec);
+    }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// BUG-027: --client-codec must be validated (json|cbor), mirroring the daemon
-// side. An invalid value was stored verbatim and silently coerced to JSON at
-// dial time, defeating the documented "connect fails on codec mismatch".
-// ═════════════════════════════════════════════════════════════════════════════
+TEST_F(CLITest, RemovedFlags_AreRefusedNotIgnored) {
+    for (const std::string flag : {"--insecure-tcp", "--no-verify-peer",
+                                   "--client-transport tcp", "--client-tcp-host h",
+                                   "--client-tcp-port 6000", "--client-codec json",
+                                   "--ssl-ca ca.pem"}) {
+        std::string output;
+        const int exitCode = runLogoscoreWithTimeout(flag + " status", &output, 5);
+        EXPECT_EQ(exitCode, 1) << flag << " Output:\n" << output;
+        expectRemovedWithTcp(output, flag.substr(0, flag.find(' ')));
+    }
+}
 
-TEST_F(CLITest, ClientCodec_InvalidRejected) {
-    // Codec validation happens during the client-config merge, before any
-    // connect. A correct build exits 1 with "must be"; a buggy build silently
-    // coerces to JSON and proceeds to `status` (exit 2, no daemon). Timeout
-    // helper guards against any unexpected block.
-    // Global client flags are parsed before the subcommand (after it they're
-    // swallowed by allow_extras), so place --client-codec ahead of `status`.
+TEST_F(CLITest, RemovedEnvVars_AreRefusedByClientCommands) {
+    ::setenv("LOGOSCORE_CLIENT_TRANSPORT", "tcp_ssl", 1);
     std::string output;
-    int exitCode = runLogoscoreWithTimeout(
-        "--client-codec jsonn status", &output, 5);
-    EXPECT_EQ(exitCode, 1)
-        << "An invalid --client-codec must be rejected with exit 1, not "
-           "coerced to JSON (exit 2). Output:\n" << output;
-    EXPECT_NE(output.find("must be"), std::string::npos)
+    const int exitCode = runLogoscoreWithTimeout("status", &output, 5);
+    ::unsetenv("LOGOSCORE_CLIENT_TRANSPORT");
+    EXPECT_EQ(exitCode, 1) << "Output:\n" << output;
+    expectRemovedWithTcp(output, "$LOGOSCORE_CLIENT_TRANSPORT");
+}
+
+TEST_F(CLITest, PersistedConfigWithRemovedKeys_DaemonRefusesToStart) {
+    // A config.json --persist-config wrote with a plaintext listener enabled.
+    // NAME=local is still accepted: the refusal comes from the config.
+    const fs::path cfgDir = fs::temp_directory_path() /
+        ("logoscore_cli_legacycfg_" + std::to_string(::getpid()));
+    fs::create_directories(cfgDir / "daemon");
+    std::ofstream(cfgDir / "daemon" / "config.json")
+        << R"({"version":2,"insecure_tcp":true})" << "\n";
+
+    std::string output;
+    const int exitCode = runLogoscoreWithTimeout(
+        "--config-dir " + cfgDir.string() + " -D --module-transport core_service=local",
+        &output, 10);
+    fs::remove_all(cfgDir);
+    EXPECT_EQ(exitCode, 1) << "Output:\n" << output;
+    expectRemovedWithTcp(output, "insecure_tcp");
+    EXPECT_NE(output.find("does not start on a config it cannot load"), std::string::npos)
         << "Output:\n" << output;
 }
 

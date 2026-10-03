@@ -41,10 +41,8 @@ std::optional<StaleSession> detectStaleSession()
     if (logosctl::processAlive(rs.pid))
         return std::nullopt;
 
-    // Only when the state file describes the daemon this client would dial.
-    // See the header: a remote client's session can hold a co-resident
-    // daemon's leftovers, and its own config carries no instance_id, so an
-    // empty one must never match.
+    // Only when the state file describes the daemon this client would dial;
+    // see the header. An empty instance_id names no daemon, so it never matches.
     const ClientState cs = ClientStateFile::read();
     if (cs.instanceId.empty() || cs.instanceId != rs.instanceId)
         return std::nullopt;
