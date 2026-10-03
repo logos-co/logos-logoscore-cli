@@ -317,7 +317,8 @@ void requestShutdownFromCoreService(void*)
     Daemon::requestShutdownAfter(shutdownGraceMs());
 }
 
-// Package operations change what is installed: the runtime and operators only.
+// Package operations change what is installed: the runtime and operators only, and a
+// remote consumer the daemon's policy granted the method (core_service asked first).
 char* extendCoreService(const char* callerJson, const char* method, const char* argsJson,
                         void* userData)
 {
@@ -326,7 +327,7 @@ char* extendCoreService(const char* callerJson, const char* method, const char* 
     const nlohmann::json caller = nlohmann::json::parse(callerJson ? callerJson : "{}",
                                                         nullptr, false);
     const std::string kind = caller.is_object() ? caller.value("kind", std::string{}) : "";
-    if (kind != "host" && kind != "operator")
+    if (kind != "host" && kind != "operator" && kind != "remote")
         return copyForProtocol(nlohmann::json{
             {"status", "error"}, {"code", "FORBIDDEN"},
             {"message", "core_service." + name + " is for operators."}}.dump());
@@ -379,6 +380,22 @@ bool lockDaemonDir()
     ::close(fd);
     return !held;
 #endif
+}
+
+// A same-user app finds the local invite at <config dir>/peering/local-invite
+// unless the config names a path.
+void localInviteDefault(nlohmann::json& peering)
+{
+    auto control = peering.find("control");
+    if (control == peering.end() || !control->is_object()) return;
+    auto local = control->find("local_invite");
+    if (local == control->end()) return;
+    if (local->is_boolean() && local->get<bool>()) *local = nlohmann::json::object();
+    if (!local->is_object() || local->contains("path")) return;
+    const std::filesystem::path given = std::filesystem::u8path(Config::configDir());
+    std::error_code ec;
+    const std::filesystem::path dir = std::filesystem::absolute(given, ec);
+    (*local)["path"] = ((ec ? given : dir) / "peering" / "local-invite").u8string();
 }
 
 } // namespace
@@ -664,6 +681,15 @@ int Daemon::start(int argc, char* argv[],
     if (!cfg.placement.empty()) runtimeConfig["placement_policy"] = cfg.placement;
     runtimeConfig["core_service_transports"] =
         logos::transportSetToJsonString(networkTransports(coreTransports));
+    // peering_module lets this shell, and local operators, manage it.
+    if (!cfg.peering.empty()) {
+        nlohmann::json peering = nlohmann::json::parse(cfg.peering, nullptr, false);
+        if (peering.is_object()) {
+            peering["shell"] = "logoscore";
+            localInviteDefault(peering);
+            runtimeConfig["peering_config"] = std::move(peering);
+        }
+    }
     // package_manager's settings answer only the runtime, which applies these
     // as it loads it; a signature policy that does not land fails that load.
     if (modern)

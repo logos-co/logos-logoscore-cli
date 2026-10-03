@@ -24,6 +24,7 @@
 #include "client/commands/command.h"
 #include "client/commands/package_command.h"
 #include "client/commands/watch_command.h"
+#include "client/remote.h"
 #include "config.h"
 #include "daemon/daemon_state.h"
 
@@ -292,6 +293,7 @@ TEST_F(CommandTest, CreateCommand_KnownCommands)
     EXPECT_NE(createCommand("issue-token",   mockClient, output), nullptr);
     EXPECT_NE(createCommand("revoke-token",  mockClient, output), nullptr);
     EXPECT_NE(createCommand("list-tokens",   mockClient, output), nullptr);
+    EXPECT_NE(createCommand("remote",        mockClient, output), nullptr);
 }
 
 TEST_F(CommandTest, CreateCommand_Unknown_ReturnsNull)
@@ -322,6 +324,55 @@ TEST_F(CommandTest, KnownSubcommands_ContainsExpected)
     EXPECT_TRUE(has("issue-token"));
     EXPECT_TRUE(has("revoke-token"));
     EXPECT_TRUE(has("list-tokens"));
+    EXPECT_TRUE(has("remote"));
+}
+
+// ── Remote Runtime Control ──────────────────────────────────────────────────
+
+TEST_F(CommandTest, Remote_AnInviteMayBeBareOrWhatPeerInvitePrints)
+{
+    EXPECT_EQ(logosctl::remote::inviteText(R"({"invite":"logos-pair:v1:a"})"), "logos-pair:v1:a");
+    EXPECT_EQ(logosctl::remote::inviteText("logos-pair:v1:b"), "logos-pair:v1:b");
+    EXPECT_EQ(logosctl::remote::inviteText(R"({"other":1})"), R"({"other":1})");
+}
+
+TEST_F(CommandTest, Peer_ARuntimeControlInviteAsksForThatRole)
+{
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}, {"result", {{"invite", "logos-pair:v1:x"}}}};
+    auto cmd = createCommand("peer", mockClient, output);
+    ASSERT_NE(cmd, nullptr);
+    captureOutput([&] { EXPECT_EQ(cmd->execute({"invite", "--runtime-control", "--ttl", "600"}), 0); });
+    EXPECT_EQ(mockClient.lastCallModule, "peering_module");
+    EXPECT_EQ(mockClient.lastCallMethod, "createInvite");
+    EXPECT_EQ(mockClient.lastCallArgs, LogosList::array({"runtime-control", 600}));
+    captureOutput([&] { EXPECT_EQ(cmd->execute({"invite", "--operator"}), 1); });
+}
+
+// Accepting a runtime-control pairing says the client may call nothing yet.
+TEST_F(CommandTest, Peer_AcceptingRuntimeControlPrintsAPolicyExample)
+{
+    mockClient.callMethodResultByMethod["pending"] = LogosMap{
+        {"status", "ok"},
+        {"result", {{"pending", LogosList::array({{{"id", "p1"}, {"peer_runtime_id", "rt-1"},
+                                                    {"uses", {"provider-access", "runtime-control"}}}})}}}};
+    mockClient.callMethodResultByMethod["confirmPairing"] = LogosMap{{"status", "ok"}, {"result", {{"ok", true}}}};
+    output.setHumanMode(true);
+    auto cmd = createCommand("peer", mockClient, output);
+    const std::string out = captureOutput([&] { EXPECT_EQ(cmd->execute({"accept", "p1"}), 0); });
+    EXPECT_EQ(mockClient.lastCallMethod, "confirmPairing");
+    EXPECT_NE(out.find("rt-1/logosctl"), std::string::npos) << out;
+}
+
+// These tests build without libpeering: remote mode says so rather than failing late.
+TEST_F(CommandTest, Remote_WithoutLibpeeringSaysSo)
+{
+    std::string error;
+    EXPECT_FALSE(logosctl::remote::available());
+    EXPECT_FALSE(logosctl::remote::route("node", &error).has_value());
+    EXPECT_NE(error.find("libpeering"), std::string::npos) << error;
+    auto cmd = createCommand("remote", mockClient, output);
+    ASSERT_NE(cmd, nullptr);
+    EXPECT_EQ(cmd->execute({"ls"}), 1);
 }
 
 // ── Connection Error Handling ────────────────────────────────────────────────

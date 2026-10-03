@@ -8,6 +8,7 @@
 #include "../rpc_deadlines.h"
 #include "../version_info.h"
 #include "client_state.h"
+#include "remote.h"
 
 #include <fmt/format.h>
 #include <chrono>
@@ -112,6 +113,8 @@ RpcClient::~RpcClient()
 
 bool RpcClient::connect()
 {
+    if (!m_remote.empty()) return connectRemote();
+
     // Read client config (pure parse — doesn't probe the daemon).
     d->clientState = ClientStateFile::read();
     if (!d->clientState.fileOk) {
@@ -193,6 +196,27 @@ bool RpcClient::connect()
         return false;
     }
 
+    m_connected = true;
+    return true;
+}
+
+// A Runtime Control session with the daemon's core_service on tls_tcp: the daemon
+// knows this client by its key, so no token goes with it, and its policy decides each call.
+bool RpcClient::connectRemote()
+{
+    std::string error;
+    const auto route = logosctl::remote::route(m_remote, &error);
+    if (!route) {
+        m_lastError = fmt::format("No route to {}: {}", m_remote, error);
+        return false;
+    }
+    d->coreService = std::make_unique<logosctl::PlainRpcClient>(
+        "core_service", "cli_client", R"({"protocol":"tls_tcp"})");
+    if (!d->coreService->valid()
+        || !d->coreService->useSession(route->chainPem, route->keyPem, route->dial, route->hello)) {
+        m_lastError = "Could not open a session with " + m_remote;
+        return false;
+    }
     m_connected = true;
     return true;
 }
