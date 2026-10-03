@@ -175,6 +175,7 @@ set(SHARED_SOURCES
     src/core_service/package_service.cpp
     src/core_service/package_ops.cpp
     src/core_service/package_ops_live.cpp
+    src/core_service/shell_calls.cpp
 )
 
 # Two front-ends over one shared runtime. logoscore is the tool that exists
