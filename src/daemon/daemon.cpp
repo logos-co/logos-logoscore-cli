@@ -284,6 +284,18 @@ void bootstrapPackageModules(LogosAPI* api,
         return err.ok();
     };
 
+    // The answer is not checked, as in the client: a downloader that predates
+    // start() refuses it and is running already.
+    hooks.startDownloader = [api]() {
+        LogosAPIClient* pd =
+            api ? api->getClient(package_bootstrap::kPackageDownloader) : nullptr;
+        if (!pd) return false;
+        logos::CallError err;
+        pd->invokeRemoteMethod(QString::fromLatin1(package_bootstrap::kPackageDownloader),
+                               QStringLiteral("start"), QVariantList{}, Timeout(), &err);
+        return err.ok();
+    };
+
     package_bootstrap::Dirs dirs;
     // bundledDir is <bin>/../modules-pkg; its plugins sibling is alongside it.
     if (!bundledDir.empty()) {

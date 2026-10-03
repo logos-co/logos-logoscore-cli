@@ -15,6 +15,8 @@ namespace {
 struct Harness {
     std::set<std::string>    loadFailures;      // modules whose load returns false
     std::set<std::string>    configureFailures; // methods whose delivery fails
+    bool                     startFails = false; // the downloader's start() does not land
+    int                      starts = 0;
 
     std::vector<std::string> loadAttempts;
     std::vector<std::string> unloaded;
@@ -34,6 +36,10 @@ struct Harness {
                              const std::vector<std::string>& args) {
             configured.emplace_back(method, args);
             return configureFailures.count(method) == 0;
+        };
+        h.startDownloader = [this]() {
+            ++starts;
+            return !startFails;
         };
         h.warn = [this](const std::string& line) { warnings.push_back(line); };
         h.note = [this](const std::string& line) { notes.push_back(line); };
@@ -87,6 +93,8 @@ TEST(PackageBootstrap, LoadsBothAndConfiguresEverything)
 
     EXPECT_TRUE(out.managerLoaded);
     EXPECT_TRUE(out.downloaderLoaded);
+    EXPECT_TRUE(out.downloaderStarted);
+    EXPECT_EQ(h.starts, 1);
     EXPECT_TRUE(out.directoriesSet);
     EXPECT_TRUE(out.policyArmed);
     EXPECT_FALSE(out.managerDisabled);
@@ -208,6 +216,8 @@ TEST(PackageBootstrap, ManagerFailureStillAttemptsTheDownloader)
     EXPECT_EQ(h.loadAttempts, (std::vector<std::string>{kPm, kPd}));
     EXPECT_FALSE(out.managerLoaded);
     EXPECT_TRUE(out.downloaderLoaded);
+    // The early return for an absent manager must not skip the downloader's start.
+    EXPECT_TRUE(out.downloaderStarted);
 
     // Nothing to configure, and nothing to fail closed on: an absent manager
     // enforces nothing and answers nothing.
@@ -228,6 +238,34 @@ TEST(PackageBootstrap, BothFailingWarnsAboutEachAndConfiguresNothing)
     EXPECT_TRUE(h.configured.empty());
     EXPECT_FALSE(out.managerLoaded);
     EXPECT_FALSE(out.downloaderLoaded);
+    EXPECT_EQ(h.starts, 0);
+}
+
+// -- the downloader is started once loaded, as Basecamp does ------------------
+
+TEST(PackageBootstrap, DownloaderThatFailedToLoadIsNotStarted)
+{
+    Harness h;
+    h.loadFailures.insert(kPd);
+
+    const auto out = package_bootstrap::run(h.hooks(), sessionDirs(), "");
+
+    EXPECT_EQ(h.starts, 0);
+    EXPECT_FALSE(out.downloaderStarted);
+    EXPECT_TRUE(out.managerLoaded);
+}
+
+TEST(PackageBootstrap, UndeliveredDownloaderStartWarnsAndConfiguresTheManager)
+{
+    Harness h;
+    h.startFails = true;
+
+    const auto out = package_bootstrap::run(h.hooks(), sessionDirs(), "");
+
+    EXPECT_EQ(h.starts, 1);
+    EXPECT_FALSE(out.downloaderStarted);
+    EXPECT_TRUE(h.warnedAbout("could not start bundled module 'package_downloader'"));
+    EXPECT_TRUE(h.called("setUserModulesDirectory"));
 }
 
 // -- regression: the warning must name what actually went away --------------

@@ -46,6 +46,17 @@ Outcome run(const Hooks& hooks, const Dirs& dirs,
             hooks.note(std::string("Loaded bundled module: ") + m.name);
     }
 
+    // Started once loaded, as Basecamp does: its storage node comes up with the
+    // session, and a stop made later sticks. `catalog` and `package` commands
+    // still start it when they need it, which covers a reload.
+    if (out.downloaderLoaded && hooks.startDownloader) {
+        out.downloaderStarted = hooks.startDownloader();
+        if (!out.downloaderStarted)
+            hooks.warn(std::string("Warning: could not start bundled module '")
+                       + kPackageDownloader + "'; catalog commands will start it "
+                       "when they need it.");
+    }
+
     // Nothing loaded to configure. Not a half-configured state: an absent
     // package_manager enforces nothing and answers nothing.
     if (!out.managerLoaded)

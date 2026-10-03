@@ -234,15 +234,28 @@ HOME=$(pwd)/storage-home SSL_CERT_FILE=$(pwd)/localhost.crt logosctl --config-di
 logosctl module ls --loaded
 ```
 
-### 4.4 The node waits for the downloader
+### 4.4 The daemon starts the downloader
 
-Loading the downloader starts nothing: it waits for a consumer to
-start it, and the first `catalog` or `package` command does. Until
-then the node is down.
+The daemon starts the downloader as soon as it loads it, as Basecamp
+does.
 
 ```bash
 logosctl call package_downloader getState
+```
+
+### 4.5 The downloader starts the node
+
+The downloader sees the storage module become ready and starts its
+node. Nobody starts the node by hand.
+
+```bash
 logosctl call storage_module isRunning
+```
+
+### 4.6 The node is on the catalog's network
+
+```bash
+logosctl call storage_module network
 ```
 
 ---
@@ -269,28 +282,9 @@ logosctl search openmetrics
 
 ---
 
-## Step 6: The downloader starts the node
+## Step 6: Install over Logos Storage
 
-The catalog commands started the downloader. It saw the storage module
-ready and started its node: nobody starts the node by hand.
-
-### 6.1 The node is running
-
-```bash
-logosctl call storage_module isRunning
-```
-
-### 6.2 The node is on the catalog's network
-
-```bash
-logosctl call storage_module network
-```
-
----
-
-## Step 7: Install over Logos Storage
-
-### 7.1 Watch the downloader's events
+### 6.1 Watch the downloader's events
 
 `downloadDone` carries the package name (`arg0`) and the URL that
 served it (`arg1`).
@@ -299,25 +293,25 @@ served it (`arg1`).
 logosctl --json watch package_downloader > events.txt &
 ```
 
-### 7.2 Preview the install
+### 6.2 Preview the install
 
 ```bash
 logosctl install openmetrics --dry-run
 ```
 
-### 7.3 Install for real
+### 6.3 Install for real
 
 ```bash
 logosctl install openmetrics -y
 ```
 
-### 7.4 It came from the storage network
+### 6.4 It came from the storage network
 
 ```bash
 jq -rs 'map(select(.event == "downloadDone")) | last | .data.arg1' events.txt
 ```
 
-### 7.5 The package's CID is the one served
+### 6.5 The package's CID is the one served
 
 ```bash
 jq -es --arg src "logos:logos.dev:$(cat cid.txt)" \
@@ -325,7 +319,7 @@ jq -es --arg src "logos:logos.dev:$(cat cid.txt)" \
 
 ```
 
-### 7.6 The session's node now holds the package
+### 6.6 The session's node now holds the package
 
 A node that downloads a file keeps it, and provides it to the
 network.
@@ -336,21 +330,21 @@ logosctl call storage_module exists "$(cat cid.txt)"
 
 ---
 
-## Step 8: Installed is not loaded
+## Step 7: Installed is not loaded
 
-### 8.1 Discoverable, not loaded
+### 7.1 Discoverable, not loaded
 
 ```bash
 logosctl module ls
 ```
 
-### 8.2 Load it
+### 7.2 Load it
 
 ```bash
 logosctl module load openmetrics
 ```
 
-### 8.3 Confirm it is running
+### 7.3 Confirm it is running
 
 ```bash
 logosctl module ls --loaded
@@ -358,36 +352,36 @@ logosctl module ls --loaded
 
 ---
 
-## Step 9: Fall back to HTTPS
+## Step 8: Fall back to HTTPS
 
 Without the storage module, the downloader skips the `logos:` URL and
 uses the HTTPS one.
 
-### 9.1 Remove the package
+### 8.1 Remove the package
 
 ```bash
 logosctl package remove openmetrics -y
 ```
 
-### 9.2 Unload the storage module
+### 8.2 Unload the storage module
 
 ```bash
 logosctl module unload storage_module
 ```
 
-### 9.3 Make the HTTPS URL live
+### 8.3 Make the HTTPS URL live
 
 ```bash
 cp openmetrics.lgx www/
 ```
 
-### 9.4 Install again
+### 8.4 Install again
 
 ```bash
 logosctl install openmetrics -y
 ```
 
-### 9.5 It came from HTTPS
+### 8.5 It came from HTTPS
 
 ```bash
 jq -rs 'map(select(.event == "downloadDone")) | last | .data.arg1' events.txt
@@ -395,15 +389,15 @@ jq -rs 'map(select(.event == "downloadDone")) | last | .data.arg1' events.txt
 
 ---
 
-## Step 10: Shut down
+## Step 9: Shut down
 
-### 10.1 Stop the daemon
+### 9.1 Stop the daemon
 
 ```bash
 logosctl daemon stop
 ```
 
-### 10.2 Stop the watcher, the provider and the HTTPS server
+### 9.2 Stop the watcher, the provider and the HTTPS server
 
 ```bash
 kill %1 %2 %3

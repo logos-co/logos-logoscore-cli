@@ -60,8 +60,9 @@ protected:
     // definition for which commands that covers and why none opts out.
     int ensureConnected();
 
-    // package_downloader does nothing until a consumer starts it. A command
-    // calls this, once connected, before its first call into it. start() is
+    // package_downloader does nothing until a consumer starts it. The daemon
+    // starts it once loaded, and a command calls this, once connected, before
+    // its first call into it, which covers a reload. start() is
     // idempotent, and its answer is not checked: one that predates it refuses
     // the method and is running already, and any other failure surfaces on the
     // call that follows.
