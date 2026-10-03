@@ -32,6 +32,11 @@ struct Hooks {
     std::function<bool(const std::string& method,
                        const std::vector<std::string>& args)> configure;
 
+    // package_downloader's start(). It does nothing until started, and the
+    // daemon never stops it. False when the call did not reach the module.
+    // May be null.
+    std::function<bool()> startDownloader;
+
     // Operator-visible warning, one line, no trailing newline.
     std::function<void(const std::string& line)> warn;
 
@@ -59,6 +64,7 @@ struct Dirs {
 struct Outcome {
     bool managerLoaded     = false;  // package_manager is up and usable
     bool downloaderLoaded  = false;  // package_downloader is up
+    bool downloaderStarted = false;  // ...and its start() was delivered
     bool directoriesSet    = false;  // every directory call was delivered
     bool policyArmed       = false;  // an explicit policy was configured AND delivered
     bool managerDisabled   = false;  // loaded, then unloaded to fail closed
