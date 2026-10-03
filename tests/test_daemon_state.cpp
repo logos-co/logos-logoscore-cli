@@ -81,6 +81,8 @@ DaemonConfig sampleConfig()
         R"({"version":1,"mode":"enforce","restrictions":)"
         R"({"package_manager":{"allowedCallers":["package_manager_ui"]}}})";
     cfg.signaturePolicy = "require";
+    cfg.placement = R"({"default":"inproc"})";
+    cfg.bundledModulesDirs = {"/opt/logos/modules"};
     return cfg;
 }
 
@@ -210,6 +212,8 @@ TEST_F(DaemonStateTest, Config_RoundTripsEveryField)
     EXPECT_TRUE(got->insecureTcp);
     EXPECT_EQ(got->accessPolicy, sampleConfig().accessPolicy);
     EXPECT_EQ(got->signaturePolicy, "require");
+    EXPECT_EQ(got->placement, sampleConfig().placement);
+    EXPECT_EQ(got->bundledModulesDirs, std::vector<std::string>{"/opt/logos/modules"});
 }
 
 // -- signature_policy ------------------------------------------------------

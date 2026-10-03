@@ -285,6 +285,8 @@ void Output::printModuleInfo(const LogosMap& info)
 
         std::cout << "PID:           " << pid << std::endl;
         std::cout << "Uptime:        " << formatUptime(uptime) << std::endl;
+        if (info.contains("placement") && info["placement"].is_string())
+            std::cout << "Placement:     " << info["placement"].get<std::string>() << std::endl;
     } else if (status == "crashed") {
         if (info.contains("exit_code")) {
             int exitCode = info.value("exit_code", 0);
