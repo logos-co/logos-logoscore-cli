@@ -588,6 +588,7 @@ int PackageCommand::show(const std::vector<std::string>& args)
     // a second lookup -- and the same lookup is what lets `show` answer for a
     // package that is not installed yet.
     LogosMap catalogEntry = LogosMap::object();
+    startPackageDownloader();
     LogosMap c = client().callModuleMethod(kPd, "getCatalog", LogosList::array());
     if (c.value("status", std::string{}) != "error" && c["result"].is_array()) {
         for (const auto& p : c["result"]) {
@@ -707,6 +708,7 @@ int PackageCommand::search(const std::vector<std::string>& args)
 
     int err = ensureConnected();
     if (err != 0) return err;
+    startPackageDownloader();
 
     LogosMap r = catalog.empty()
         ? client().callModuleMethod(kPd, "getCatalog", LogosList::array())

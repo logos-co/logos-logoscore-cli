@@ -42,6 +42,7 @@ int CatalogCommand::execute(const std::vector<std::string>& args)
 
     int err = ensureConnected();
     if (err != 0) return err;
+    startPackageDownloader();
 
     if (sub == "ls" || sub == "list") {
         LogosMap r = client().callModuleMethod(kPd, "listRepositories", LogosList::array());
@@ -142,6 +143,7 @@ int CatalogCommand::downloadSource(const std::string& value)
 
     int err = ensureConnected();
     if (err != 0) return err;
+    startPackageDownloader();
 
     LogosMap r = value.empty()
         ? client().callModuleMethod(kPd, "getDownloadSource", LogosList::array())

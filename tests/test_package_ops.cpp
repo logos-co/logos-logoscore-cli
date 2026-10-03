@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "core_service/package_ops.h"
 
+#include <algorithm>
 #include <map>
 #include <set>
 
@@ -282,4 +283,56 @@ TEST(PackageOpsPlan, NewOptionalsOfAnInstalledPackageAreNotSelected)
     ASSERT_EQ(plan.value("status", ""), "ok") << plan.dump();
     EXPECT_EQ(statuses(plan)["O"], "not selected");
     for (const auto& c : plan["changes"]) EXPECT_NE(c["name"], "O");
+}
+
+namespace {
+// Where `method` was first called, or calls.size() when it never was.
+size_t firstCall(const std::vector<std::string>& calls, const std::string& method)
+{
+    return std::find(calls.begin(), calls.end(), method) - calls.begin();
+}
+} // namespace
+
+// package_downloader does nothing until a consumer starts it.
+TEST(PackageOpsPlan, StartsTheDownloaderBeforeResolving)
+{
+    FakeModules pm;
+    pm.resolve = [](const json&) { return json::array({row("S", "1.0.0", true)}); };
+    auto backend = pm.backend();
+    package_ops::plan(backend, Op::Install, {"S"}, {});
+    const size_t resolve = firstCall(pm.methods, "resolveDependencies");
+    ASSERT_LT(resolve, pm.methods.size());
+    EXPECT_LT(firstCall(pm.methods, "start"), resolve);
+}
+
+TEST(PackageOpsPlan, NoDepsStartsTheDownloaderBeforeResolving)
+{
+    FakeModules pm;
+    pm.resolve = [](const json&) { return json::array({row("S", "1.0.0", true)}); };
+    auto backend = pm.backend();
+    package_ops::Options opts;
+    opts.withDeps = false;
+    package_ops::plan(backend, Op::Install, {"S"}, opts);
+    const size_t resolve = firstCall(pm.methods, "resolveDependencies");
+    ASSERT_LT(resolve, pm.methods.size());
+    EXPECT_LT(firstCall(pm.methods, "start"), resolve);
+}
+
+TEST(PackageOpsPlan, RemovalLeavesTheDownloaderAlone)
+{
+    FakeModules pm;
+    pm.installed = json::array({installedRow("S", "1.0.0")});
+    auto backend = pm.backend();
+    package_ops::plan(backend, Op::Remove, {"S"}, {});
+    EXPECT_EQ(firstCall(pm.methods, "start"), pm.methods.size());
+}
+
+TEST(PackageOpsDownload, StartsTheDownloaderBeforeDownloading)
+{
+    FakeModules pm;
+    auto backend = pm.backend();
+    package_ops::download(backend, "S", {}, "/nonexistent");
+    const size_t download = firstCall(pm.methods, "downloadPinned");
+    ASSERT_LT(download, pm.methods.size());
+    EXPECT_LT(firstCall(pm.methods, "start"), download);
 }
