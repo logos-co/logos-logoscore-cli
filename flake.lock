@@ -21077,11 +21077,11 @@
     "logos-test-modules-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1790504686,
-        "narHash": "sha256-p+6OUpqBxeFVO5ifyP9XsfOAPo60gJ8f+wdkc30hcTg=",
+        "lastModified": 1791037672,
+        "narHash": "sha256-ZUMPu5PTlvG4HFibyr6vIHpFdklU2dQBGA5WC8cYvs4=",
         "owner": "logos-co",
         "repo": "logos-test-modules",
-        "rev": "7b8bc28c1b9651b808c9a9da65429f73a31a4c50",
+        "rev": "4a4dab004db53b7dc896a22d8069a48bbc3d574c",
         "type": "github"
       },
       "original": {
