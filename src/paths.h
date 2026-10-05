@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace paths {
 
@@ -42,5 +43,13 @@ std::string bundledModulesDir();
 // capability_module. logoscore does not add this to its search path, so its
 // module list stays exactly what it reports today.
 std::string bundledPackageModulesDir();
+
+// The runtime's module search path, empty entries dropped. When the dir order
+// decides between two copies of a module the LAST one wins, so the session's
+// own installs go after everything bundled.
+std::vector<std::string> moduleSearchDirs(const std::vector<std::string>& configured,
+                                          const std::string& bundled,
+                                          const std::string& bundledPkg,
+                                          const std::string& session);
 
 } // namespace paths

@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
@@ -152,3 +153,21 @@ TEST_F(RelaunchPathTest, RelaunchesOuterAppImageInsteadOfMountedBinary)
     else unsetenv("APPDIR");
 }
 #endif
+
+// liblogos keeps the LAST directory that holds a module. logosctl 0.3.1 added
+// the session dir before modules-pkg/, so `install storage_module --version
+// 3.0.2` landed on disk but `module load` still ran the bundled 3.0.0.
+TEST(ModuleSearchDirs, SessionDirComesAfterEverythingBundled)
+{
+    const auto dirs = paths::moduleSearchDirs({"/cfg"}, "/b/modules", "/b/modules-pkg",
+                                              "/s/modules");
+    EXPECT_EQ(dirs, (std::vector<std::string>{"/cfg", "/b/modules", "/b/modules-pkg",
+                                              "/s/modules"}));
+}
+
+TEST(ModuleSearchDirs, DropsEmptyEntries)
+{
+    EXPECT_EQ(paths::moduleSearchDirs({"", "/cfg"}, "", "", "/s/modules"),
+              (std::vector<std::string>{"/cfg", "/s/modules"}));
+    EXPECT_TRUE(paths::moduleSearchDirs({}, "", "", "").empty());
+}
