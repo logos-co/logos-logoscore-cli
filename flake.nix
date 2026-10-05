@@ -49,7 +49,7 @@
     logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module";
     # The downloader fetches `logos:` urls through storage_module, an optional
     # dependency it does not ship. Following keeps both on the same build.
-    logos-storage-module.url = "github:logos-co/logos-storage-module/v3.0.0";
+    logos-storage-module.url = "github:logos-co/logos-storage-module/v3.0.2";
     logos-package-downloader-module.inputs.storage_module.follows = "logos-storage-module";
     # No logos-test-modules input: it takes this flake back, and the cycle unrolled
     # this lock to 15k nodes. The suites needing its plugins run over there.
