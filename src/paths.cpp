@@ -135,6 +135,19 @@ std::string siblingDir(const char* name)
 
 std::string bundledPackageModulesDir() { return siblingDir("modules-pkg"); }
 
+std::vector<std::string> moduleSearchDirs(const std::vector<std::string>& configured,
+                                          const std::string& bundled,
+                                          const std::string& bundledPkg,
+                                          const std::string& session)
+{
+    std::vector<std::string> out;
+    for (const std::string& d : configured)
+        if (!d.empty()) out.push_back(d);
+    for (const std::string& d : {bundled, bundledPkg, session})
+        if (!d.empty()) out.push_back(d);
+    return out;
+}
+
 std::string bundledModulesDir()
 {
     std::string binDir = executableDir();

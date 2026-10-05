@@ -516,20 +516,11 @@ int Daemon::start(int argc, char* argv[],
 
     // 3. Add plugin directories — user-specified and bundled
     //    Resolve to absolute paths: logos_core cannot load plugin metadata from relative paths.
+    std::vector<std::string> configuredDirs;
     for (const std::string& dir : modulesDirs) {
         std::error_code ec;
         std::string absDir = std::filesystem::absolute(dir, ec).string();
-        const char* resolved = ec ? dir.c_str() : absDir.c_str();
-        if (verbose)
-            fprintf(stderr, "Added plugins directory: %s\n", resolved);
-        logos_core_add_modules_dir(resolved);
-    }
-
-    std::string bundledDir = paths::bundledModulesDir();
-    if (!bundledDir.empty()) {
-        logos_core_add_modules_dir(bundledDir.c_str());
-        if (verbose)
-            fprintf(stderr, "Added bundled modules directory: %s\n", bundledDir.c_str());
+        configuredDirs.push_back(ec ? dir : absDir);
     }
 
     // 3b. The session's own writable modules directory — where anything
@@ -538,21 +529,26 @@ int Daemon::start(int argc, char* argv[],
     //     see, so install-then-load could not work at all. Created eagerly so
     //     the package manager has somewhere to write on its very first
     //     install rather than failing on a missing directory.
+    std::string sessionDir, pkgDir;
     if (modern) {
         std::error_code ec;
         for (const std::string& dir : {Config::modulesDir(), Config::pluginsDir(),
                                        Config::keyringDir(), Config::cacheDir()}) {
             std::filesystem::create_directories(dir, ec);
         }
-        logos_core_add_modules_dir(Config::modulesDir().c_str());
+        sessionDir = Config::modulesDir();
         // The bundled package modules live in their own directory so that
         // logoscore's module list is byte-identical to what it reports today.
-        const std::string pkgDir = paths::bundledPackageModulesDir();
-        if (!pkgDir.empty())
-            logos_core_add_modules_dir(pkgDir.c_str());
+        pkgDir = paths::bundledPackageModulesDir();
+    }
+
+    // The session dir goes last so its copy of a module beats a bundled one
+    // wherever the dir order decides. The first dir also locates logos_host.
+    for (const std::string& dir : paths::moduleSearchDirs(
+             configuredDirs, paths::bundledModulesDir(), pkgDir, sessionDir)) {
+        logos_core_add_modules_dir(dir.c_str());
         if (verbose)
-            fprintf(stderr, "Added session modules directory: %s\n",
-                    Config::modulesDir().c_str());
+            fprintf(stderr, "Added plugins directory: %s\n", dir.c_str());
     }
 
     // 4. Set persistence base path for module instance data
