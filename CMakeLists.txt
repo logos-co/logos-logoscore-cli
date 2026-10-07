@@ -304,7 +304,15 @@ endforeach()
 # for a second reason: `find_package(GTest)` falling through to the
 # FetchContent branch would try to DOWNLOAD googletest, which in a Nix sandbox
 # fails as an opaque "downloading ... failed" long after the real cause.
-if(NOT WIN32)
+#
+# The shipping builds (nix `build`/`buildPortable`) also turn it off: only the
+# `tests` derivation compiles and runs the suites.
+if(WIN32)
+    option(LOGOS_BUILD_TESTS "Build the test suites" OFF)
+else()
+    option(LOGOS_BUILD_TESTS "Build the test suites" ON)
+endif()
+if(LOGOS_BUILD_TESTS)
     find_package(GTest QUIET)
 
     if(NOT GTest_FOUND)
