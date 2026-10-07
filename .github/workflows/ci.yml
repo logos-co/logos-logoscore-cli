@@ -32,6 +32,20 @@ jobs:
         extra-nix-config: |
           experimental-features = nix-command flakes
 
+    # One evaluation for the whole job: every later `nix build` hits the eval
+    # cache instead of re-evaluating the flake (1.5-4 min each). Keep the list
+    # in step with this job's `nix build` lines.
+    - name: Prefetch inputs and evaluate
+      continue-on-error: true
+      run: |
+        nix flake prefetch-inputs . || true
+        nix path-info --derivation \
+          . \
+          '.#checks.${{ matrix.arch }}.tests' \
+          '.#checks.${{ matrix.arch }}.symbol-gate' \
+          '.#checks.${{ matrix.arch }}.symbol-gate-negative' \
+          >/dev/null
+
     - name: Build
       run: nix build --print-build-logs
 
