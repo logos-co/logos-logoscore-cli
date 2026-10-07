@@ -291,11 +291,7 @@
               pkgs.fmt
               pkgs.yaml-cpp
               pkgs.spdlog
-            ]
-            # CMakeLists.txt skips the whole test block for a Windows host, so
-            # gtest is dead weight there -- and cross-building it is a real
-            # cost, not a free one.
-            ++ pkgs.lib.optional (!isWindows) pkgs.gtest;
+            ];
 
             # logosQtCrossCmakeFlags points CMake at the BUILD platform's Qt
             # host tools (moc, repc, ...) while headers and libraries stay on
@@ -315,6 +311,8 @@
               "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
               "-DLOGOS_PROTOCOL_ROOT=${protocolPkg}"
               "-DLOGOS_QT_HOST_ROOT=${qtHost}"
+              # The suites compile and run in `tests` only.
+              "-DLOGOS_BUILD_TESTS=OFF"
             ];
           };
 
@@ -741,7 +739,6 @@ ${pkgs.lib.optionalString withPkgModules ''
               cppSdk
               protocolPkg
               qtHost
-              pkgs.gtest
               pkgs.stduuid
               pkgs.cli11
               pkgs.fmt
@@ -755,6 +752,7 @@ ${pkgs.lib.optionalString withPkgModules ''
               "-DLOGOS_CPP_SDK_ROOT=${cppSdk}"
               "-DLOGOS_PROTOCOL_ROOT=${protocolPkg}"
               "-DLOGOS_QT_HOST_ROOT=${qtHost}"
+              "-DLOGOS_BUILD_TESTS=OFF"
             ];
           };
 
