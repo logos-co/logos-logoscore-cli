@@ -19,8 +19,20 @@ pipeline {
     disableConcurrentBuilds(
       abortPrevious: isPRBuild
     )
-    /* Allows combined build to copy */
-    copyArtifactPermission('/logos/*')
+    copyArtifactPermission('/logos/logoscore-cli/*')
+  }
+
+  parameters {
+    booleanParam(
+      name: 'RELEASE',
+      description: 'Decides whether release credentials are used.',
+      defaultValue: params.RELEASE ?: false
+    )
+    string(
+      name: 'BRANCH',
+      description: 'Git branch to build.',
+      defaultValue: params.BRANCH ?: 'master'
+    )
   }
 
   environment {
@@ -60,23 +72,15 @@ pipeline {
       }
     }
 
-    stage('Upload') {
-      steps { script {
-        env.PKG_URL = s5cmd.upload(env.ARTIFACT)
-        jenkins.setBuildDesc(TARGZ: env.PKG_URL)
-      } }
-    }
-
     stage('Archive') {
       steps { script {
-        archiveArtifacts(env.ARTIFACT)
+        archiveArtifacts(artifacts: env.ARTIFACT, allowEmptyArchive: false)
+        jenkins.setBuildDesc(TARGZ: "${env.BUILD_URL}artifact/${env.ARTIFACT}")
       } }
     }
   }
 
   post {
-    success { script { github.notifyPR(true) } }
-    failure { script { github.notifyPR(false) } }
     cleanup {
       cleanWs(disableDeferredWipeout: true)
       dir(env.WORKSPACE_TMP) { deleteDir() }
