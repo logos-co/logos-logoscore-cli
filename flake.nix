@@ -1049,6 +1049,9 @@ ${pkgs.lib.optionalString withPkgModules ''
             pkgs.cmake
             pkgs.ninja
             pkgs.pkg-config
+            # Release packaging (scripts/package-windows.sh).
+            pkgs.zip
+            pkgs.unzip
           ];
           buildInputs = [
             pkgs.qt6.qtbase
