@@ -24,7 +24,7 @@
 # this check existed.
 #
 # THE IN-PROCESS IMAGE SET — this scoping IS the correctness of the gate:
-#   IN   bin/logosctl, bin/logoscore   the front-ends
+#   IN   bin/logosctl                  the front-end
 #   IN   lib/liblogos_core.*           the single provider
 #   IN   lib/*.dylib|so                anything else loaded into the front-end
 #   OUT  bin/logos_host, bin/ui-host   SEPARATE PROCESSES; they correctly keep
@@ -81,7 +81,7 @@ pkgs.runCommand "logos-logoscore-cli-symbol-gate${pkgs.lib.optionalString negati
   #   * a shell wrapper that execs bin/.<name>       -- nm reads ZERO symbols
   #   * makeBinaryWrapper's COMPILED stub, real image at bin/.<name>-wrapped
   #     -- nm reads ~10 symbols, so the validity guard below does NOT catch it.
-  # bin/logoscore in this repo is the SECOND kind: the stub reports 0 runtime
+  # bin/logosctl in this repo is the SECOND kind: the stub reports 0 runtime
   # symbols for a binary that actually imports 12. So the rule is deterministic:
   # if a hidden sibling exists, it IS the image.
   resolve_image() {

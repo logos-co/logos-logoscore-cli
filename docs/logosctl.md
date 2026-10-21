@@ -1,14 +1,13 @@
 # `logosctl`
 
-The merged CLI: `logoscore` + `lgpd` + `lgpm` in one tool. It runs modules
-like [`logoscore`](logoscore.md) does, and it manages packages itself —
-bundling the `package_manager` and `package_downloader` modules, so searching
-a catalog, installing with dependencies resolved, loading and calling are all
-one binary's job.
+The Logos CLI: the module runtime, its client, and package management in one
+tool. It runs modules, and it manages packages itself — bundling the
+`package_manager` and `package_downloader` modules, so searching a catalog,
+installing with dependencies resolved, loading and calling are all one
+binary's job. Its session lives in `~/.logosctl`.
 
-**This is the binary releases ship.** It shares the runtime with
-`logoscore` but no state — its session lives in `~/.logosctl`, so nothing here
-can disturb a `logoscore` deployment.
+It replaces `logoscore` (and the separate `lgpd` and `lgpm`); earlier releases
+still carry those binaries.
 
 Build instructions, flake outputs and test targets are in the
 [main README](../README.md). The `.#ctl-*` outputs are the ones that ship this
@@ -225,6 +224,15 @@ Package commands are unavailable for that session, and the reason is on stderr.
 A failure to set the *directories* is not treated the same way: every directory
 fails closed on its own (an install refuses with `User modules directory is not
 set`), so that case warns and leaves the manager up.
+
+`access_group:` shares the daemon with an OS group: its module sockets are
+bound `0660` and its client artifacts (`client/config.yaml`, `client/auto.json`)
+written `0640`, both owned by that group. A member then drives the node with
+`LOGOSCTL_CONFIG_DIR` pointed at the session and no configuration of their own.
+Everyone in the group can read the daemon's own token, so the group is the trust
+boundary; `logosctl token issue` adds per-user accounting, expiry and revocation
+within it. [`doctests/logosctl-system-service.test.yaml`](../doctests/logosctl-system-service.test.yaml)
+walks through it for a systemd service.
 
 A `local` listener is always added to every module, so same-host clients and the
 daemon's own cross-module calls keep working whatever else you configure. Any
@@ -709,11 +717,9 @@ access_policy: |
 The string is handed to the runtime (via `logos_core_set_access_policy`)
 before any module is loaded.
 
-> **Note:** the value must be a full policy document. The `enforce` shorthand
-> is a `logoscore` flag spelling (`--access-policy enforce`); here, write the
-> equivalent document — `{"version":1,"mode":"enforce","restrictions":{}}` —
-> which arms deny-by-default with the allow-lists derived from each module's
-> declared dependencies.
+> **Note:** the value must be a full policy document. For deny-by-default with
+> the allow-lists derived from each module's declared dependencies, write
+> `{"version":1,"mode":"enforce","restrictions":{}}`.
 
 > **Note:** the legacy inline mode (`-c "module.method(args)"` / `--quit-on-finish`,
 > which ran calls in a single short-lived process) has been removed. Use a daemon

@@ -1,5 +1,5 @@
-#ifndef LOGOSCORE_CLIENT_STATE_H
-#define LOGOSCORE_CLIENT_STATE_H
+#ifndef LOGOSCTL_CLIENT_STATE_H
+#define LOGOSCTL_CLIENT_STATE_H
 
 #include <nlohmann/json_fwd.hpp>
 
@@ -8,8 +8,8 @@
 #include <string>
 #include <cstdint>
 
-// client/config.json schema version. Aligned with the daemon-side
-// v2 (config.json / state.json / tokens.json) for symmetry across
+// client/config.yaml schema version. Aligned with the daemon-side
+// v2 (config.yaml / state.json / tokens.json) for symmetry across
 // the four config-tree files. Bump when the on-disk shape changes;
 // readers reject anything else with a clear regenerate message.
 constexpr int kClientStateSchemaVersion = 2;
@@ -79,15 +79,10 @@ public:
     // go through this single entry point so an override applies
     // uniformly to whichever fires first.
     static ClientState read();
-    static bool write(const ClientState& state);
 
-    // Inject a pre-merged ClientState that subsequent read() calls
-    // will return verbatim, bypassing disk. Used by main.cpp when
-    // CLI client-config flags are passed but `--persist-config`
-    // wasn't: the flags affect this run only, no disk write. Pass
-    // std::nullopt to clear (only needed in tests; the override
-    // is process-wide and isn't reset between subcommand
-    // dispatches in normal flow).
+    // Inject a ClientState that subsequent read() calls return verbatim,
+    // bypassing disk (a test seam). Pass std::nullopt to clear; the
+    // override is process-wide.
     static void setOverride(std::optional<ClientState> override);
 
     // Read the raw token from <configDir>/client/<tokenFile>. Returns
@@ -98,4 +93,4 @@ public:
     static std::string readTokenFile(const std::string& filename);
 };
 
-#endif // LOGOSCORE_CLIENT_STATE_H
+#endif // LOGOSCTL_CLIENT_STATE_H

@@ -67,8 +67,7 @@ sections:
       A **session** is one directory holding everything: config, the packages
       installed into it, per-module persistence, and the keyring used to verify
       signatures. `--config-dir` picks which one. Nothing here touches
-      `~/.logosctl`, and nothing touches a `logoscore` deployment either — the
-      two tools share no state.
+      `~/.logosctl`.
     steps:
       - title: "Start the daemon"
         text: |

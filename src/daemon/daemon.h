@@ -22,28 +22,17 @@ public:
     //
     // `cfg.modules` must already include `core_service` and
     // `capability_module` entries; the caller defaults them to
-    // LocalSocket-only when neither config.json nor CLI flags
-    // populated them. For non-LocalSocket entries with `port == 0`,
+    // LocalSocket-only when config.yaml did not populate them. For non-LocalSocket entries with `port == 0`,
     // the daemon pre-allocates a fresh ephemeral port via
     // `PortAllocator` so the listener doesn't race the kernel for it.
     //
-    // `configSource` is a diagnostic string ("cli" | "config.json" |
-    // "defaults") recorded into state.json's `config_source` field
+    // `configSource` is a diagnostic string ("config.yaml" | "defaults")
+    // recorded into state.json's `config_source` field
     // so operators can tell at a glance where the running daemon's
     // config came from.
-    // `persistConfig` writes the merged config back to disk. Only the legacy
-    // logoscore front-end passes it: logosctl has no merge layer to persist,
-    // since its config file *is* the source of truth.
     static int start(int argc, char* argv[],
                      const DaemonConfig& cfg,
                      const std::string& configSource,
-                     // No default arguments. They are both bool and adjacent,
-                     // so a defaulted tail let a caller drop one and have the
-                     // other silently slide into its place -- which is exactly
-                     // what happened: logosctl passed g_verbose as
-                     // persistConfig for the whole life of the binary, and it
-                     // compiled. Requiring both makes that a build error.
-                     bool persistConfig,
                      bool verbose);
 
     // Prints the refusal and returns true if a live daemon owns this config

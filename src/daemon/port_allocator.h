@@ -1,5 +1,5 @@
-#ifndef LOGOSCORE_PORT_ALLOCATOR_H
-#define LOGOSCORE_PORT_ALLOCATOR_H
+#ifndef LOGOSCTL_PORT_ALLOCATOR_H
+#define LOGOSCTL_PORT_ALLOCATOR_H
 
 #include <cstdint>
 #include <string>
@@ -27,4 +27,4 @@ uint16_t allocateEphemeralTcp(const std::string& host);
 
 }
 
-#endif // LOGOSCORE_PORT_ALLOCATOR_H
+#endif // LOGOSCTL_PORT_ALLOCATOR_H

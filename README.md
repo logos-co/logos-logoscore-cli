@@ -9,40 +9,27 @@ This repo is one of two frontends for [logos-liblogos](https://github.com/logos-
 - **logos-logoscore-cli** (this repo) — headless CLI runtime for scripting, testing, and headless deployments
 - **[logos-basecamp](https://github.com/logos-co/logos-basecamp)** — the desktop GUI application shell
 
-## Two binaries
+## logosctl
 
-| | | Documentation |
-|---|---|---|
-| **`logoscore`** | The original CLI. Commands, flags, config format and `~/.logoscore` are **unchanged**. **No longer released**; build it from `.#cli`. | **[docs/logoscore.md](docs/logoscore.md)** |
-| **`logosctl`** | `logoscore` + `lgpd` + `lgpm` merged into one, with package management built in. New surface, own `~/.logosctl` session directory. **The binary releases ship.** | **[docs/logosctl.md](docs/logosctl.md)** |
+The binary this repo builds is **`logosctl`**: the module runtime, its client,
+and package management (`lgpd` + `lgpm`) in one tool, with its session in
+`~/.logosctl`. Commands, configuration, authentication and transports are in
+**[docs/logosctl.md](docs/logosctl.md)**.
 
-They share the runtime but no state, so a `logosctl` session cannot disturb a
-`logoscore` deployment. They are built from separate flake outputs, and releases
-publish only `logosctl`. `logoscore` will be removed only once `logosctl` has
-been properly validated in real use.
-
-Everything below applies to both. For what each tool actually *does* — commands,
-configuration, authentication, transports — follow the links above.
+It replaces `logoscore`, the CLI this repo used to ship alongside it. Earlier
+releases still carry `logoscore` binaries; this tree no longer builds them.
 
 ## How to Build
 
 ### Using Nix (Recommended)
 
-**The two binaries have separate flake outputs.** `cli` is `logoscore`, `ctl`
-is `logosctl`, and each ships only its own binary — so `nix build` with no
-target, and anything already pointing at `.#cli`, still gets `logoscore`
-exactly as before.
+| Output | |
+|---|---|
+| `.#ctl` *(default)* | dev build |
+| `.#ctl-bundle-dir` | portable, self-contained directory |
+| `.#ctl-appimage` | portable, single-file AppImage (Linux) |
 
-| Output | Binary | |
-|---|---|---|
-| `.#cli` *(default)* | `logoscore` | dev build |
-| `.#cli-bundle-dir` | `logoscore` | portable, self-contained directory |
-| `.#cli-appimage` | `logoscore` | portable, single-file AppImage (Linux) |
-| `.#ctl` | `logosctl` | dev build |
-| `.#ctl-bundle-dir` | `logosctl` | portable, self-contained directory |
-| `.#ctl-appimage` | `logosctl` | portable, single-file AppImage (Linux) |
-
-Both come in two flavors: a **dev** build for local iteration and a
+It comes in two flavors: a **dev** build for local iteration and a
 **portable** build for distribution. The dev build links against dev
 `logos-liblogos` and works with **dev** modules; the portable build is
 self-contained and works with **portable** modules — which is what the public
@@ -56,9 +43,8 @@ produces a `-dev` variant, so the dev build is the one that takes it. See
 A standard Nix derivation whose dependencies live in `/nix/store`. It is the fastest way to iterate during development but is **not portable** — it only runs on the machine that built it. It works with **dev** modules: those produced by a local module `nix build`, or installed by the [package manager](https://github.com/logos-co/logos-package-manager)'s dev build.
 
 ```bash
-nix build                        # logoscore (dev) — same as '.#cli'
-nix build '.#ctl'                # logosctl (dev)
-./result/bin/logoscore --help
+nix build                        # logosctl (dev) — same as '.#ctl'
+./result/bin/logosctl --help
 ```
 
 #### Portable Builds
@@ -67,13 +53,13 @@ Portable builds are **fully self-contained** — no `/nix/store` references at r
 
 | Output | Platform | Format |
 |---|---|---|
-| `cli-bundle-dir` / `ctl-bundle-dir` | Linux, macOS | Self-contained flat directory with `bin/`, `lib/`, and `modules/` |
-| `cli-appimage` / `ctl-appimage` | Linux | Single-file `.AppImage` executable |
+| `ctl-bundle-dir` | Linux, macOS | Self-contained flat directory with `bin/`, `lib/`, and `modules/` |
+| `ctl-appimage` | Linux | Single-file `.AppImage` executable |
 
 ##### Self-contained directory bundle (all platforms)
 ```bash
-nix build '.#cli-bundle-dir'
-./result/bin/logoscore --help
+nix build '.#ctl-bundle-dir'
+./result/bin/logosctl --help
 ```
 
 ##### Linux AppImage (Linux only)
@@ -88,7 +74,7 @@ nix build '.#ctl-appimage'
 nix develop
 ```
 
-**Note:** In zsh, quote targets containing `#` to prevent glob expansion (e.g., `'.#cli'`).
+**Note:** In zsh, quote targets containing `#` to prevent glob expansion (e.g., `'.#ctl'`).
 
 If you don't have flakes enabled globally:
 
@@ -98,25 +84,15 @@ nix build --extra-experimental-features 'nix-command flakes'
 
 ### Running Tests
 
-Each binary has its own suite, in its own derivation, so nix builds them
-concurrently. `tests` runs both.
-
-| Check | Covers |
-|---|---|
-| `.#checks.<system>.tests` | both — this is what CI runs |
-| `.#checks.<system>.tests-logosctl` | unit + CLI + integration for `logosctl` |
-| `.#checks.<system>.tests-logoscore` | CLI + integration for `logoscore` |
-
-The `logoscore` suite is a deliberate duplicate of the `logosctl` one, frozen
-against `logoscore`'s surface. It exists so that changes to the shared runtime
-cannot regress the tool people are actually using, and it gets deleted along
-with the binary.
+`.#checks.<system>.tests` runs the unit and CLI suites; it is what CI runs.
+The daemon-backed integration suite runs in
+[logos-test-modules](https://github.com/logos-co/logos-test-modules), which
+owns the plugins it loads.
 
 ```bash
-# Both suites
 nix build '.#checks.aarch64-darwin.tests'
 
-# One suite, and its binaries, for local iteration
+# The suites and their binaries, for local iteration
 nix build '.#tests'
 ./result/bin/cli_tests
 ./result/bin/cli_tests --gtest_filter=CLITest.*
@@ -127,7 +103,7 @@ nix flake check
 
 ## Dependency Resolution
 
-When loading modules, both binaries automatically resolve and load transitive dependencies in the correct order. For example, if `logos_irc` depends on `waku_module` and `chat`, loading `logos_irc` alone is equivalent to loading `waku_module,chat,logos_irc`.
+When loading modules, `logosctl` automatically resolves and load transitive dependencies in the correct order. For example, if `logos_irc` depends on `waku_module` and `chat`, loading `logos_irc` alone is equivalent to loading `waku_module,chat,logos_irc`.
 
 ## Supported Platforms
 
