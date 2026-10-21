@@ -38,10 +38,9 @@ std::string relaunchPath(const char* argv0);
 // Returns "{executableDir}/../modules" if that directory exists, or empty.
 std::string bundledModulesDir();
 
-// The package modules (package_manager, package_downloader) bundled for
+// The package modules (package_manager, package_downloader) bundled with
 // logosctl, kept in their own directory rather than alongside
-// capability_module. logoscore does not add this to its search path, so its
-// module list stays exactly what it reports today.
+// capability_module.
 std::string bundledPackageModulesDir();
 
 // The runtime's module search path, empty entries dropped. When the dir order

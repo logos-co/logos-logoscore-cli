@@ -1,5 +1,5 @@
-#ifndef LOGOSCORE_JSON_SCHEMA_H
-#define LOGOSCORE_JSON_SCHEMA_H
+#ifndef LOGOSCTL_JSON_SCHEMA_H
+#define LOGOSCTL_JSON_SCHEMA_H
 
 #include <nlohmann/json.hpp>
 
@@ -199,4 +199,4 @@ private:
 
 } // namespace json_schema
 
-#endif // LOGOSCORE_JSON_SCHEMA_H
+#endif // LOGOSCTL_JSON_SCHEMA_H

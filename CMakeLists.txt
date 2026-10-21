@@ -105,7 +105,7 @@ find_package(logos-qt-host REQUIRED
 if(NOT TARGET logos-qt-host::logos_qt_host_shared)
     message(FATAL_ERROR
         "find_package(logos-qt-host) succeeded but did not define "
-        "logos-qt-host::logos_qt_host_shared — refusing to build a logoscore "
+        "logos-qt-host::logos_qt_host_shared — refusing to build logosctl "
         "without it. That target arrives with logos-plugin-qt#22; building "
         "against an older Qt host runtime would silently fall back to the "
         "static archive and give this image its own TokenManager.")
@@ -169,7 +169,6 @@ set(SHARED_SOURCES
     # Daemon path
     src/daemon/daemon.cpp
     src/daemon/daemon_state.cpp
-    src/daemon/access_policy_arg.cpp
     src/daemon/port_allocator.cpp
     src/daemon/token_store.cpp
     src/daemon/log_sink.cpp
@@ -205,15 +204,9 @@ set(SHARED_SOURCES
     src/core_service/package_ops_live.cpp
 )
 
-# Two front-ends over one shared runtime. logoscore is the tool that exists
-# today, kept building unchanged while logosctl is validated; logosctl is the
-# merged CLI. They differ only in main.cpp and the Config flavor it sets --
-# everything below src/daemon, src/client and src/core_service is shared.
-add_executable(logosctl  src/main.cpp        ${SHARED_SOURCES})
-add_executable(logoscore src/main_legacy.cpp ${SHARED_SOURCES})
+add_executable(logosctl src/main.cpp ${SHARED_SOURCES})
 
-foreach(_tgt logosctl logoscore)
-target_link_libraries(${_tgt} PRIVATE
+target_link_libraries(logosctl PRIVATE
     logos_core
     nlohmann_json::nlohmann_json
     stduuid
@@ -228,10 +221,9 @@ target_link_libraries(${_tgt} PRIVATE
 
 # Link the Qt host runtime (provides LogosAPI, LogosAPIProvider,
 # LogosProviderObject). It PUBLIC-links logos-protocol, which is where the
-# bridge helpers and logos::transportSetToJsonString come from. Both
-# front-ends need it: the shared core_service is what derives from
-# LogosProviderObject.
-target_link_libraries(${_tgt} PRIVATE logos-qt-host::logos_qt_host_shared)
+# bridge helpers and logos::transportSetToJsonString come from. The
+# core_service is what derives from LogosProviderObject.
+target_link_libraries(logosctl PRIVATE logos-qt-host::logos_qt_host_shared)
 
 # The SHARED Qt host runtime, not the static archive.
 #
@@ -254,10 +246,10 @@ if(WIN32)
     # PortAllocator's probe socket. Winsock is not in the default link set the
     # way libc's sockets are on POSIX, so without this the build fails at link
     # with undefined `socket`/`bind`/`getsockname`/`WSAStartup`.
-    target_link_libraries(${_tgt} PRIVATE ws2_32)
+    target_link_libraries(logosctl PRIVATE ws2_32)
 endif()
 
-target_include_directories(${_tgt} PRIVATE
+target_include_directories(logosctl PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${LOGOS_CPP_SDK_ROOT}/include/cpp
     ${LOGOS_QT_HOST_ROOT}/include
@@ -281,16 +273,14 @@ elseif(APPLE)
         list(APPEND _rpath "${_qt_lib_dir}")
     endif()
     list(REMOVE_DUPLICATES _rpath)
-    set_target_properties(${_tgt} PROPERTIES
+    set_target_properties(logosctl PROPERTIES
         INSTALL_RPATH "${_rpath}"
         BUILD_WITH_INSTALL_RPATH TRUE)
 else()
-    set_target_properties(${_tgt} PROPERTIES
+    set_target_properties(logosctl PROPERTIES
         INSTALL_RPATH "$ORIGIN/../lib"
         BUILD_WITH_INSTALL_RPATH TRUE)
 endif()
-
-endforeach()
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 #
@@ -326,6 +316,6 @@ endif()
 
 # ── Install ───────────────────────────────────────────────────────────────────
 
-install(TARGETS logosctl logoscore
+install(TARGETS logosctl
     RUNTIME DESTINATION bin
 )

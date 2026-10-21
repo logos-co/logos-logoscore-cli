@@ -45,11 +45,11 @@ The CLI follows a daemon + client architecture. A long-running daemon process ho
 - Discovers modules in configured directories.
 - Writes `~/.logosctl/daemon/state.json` (live runtime state — instance_id, pid, started_at, resolved transports) on startup, removed on clean shutdown.
 - Maintains `~/.logosctl/daemon/tokens.json` (hashed-at-rest accepted-token list — survives restarts).
-- Persists `~/.logosctl/daemon/config.json` (operator preferences) only when the operator passed `--persist-config`.
-- Auto-issues an `auto` token for the local same-host client and emits `~/.logosctl/client/config.json` + `~/.logosctl/client/auto.json` on the first boot into an empty config dir.
+- Reads `~/.logosctl/daemon/config.yaml`, the operator's config, installed with `logosctl daemon config set`.
+- Auto-issues an `auto` token for the local same-host client and emits `~/.logosctl/client/config.yaml` + `~/.logosctl/client/auto.json` on the first boot into an empty config dir.
 
 **Client commands** (all other subcommands):
-- Read `~/.logosctl/client/config.json` to learn how to dial the daemon and which token file to load.
+- Read `~/.logosctl/client/config.yaml` to learn how to dial the daemon and which token file to load.
 - Connect to the daemon's `core_service` module via RPC using the token.
 - Execute the requested operation, print the result, and exit.
 - If no daemon is running, exit with code 2 and a clear error message.
@@ -134,21 +134,21 @@ can dial each. Examples:
 
 #### Client-side dial spec
 
-Client commands never read daemon-only files (`daemon/config.json`,
-`daemon/tokens.json`). They read `<configDir>/client/config.json`,
+Client commands never read daemon-only files (`daemon/config.yaml`,
+`daemon/tokens.json`). They read `<configDir>/client/config.yaml`,
 which holds the dial spec (`endpoint`, `host`, `port`, `codec`,
 `cert`/`key`/`ca`/`verify_peer` for TLS) and a `token_file` pointing
 at the raw-token file alongside. (`status` consults
 `daemon/state.json` for a fast same-host liveness check via
 `kill(pid, 0)`, but never opens daemon-only secrets.)
 
-The daemon auto-emits `client/config.json` + `client/auto.json` for the
+The daemon auto-emits `client/config.yaml` + `client/auto.json` for the
 local same-host case on the first boot into an empty config dir — local
 clients work out of the box with no manual setup. Subsequent boots leave
-an existing `client/config.json` alone (so an operator-written
+an existing `client/config.yaml` alone (so an operator-written
 remote-client config isn't clobbered). For remote clients
 (port-forwarded containers, NAT, SSH tunnels) hand-write
-`client/config.json` with the right host:port for each module and
+`client/config.yaml` with the right host:port for each module and
 reference a `token_file` whose contents was copied from a
 `daemon/tokens/<name>.json` on the daemon host.
 
@@ -165,7 +165,7 @@ logosctl daemon start [--modules-dir <path>]...
 logosctl daemon [--modules-dir <path>]...
 ```
 
-Starts the Logos Core runtime in the foreground. Startup and shutdown messages go to stdout (so `> logs.txt` captures them); debug/info/warning logs go to stderr and are suppressed unless `--verbose` is passed. Writes `~/.logosctl/daemon/state.json` on startup (and on the first fresh boot also emits `~/.logosctl/client/config.json` + `~/.logosctl/client/auto.json` for the local client), removes `state.json` on clean shutdown.
+Starts the Logos Core runtime in the foreground. Startup and shutdown messages go to stdout (so `> logs.txt` captures them); debug/info/warning logs go to stderr and are suppressed unless `--verbose` is passed. Writes `~/.logosctl/daemon/state.json` on startup (and on the first fresh boot also emits `~/.logosctl/client/config.yaml` + `~/.logosctl/client/auto.json` for the local client), removes `state.json` on clean shutdown.
 
 The daemon scans the configured module directories for available plugins and makes them available for loading via client commands.
 
@@ -402,11 +402,11 @@ The CLI needs a token to authenticate with the daemon's `core_service`. This tok
    → Daemon mints an "auto" token (local_only=true) for the local client
    → Hash + metadata persisted into ~/.logosctl/daemon/tokens.json["tokens"]
    → Raw value emitted to ~/.logosctl/client/auto.json
-   → ~/.logosctl/client/config.json written so local clients dial correctly
+   → ~/.logosctl/client/config.yaml written so local clients dial correctly
 
 2. CLIENT CONNECTS
    logosctl module load waku
-   → Reads ~/.logosctl/client/config.json (dial spec + token_file)
+   → Reads ~/.logosctl/client/config.yaml (dial spec + token_file)
    → Loads the raw token from the file token_file points at
    → Sends token with RPC request to `core_service`
    → `core_service` validates the token's hash against tokens.json["tokens"]
@@ -414,7 +414,7 @@ The CLI needs a token to authenticate with the daemon's `core_service`. This tok
 
 3. REMOTE / PROGRAMMATIC ACCESS
    LOGOSCTL_TOKEN=<token> logosctl module load waku
-   → Token from env var overrides the one in client/config.json's token_file
+   → Token from env var overrides the one in client/config.yaml's token_file
    → Useful when client/ isn't writable (remote, containers, CI)
 ```
 
@@ -425,12 +425,12 @@ When a client command runs, the token is resolved in this order (first match win
 | Priority | Source | Example |
 |----------|--------|---------|
 | 1 | `LOGOSCTL_TOKEN` env var | `LOGOSCTL_TOKEN=abc123 logosctl module ls` |
-| 2 | `<configDir>/client/<token_file>` | the path is whatever `client/config.json` says (defaults to `auto.json`) |
+| 2 | `<configDir>/client/<token_file>` | the path is whatever `client/config.yaml` says (defaults to `auto.json`) |
 
 A named token issued by `logosctl token issue --name alice` produces
 `<configDir>/daemon/tokens/alice.json` on the daemon host. To use it as a
 client on a different machine, copy the file into the client host's
-`<configDir>/client/` and reference it via `token_file` in `client/config.json`.
+`<configDir>/client/` and reference it via `token_file` in `client/config.yaml`.
 Once copied, the operator may delete the daemon-side raw file — validation
 keeps working because the hash is what the daemon checks.
 
@@ -440,7 +440,7 @@ keeps working because the hash is what the daemon checks.
 the daemon auto-issues an `auto` token (with `local_only=true`, so it can't
 be used over TCP), writes the hash into `daemon/tokens.json["tokens"]`, and
 emits the raw value into `client/auto.json` alongside a local-default
-`client/config.json`. Local client commands just work.
+`client/config.yaml`. Local client commands just work.
 
 **Remote or programmatic usage:** Issue a named token on the daemon host and
 move it to the client host:
@@ -455,10 +455,10 @@ cat ~/.logosctl/daemon/tokens/alice.json
 export LOGOSCTL_TOKEN=550e8400-e29b-41d4-a716-446655440000
 logosctl module ls --json
 
-# Or persist by copying the file alongside a hand-written client/config.json:
+# Or persist by copying the file alongside a hand-written client/config.yaml:
 mkdir -p ~/.logosctl/client
 scp daemon-host:~/.logosctl/daemon/tokens/alice.json ~/.logosctl/client/alice.json
-# then edit ~/.logosctl/client/config.json so token_file = "alice.json"
+# then edit ~/.logosctl/client/config.yaml so token_file = "alice.json"
 ```
 
 **CI / containers:** Pass the token as an environment variable at runtime:
@@ -473,8 +473,9 @@ The daemon dir splits by lifetime into three files:
 
 - **`daemon/state.json`** — live runtime state. Written every boot
   (after transports actually bind), removed on clean shutdown.
-- **`daemon/config.json`** — operator preferences. Written ONLY when
-  the operator passed `--persist-config`; otherwise absent.
+- **`daemon/config.yaml`** — the operator's config, installed with
+  `logosctl daemon config set`. The daemon reads it at start and never
+  writes it.
 - **`daemon/tokens.json`** — hashed-at-rest accepted-token list.
   Independent of the running daemon's lifetime.
 
@@ -518,18 +519,17 @@ The daemon dir splits by lifetime into three files:
 - `pid` lets co-resident clients detect a stale state file
   (`kill(pid, 0) == ESRCH` after a hard crash).
 - `config_source` records where the running daemon's config came from:
-  `cli` (any `--module-transport`/`--insecure-tcp`/etc. flag was
-  passed), `config.json` (loaded from disk only), or `defaults`.
+  `config.yaml`, or `defaults` when there is none.
 - `resolved.modules` is the post-bind transport set: `port: 0` in
-  config.json becomes the actually-bound port here.
-- `resolved` mirrors the shape of `daemon/config.json` (same field set,
+  config.yaml becomes the actually-bound port here.
+- `resolved` mirrors the shape of `daemon/config.yaml` (same field set,
   minus `version`).
 
-#### `daemon/config.json` (operator preferences)
+#### `daemon/config.yaml` (operator preferences)
 
 Same shape as `state.json`'s `resolved` block, plus `version`. Reflects
 *operator intent* — `port: 0` stays `0` (auto-pick) — not the resolved
-post-bind values. Written only when `--persist-config` is passed.
+post-bind values.
 
 #### `daemon/tokens.json`
 
@@ -549,9 +549,9 @@ local_only}`. Hashes are SHA-256 hex; raw values live only in
 daemon's lifetime — survives restarts.
 
 These three files are daemon-owned; the client never reads
-`config.json` or `tokens.json`, and only consults `state.json` for a
+`config.yaml` or `tokens.json`, and only consults `state.json` for a
 fast same-host liveness check via `kill(pid, 0)`. The client reads
-`<configDir>/client/config.json` to learn how to dial. Liveness — *is
+`<configDir>/client/config.yaml` to learn how to dial. Liveness — *is
 the daemon actually answering?* — falls through to the first RPC (e.g.
 `status`), so a connect failure surfaces via the same code path as any
 other method call.
@@ -1377,12 +1377,12 @@ kill $WATCH_PID
    → Scans /path/to/modules for available plugins
    → Writes ~/.logosctl/daemon/state.json (instance + resolved listeners)
    → Writes ~/.logosctl/daemon/tokens.json (hashed accepted-token list)
-   → Emits ~/.logosctl/client/config.json + ~/.logosctl/client/auto.json
+   → Emits ~/.logosctl/client/config.yaml + ~/.logosctl/client/auto.json
    → Runs event loop (foreground)
 
 2. LOAD MODULES
    logosctl module load waku
-   → Reads ~/.logosctl/client/config.json (dial spec + token_file)
+   → Reads ~/.logosctl/client/config.yaml (dial spec + token_file)
    → Loads token from the file token_file points at
    → Connects to daemon's `core_service` via RPC with token
    → Daemon resolves dependencies for "waku"
@@ -1409,7 +1409,7 @@ kill $WATCH_PID
    → Client sends shutdown RPC to core_service
    → Daemon schedules quit (with brief delay to send RPC response)
    → Daemon unloads all modules
-   → Removes ~/.logosctl/daemon/state.json (tokens.json + config.json survive)
+   → Removes ~/.logosctl/daemon/state.json (tokens.json + config.yaml survive)
    → Exits
 
    Alternatively: Ctrl+C / kill <pid> / SIGTERM

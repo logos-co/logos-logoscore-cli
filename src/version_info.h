@@ -11,16 +11,16 @@
 
 #if __has_include("logos_build_info.h")
 #  include "logos_build_info.h"
-#  define LOGOSCORE_HAS_BUILD_INFO 1
+#  define LOGOSCTL_HAS_BUILD_INFO 1
 #else
-#  define LOGOSCORE_HAS_BUILD_INFO 0
+#  define LOGOSCTL_HAS_BUILD_INFO 0
 #endif
 
 namespace logosctl_version {
 
 // The release version, or "dev" when unreleased (no VERSION file baked in).
 inline std::string version() {
-#if LOGOSCORE_HAS_BUILD_INFO
+#if LOGOSCTL_HAS_BUILD_INFO
     const std::string v = LOGOS_BUILD_VERSION;
     return v.empty() ? "dev" : v;
 #else
@@ -30,7 +30,7 @@ inline std::string version() {
 
 // This repo's commit, with a "-dirty" suffix when built from a dirty tree.
 inline std::string commit() {
-#if LOGOSCORE_HAS_BUILD_INFO
+#if LOGOSCTL_HAS_BUILD_INFO
     return LOGOS_BUILD_COMMIT;
 #else
     return "unknown";
@@ -38,13 +38,9 @@ inline std::string commit() {
 }
 
 // Full multi-line banner printed by `logosctl --version`. No trailing newline.
-// `toolName` is the binary asking: the two front-ends share this code but must
-// each identify as themselves. Hardcoding one meant `logoscore --version`
-// reported "logosctl", which is exactly the sort of thing nobody notices until
-// a bug report cites the wrong tool.
-inline std::string versionString(const char* toolName = "logosctl") {
-    std::string out = std::string(toolName) + " version " + version();
-#if LOGOSCORE_HAS_BUILD_INFO
+inline std::string versionString() {
+    std::string out = "logosctl version " + version();
+#if LOGOSCTL_HAS_BUILD_INFO
     out += "\ncommit: " + commit();
     const std::string commits = LOGOS_BUILD_COMMITS;
     if (!commits.empty())

@@ -6,7 +6,7 @@ which sleeps `delayMs` milliseconds on the module's thread before returning —
 so while one call is in flight, the module can do nothing else.
 
 We start a daemon, load the module, then fire **five independent client
-processes at once** (each backgrounded `logoscore call` is its own process —
+processes at once** (each backgrounded `logosctl call` is its own process —
 the same as running the command in five separate terminals simultaneously),
 every one of them invoking the 2-second blocking call. Because the module is
 single-threaded, the daemon serializes the five requests: they run one after
@@ -39,39 +39,38 @@ Verify: `nix flake --help >/dev/null 2>&1 && echo "Flakes enabled"`
 
 ---
 
-## Step 1: Build logoscore
+## Step 1: Build logosctl
 
-Build the logoscore CLI from the published flake. The result is symlinked to
+Build the logosctl CLI from the published flake. The result is symlinked to
 `./logos/` for easy reference in the steps below.
 
 ### 1.1 Build the CLI
 
 ```bash
-nix build 'github:logos-co/logos-logoscore-cli' --out-link ./logos
+nix build 'github:logos-co/logos-logoscore-cli#ctl' --out-link ./logos
 ```
 
-The build produces `logos/bin/logoscore` plus bundled runtime libraries and
+The build produces `logos/bin/logosctl` plus bundled runtime libraries and
 a `logos/modules/` directory containing the built-in `capability_module`.
 
 ---
 
 ## Step 2: Prepare a modules directory
 
-Install `test_basic_module` from logos-test-modules and copy the bundled
-`capability_module` (required for auth when loading modules) into a single
-`./modules/` directory for the daemon to scan.
+Install `test_basic_module` from logos-test-modules into a session's
+`modules/` directory, `./session/modules/`, which the daemon scans along
+with the bundled `capability_module` beside the binary.
 
 ### 2.1 Install a module to load
 
-Build `test_basic_module` and merge it with the bundled capability module
-into `./modules/`:
+Build `test_basic_module` and copy it into the session's `modules/`
+directory:
 
 ```bash
 SYSTEM=$(nix eval --impure --raw --expr 'builtins.currentSystem')
 nix build "github:logos-co/logos-test-modules#modules.$SYSTEM.test_basic_module.install" --out-link ./result-module
-mkdir -p modules
-cp -RL ./logos/modules/. ./modules/
-cp -RL ./result-module/modules/. ./modules/
+mkdir -p session/modules
+cp -RL ./result-module/modules/. ./session/modules/
 
 ```
 
@@ -88,15 +87,12 @@ its blocking method works for a single call before piling on concurrent ones.
 
 ### 3.1 Start the daemon
 
-Start logoscore in daemon mode in the background, capturing output to
-`logs.txt`:
+Start logosctl in daemon mode in the background. It logs to
+`session/logs/daemon.log`, and `--detach` returns only once it is
+accepting commands:
 
 ```bash
-logoscore -D -m ./modules > logs.txt &
-```
-
-```bash
-sleep 3
+logosctl --config-dir ./session daemon start --detach
 ```
 
 ### 3.2 Load the module
@@ -104,7 +100,7 @@ sleep 3
 Load `test_basic_module` into the running daemon:
 
 ```bash
-logoscore load-module test_basic_module
+logosctl --config-dir ./session module load test_basic_module
 ```
 
 ### 3.3 Sanity-check the blocking method
@@ -113,7 +109,7 @@ A single call to `echoWithDelay` blocks for the requested time and echoes
 its first argument back. Here we sleep 500 ms and get `warmup` returned:
 
 ```bash
-logoscore call test_basic_module echoWithDelay warmup 500
+logosctl --config-dir ./session call test_basic_module echoWithDelay warmup 500
 ```
 
 ---
@@ -121,7 +117,7 @@ logoscore call test_basic_module echoWithDelay warmup 500
 ## Step 4: Hit the blocking method from five concurrent clients
 
 Now launch **five client processes at once**, each calling the 2-second
-blocking method. Each `( logoscore call … ) &` is an independent process —
+blocking method. Each `( logosctl call … ) &` is an independent process —
 equivalent to running the command in five separate shells simultaneously.
 We time the whole burst and capture each client's reply to its own file.
 
@@ -136,7 +132,7 @@ serialized instead of running in parallel — and that nothing crashed.
 ```bash
 # Five independent client processes, each a 2-second blocking call.
 for i in 1 2 3 4 5; do
-  logoscore call test_basic_module echoWithDelay "client-$i" 2000 &
+  logosctl --config-dir ./session call test_basic_module echoWithDelay "client-$i" 2000 &
 done
 wait
 ```
@@ -169,7 +165,7 @@ that ordinary calls keep working.
 The daemon is still `running`, the module still `loaded`, nothing crashed:
 
 ```bash
-logoscore status
+logosctl --config-dir ./session daemon status
 ```
 
 ### 5.2 Ordinary calls still work
@@ -177,19 +173,15 @@ logoscore status
 A normal, non-blocking call succeeds after the storm:
 
 ```bash
-logoscore call test_basic_module addInts 40 2
+logosctl --config-dir ./session call test_basic_module addInts 40 2
 ```
 
 ### 5.3 Stop the daemon
 
-Shut down the daemon cleanly:
+Shut down the daemon cleanly; `daemon stop` returns once it has exited:
 
 ```bash
-logoscore stop
-```
-
-```bash
-sleep 2
+logosctl --config-dir ./session daemon stop
 ```
 
 ### 5.4 Confirm the daemon has stopped
@@ -199,5 +191,5 @@ reports `not_running` (and exits non-zero, so we add `|| true` to let the
 doc-test assert on the output):
 
 ```bash
-logoscore status
+logosctl --config-dir ./session daemon status
 ```

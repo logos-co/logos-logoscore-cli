@@ -1335,9 +1335,7 @@ TEST_F(SocketLifecycleTest, BootReapsStaleSocketsButSparesLiveOnesAndFiles)
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // The end-to-end proof, on a REAL daemon: the session's `access_policy` is set
-// to the deny-by-default document before modules load. logosctl takes it from
-// daemon config; logoscore spells the same document `--access-policy enforce`
-// (see test_integration_logoscore.cpp).
+// to the deny-by-default document before modules load, from daemon config.
 //
 // The direct CLI probe below is deliberately a HOST call, not a synthetic
 // module call. `fromModuleName` is legacy, untrusted input; capability_module
@@ -1369,8 +1367,7 @@ std::optional<std::string> requestModuleToken(const LogosctlDaemon& d,
     return std::nullopt;
 }
 
-// The bare deny-by-default document — the same text `logoscore
-// --access-policy enforce` expands to (src/daemon/access_policy_arg.h). `mode`
+// The bare deny-by-default document. `mode`
 // is the runtime's only switch; with no explicit `restrictions` the runtime
 // derives them from the declared dependency graph.
 constexpr const char* kEnforceDoc =
@@ -1476,11 +1473,6 @@ TEST_F(AccessPolicyFixture, EnforcePolicy_StillAllowsADeclaredPair) {
 // If the daemon half ever regresses, expect it as a lostReplies count: the
 // client confirms by watching the pid, and counts the unreaped daemon (this
 // process's own child, a zombie until reaped) as exited.
-//
-// Not mirrored into test_integration_logoscore.cpp: both front-ends drive the
-// same CoreServiceImpl::shutdown and the same RpcClient::shutdown, so a second
-// copy would retest the same two functions through a tool that is on its way
-// out.
 // ═══════════════════════════════════════════════════════════════════════════
 
 namespace {

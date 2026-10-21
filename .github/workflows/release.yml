@@ -2,7 +2,6 @@ name: Build & Release
 
 # Builds the distributable logosctl artifacts and, on release/** branches,
 # publishes them as a pre-release. Modeled on logos-basecamp's build.yml.
-# logoscore is no longer released; ci.yml still builds and tests it.
 #
 # Version stamping: `--version` is baked at build time from a VERSION
 # file at the repo root (read by flake.nix). VERSION exists only on release/**
