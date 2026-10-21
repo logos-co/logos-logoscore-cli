@@ -1,8 +1,7 @@
 name: Doc-Tests
 
 # Runs every executable doc-test under doctests/*.test.yaml end-to-end via the
-# shared doctest CLI -- both the logoscore specs and the logosctl ones, since
-# this repo ships both binaries. Builds them from the published
+# shared doctest CLI. Builds logosctl from the published
 # flake, starts the daemon, loads a module, calls methods, exercises the TCP /
 # TCP+TLS transports, and asserts on output. Every spec is run back-to-back into
 # a single HTML report (each spec is its own dropdown entry).

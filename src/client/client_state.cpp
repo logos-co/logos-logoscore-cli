@@ -21,10 +21,8 @@ std::string ClientStateFile::filePath()
 }
 
 namespace {
-// Process-wide override set by setOverride(). Used by main.cpp to
-// thread CLI-flag-merged client config into RpcClient::connect()
-// without persisting to disk. Empty (nullopt) = no override → fall
-// through to disk read in ClientStateFile::read().
+// Process-wide override set by setOverride() (tests). Empty (nullopt) = no
+// override → fall through to disk read in ClientStateFile::read().
 std::optional<ClientState>& overrideSlot()
 {
     static std::optional<ClientState> s;
@@ -39,22 +37,6 @@ void ClientStateFile::setOverride(std::optional<ClientState> override)
 
 namespace {
 
-json transportToJson(const ClientModuleTransport& t)
-{
-    json j;
-    j["transport"] = t.protocol;
-    if (t.protocol != "local") {
-        j["host"] = t.host;
-        j["port"] = t.port;
-        j["codec"] = t.codec.empty() ? std::string("json") : t.codec;
-    }
-    if (t.protocol == "tcp_ssl") {
-        if (!t.caFile.empty()) j["ca"] = t.caFile;
-        j["verify_peer"] = t.verifyPeer;
-    }
-    return j;
-}
-
 // `path` is where this entry lives in the document ("daemon.core_service"), so
 // a rejection can name it.
 std::optional<ClientModuleTransport> transportFromJson(const json& j,
@@ -68,7 +50,7 @@ std::optional<ClientModuleTransport> transportFromJson(const json& j,
     json_schema::Reader r(j, errs, path + ".");
     ClientModuleTransport t;
     t.protocol = r.str("transport");
-    // Strict allowlist — a typo in client/config.json's `transport`
+    // Strict allowlist — a typo in client/config.yaml's `transport`
     // would otherwise default downstream to LocalSocket and the
     // client would silently dial the wrong endpoint instead of
     // failing the parse with a clear schema error.
@@ -183,32 +165,6 @@ ClientState ClientStateFile::read()
         return ClientState{};
     }
     return *state;
-}
-
-bool ClientStateFile::write(const ClientState& state)
-{
-    fs::path path(filePath());
-    std::error_code ec;
-    fs::create_directories(path.parent_path(), ec);
-    if (ec) return false;
-
-    json obj;
-    obj["version"]    = kClientStateSchemaVersion;
-    obj["token_file"] = state.tokenFile;
-    if (!state.instanceId.empty())
-        obj["instance_id"] = state.instanceId;
-
-    json daemonObj = json::object();
-    for (const auto& [name, t] : state.daemon)
-        daemonObj[name] = transportToJson(t);
-    obj["daemon"] = std::move(daemonObj);
-
-    std::ofstream ofs(path, std::ios::trunc);
-    if (!ofs) return false;
-    ofs << (Config::flavor() == Config::Flavor::Modern
-                ? yaml_json::dump(obj)
-                : obj.dump(4) + "\n");
-    return ofs.good();
 }
 
 std::string ClientStateFile::readTokenFile(const std::string& filename)

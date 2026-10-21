@@ -13,12 +13,12 @@ intro: |
 
   | Directory | Contents |
   |---|---|
-  | `<bin>/../modules` | `capability_module`, `modules_state` — bundled by **both** binaries this repo ships |
-  | `<bin>/../modules-pkg` | `package_manager`, `package_downloader` — `logosctl` only |
+  | `<bin>/../modules` | `capability_module`, `modules_state` — the runtime's bundled set |
+  | `<bin>/../modules-pkg` | `package_manager`, `package_downloader` |
 
-  `logoscore` scans `modules/`, so the package modules go in a directory of
-  their own rather than widening what `logoscore` sees by default. The daemon
-  adds both paths, so the split is invisible in use — `module ls` shows them all.
+  The package modules go in a directory of their own, apart from the runtime's
+  bundled set. The daemon adds both paths, so the split is invisible in use —
+  `module ls` shows them all.
 
   These assertions check that the modules that matter are PRESENT, not that the
   set is exactly this. Pinning an exact list would break this file for every

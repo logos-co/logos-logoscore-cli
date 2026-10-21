@@ -212,11 +212,8 @@
           # <bin>/../modules). Mirrors logos-basecamp/flake.nix so the CLI
           # and the GUI drive the same module surface.
           bundledInstallsDev = map installDev [ capabilityModuleLib modulesStateModuleLib ];
-          # Kept out of modules/ deliberately: logoscore scans that directory, so
-          # anything extra there changes what it reports by default. (The doc-tests
-          # assert CONTAINMENT -- expect_contains, never an exact list -- so adding a
-          # module here does not break them. This split is about keeping logoscore's
-          # surface deliberate, not about the assertions.)
+          # The package modules go to modules-pkg/, apart from the runtime's
+          # bundled set (paths::bundledPackageModulesDir()).
           pkgInstallsDev = map installDev [
             packageManagerModuleLib
             packageDownloaderModuleLib
@@ -318,14 +315,8 @@
             ];
           };
 
-          # Package the logosctl binary with its runtime deps
-          # One package per binary. `logoscore` and `logosctl` compile together
-          # (they share everything but main.cpp) but ship separately, so
-          # `.#cli` still means exactly what it means today and nobody picks up
-          # the new tool by accident.
-          #
-          # withPkgModules: only logosctl scans modules-pkg/, so only its
-          # package carries it.
+          # Package the logosctl binary with its runtime deps.
+          # withPkgModules: whether the package carries modules-pkg/.
           mkBin = { binName, withPkgModules }: pkgs.stdenvNoCC.mkDerivation {
             pname = "${pname}-${binName}";
             inherit version meta;
@@ -418,7 +409,7 @@
             dontWrapQtApps = true;
 
             # Read by nix-bundle-dir when this derivation is handed to
-            # `dirBundler` (see `ctl-bundle-dir` / `cli-bundle-dir` below).
+            # `dirBundler` (see `ctl-bundle-dir` below).
             # Both entries exist because the bundler's defaults are wrong for
             # a PE, in opposite directions:
             #
@@ -651,10 +642,6 @@ ${pkgs.lib.optionalString withPkgModules ''
               cp bin/unit_tests $out/bin/
               cp bin/integration_tests $out/bin/
               cp bin/logosctl $out/bin/
-              # Both binaries ship, so both are tested.
-              cp bin/cli_tests_logoscore $out/bin/
-              cp bin/integration_tests_logoscore $out/bin/
-              cp bin/logoscore $out/bin/
 
               if [ -d ${liblogosLib}/lib ]; then
                 cp -r ${liblogosLib}/lib/* $out/lib/ || true
@@ -815,19 +802,15 @@ ${pkgs.lib.optionalString withPkgModules ''
             '';
           };
 
-          binLegacy      = mkBin         { binName = "logoscore"; withPkgModules = false; };
-          binCtl         = mkBin         { binName = "logosctl";  withPkgModules = true;  };
-          binLegacyPort  = mkBinPortable { binName = "logoscore"; withPkgModules = false; };
-          binCtlPort     = mkBinPortable { binName = "logosctl";  withPkgModules = true;  };
+          binCtl     = mkBin         { binName = "logosctl"; withPkgModules = true; };
+          binCtlPort = mkBinPortable { binName = "logosctl"; withPkgModules = true; };
 
-          logoscoreCli = pkgs.symlinkJoin { name = pname;            paths = [ binLegacy ]; };
-          logosctlCli  = pkgs.symlinkJoin { name = "${pname}-ctl";   paths = [ binCtl ];    };
+          logosctlCli = pkgs.symlinkJoin { name = "${pname}-ctl"; paths = [ binCtl ]; };
 
-          binLegacyWin = mkBinWindows { binName = "logoscore"; withPkgModules = false; };
-          binCtlWin    = mkBinWindows { binName = "logosctl";  withPkgModules = true;  };
+          binCtlWin = mkBinWindows { binName = "logosctl"; withPkgModules = true; };
         in
         if isWindows then {
-          # Windows ships the two binaries plus a bundled directory for each.
+          # Windows ships logosctl plus a bundled directory for it.
           #
           # STILL LEFT OUT, and why. Each reason below was re-checked by eval
           # against the revs this flake locks.
@@ -899,7 +882,7 @@ ${pkgs.lib.optionalString withPkgModules ''
           #         asserts on ::chmod(dir, 0500), a POSIX permission model
           #         Windows does not have. The 5 portable suites cannot be split
           #         out without editing the target.
-          #       - cli_tests and integration_tests (both spellings) drive the
+          #       - cli_tests and integration_tests drive the
           #         daemon over AF_UNIX (sys/un.h, sys/socket.h) and reap it with
           #         fork/waitpid, and shell out via popen/WEXITSTATUS.
           #     And compiling is not the binding constraint anyway: `checks` is
@@ -924,7 +907,7 @@ ${pkgs.lib.optionalString withPkgModules ''
           # a target whose signature failure is 0xC0000135 before main() with no
           # output at all.
           #
-          # COVERAGE, stated plainly: NONE of these four outputs has ever been
+          # COVERAGE, stated plainly: NONE of these outputs has ever been
           # built, here or in CI -- this repo's workflows have no Windows job at
           # all. x86_64-windows realises on x86_64-linux and no Linux builder
           # was reachable while this was written, so what is verified is
@@ -932,25 +915,10 @@ ${pkgs.lib.optionalString withPkgModules ''
           # on Windows, and a PE bundle that builds is not a PE bundle that
           # starts.
           ctl = binCtlWin;
-          cli = binLegacyWin;
           ctl-bundle-dir = dirBundler binCtlWin;
-          cli-bundle-dir = dirBundler binLegacyWin;
           default = binCtlWin;
         } else {
-          # `cli` / `cli-*` stay logoscore, so existing consumers -- including
-          # every doc-test that does `nix build github:...logos-logoscore-cli`
-          # -- get exactly the tool they get today. logosctl is opt-in under
-          # its own `ctl` outputs while it is being validated.
-          cli = logoscoreCli;
           tests = tests;
-          cli-bundle-dir = dirBundler binLegacyPort;
-          cli-appimage = appBundler {
-            drv = binLegacyPort;
-            name = "logoscore";
-            bundle = dirBundler binLegacyPort;
-            desktopFile = ./assets/logoscore.desktop;
-            icon = ./assets/logoscore.png;
-          };
 
           ctl = logosctlCli;
           ctl-bundle-dir = dirBundler binCtlPort;
@@ -962,7 +930,7 @@ ${pkgs.lib.optionalString withPkgModules ''
             icon = ./assets/logosctl.png;
           };
 
-          default = logoscoreCli;
+          default = logosctlCli;
         }
       );
 
@@ -970,11 +938,9 @@ ${pkgs.lib.optionalString withPkgModules ''
         let
           testsPkg = self.packages.${system}.tests;
         in rec {
-          # One runner, two flavours. They are separate derivations so nix
-          # builds them in parallel: while both binaries ship, a regression in
-          # either should surface in the same run, and neither should wait on
-          # the other.
-          tests-logosctl = pkgs.runCommand "logos-logoscore-cli-tests-logosctl" {
+          # Unit + CLI suites. The daemon-backed integration suite runs in
+          # logos-test-modules, which owns its plugins.
+          tests = pkgs.runCommand "logos-logoscore-cli-tests" {
             nativeBuildInputs = [ testsPkg ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.qt6.qtbase ];
           } ''
             export QT_QPA_PLATFORM=offscreen
@@ -985,27 +951,10 @@ ${pkgs.lib.optionalString withPkgModules ''
             export LOGOSCTL_BINARY=${testsPkg}/bin/logosctl
             export LOGOS_HOST_PATH=${liblogos}/bin/logos_host
             mkdir -p $out
-            echo "unit tests (shared code)..."
+            echo "unit tests..."
             ${testsPkg}/bin/unit_tests --gtest_output=xml:$out/unit-test-results.xml
             echo "logosctl CLI tests..."
             ${testsPkg}/bin/cli_tests --gtest_output=xml:$out/cli-test-results.xml
-          '';
-
-          # logoscore's copy of the suites, pinning the surface people actually
-          # use. Deleted along with the tool.
-          tests-logoscore = pkgs.runCommand "logos-logoscore-cli-tests-logoscore" {
-            nativeBuildInputs = [ testsPkg ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.qt6.qtbase ];
-          } ''
-            export QT_QPA_PLATFORM=offscreen
-            export QT_FORCE_STDERR_LOGGING=1
-            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-              export QT_PLUGIN_PATH="${pkgs.qt6.qtbase}/${pkgs.qt6.qtbase.qtPluginPrefix}"
-            ''}
-            export LOGOSCORE_BINARY=${testsPkg}/bin/logoscore
-            export LOGOS_HOST_PATH=${liblogos}/bin/logos_host
-            mkdir -p $out
-            echo "logoscore CLI tests..."
-            ${testsPkg}/bin/cli_tests_logoscore --gtest_output=xml:$out/cli-test-results.xml
           '';
 
           # One-runtime symbol gate. Asserts the logos C++ runtime (TokenManager,
@@ -1032,14 +981,6 @@ ${pkgs.lib.optionalString withPkgModules ''
             appPkg = self.packages.${system}.default;
             negativeControl = true;
           };
-
-          # Aggregate. `nix build .#checks.<sys>.tests` still works and now
-          # covers both tools; nix builds the two dependencies concurrently.
-          tests = pkgs.runCommand "logos-logoscore-cli-tests" { } ''
-            mkdir -p $out
-            cp -r ${tests-logosctl}/. $out/logosctl/
-            cp -r ${tests-logoscore}/. $out/logoscore/
-          '';
         }
       );
 

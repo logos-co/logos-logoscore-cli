@@ -47,20 +47,6 @@ void Config::setConfigDir(const std::string& path)
     configDirOverride() = path;
 }
 
-namespace {
-// Default Legacy: a caller that never sets a flavor gets today's behaviour.
-Config::Flavor& flavorSlot()
-{
-    static Config::Flavor f = Config::Flavor::Legacy;
-    return f;
-}
-}  // namespace
-
-void Config::setFlavor(Config::Flavor f) { flavorSlot() = f; }
-Config::Flavor Config::flavor()          { return flavorSlot(); }
-
-static bool isModern() { return Config::flavor() == Config::Flavor::Modern; }
-
 std::string Config::configDir()
 {
     // Precedence: explicit setter (from --config-dir) → LOGOSCTL_CONFIG_DIR
@@ -70,24 +56,21 @@ std::string Config::configDir()
     if (!override.empty())
         return override;
 
-    // Each tool reads its own env var, so exporting one in a shell cannot
-    // silently redirect the other.
-    const char* envDir = std::getenv(isModern() ? "LOGOSCTL_CONFIG_DIR"
-                                                : "LOGOSCORE_CONFIG_DIR");
+    const char* envDir = std::getenv("LOGOSCTL_CONFIG_DIR");
     if (envDir && *envDir)
         return std::string(envDir);
 
-    return homeBase() + (isModern() ? "/.logosctl" : "/.logoscore");
+    return homeBase() + "/.logosctl";
 }
 
 std::string Config::daemonDir()        { return configDir() + "/daemon"; }
-std::string Config::daemonConfigPath() { return daemonDir() + (isModern() ? "/config.yaml" : "/config.json"); }
+std::string Config::daemonConfigPath() { return daemonDir() + "/config.yaml"; }
 std::string Config::daemonStatePath()  { return daemonDir() + "/state.json"; }
 std::string Config::daemonTokensPath() { return daemonDir() + "/tokens.json"; }
 std::string Config::daemonTokensDir()  { return daemonDir() + "/tokens"; }
 
 std::string Config::clientDir()        { return configDir() + "/client"; }
-std::string Config::clientConfigPath() { return clientDir() + (isModern() ? "/config.yaml" : "/config.json"); }
+std::string Config::clientConfigPath() { return clientDir() + "/config.yaml"; }
 
 namespace {
 
@@ -148,7 +131,7 @@ std::string Config::downloadsDir()
 
 std::string Config::clientTokenPath(const std::string& filename)
 {
-    // token_file is operator-influenced (--token-file / env / config.json); a
+    // token_file is operator-influenced (it comes from client/config.yaml); a
     // separator or ".." would escape client/ to read an arbitrary file as a
     // credential. Reject non-plain names and resolve to an in-client/ sentinel
     // that won't exist, so callers fail closed with "token file not found".
@@ -163,15 +146,15 @@ std::string Config::clientTokenPath(const std::string& filename)
 
 std::string Config::tokenFromEnv()
 {
-    const char* token = std::getenv(isModern() ? "LOGOSCTL_TOKEN" : "LOGOSCORE_TOKEN");
+    const char* token = std::getenv("LOGOSCTL_TOKEN");
     return token ? std::string(token) : std::string();
 }
 
 std::string Config::getToken()
 {
     // Priority 1: environment variable. Priority 2: the raw-token file
-    // referenced by client/config.json's `token_file` field — that's
-    // resolved inside ClientState since it requires parsing config.json.
+    // referenced by client/config.yaml's `token_file` field — that's
+    // resolved inside ClientState since it requires parsing config.yaml.
     // This helper only handles the env override; ClientState falls back
     // to it when its own resolution misses.
     return tokenFromEnv();

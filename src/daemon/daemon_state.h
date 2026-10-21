@@ -48,8 +48,7 @@ struct TransportInfo {
     std::string keyFile;
 };
 
-// Operator-typed preferences. Persists to daemon/config.json on
-// `--persist-config`. Defaults supplied by the merge layer in main.
+// The operator's config, read from daemon/config.yaml.
 // Values reflect intent (e.g. `port: 0` stays `0` — the resolved
 // port lives in DaemonRuntimeState.resolved).
 // Redirects for the session's subdirectories. Empty means "use the default",
@@ -169,10 +168,6 @@ bool isValidSignaturePolicy(const std::string& policy);
 // Without this the top-level block was parsed, persisted and shown but read by
 // nobody, so the obvious way to configure TLS produced listeners with no
 // certificate and a handshake that died with "no shared cipher".
-//
-// logosctl-only: called from src/main.cpp (the Modern front-end). logoscore's
-// main_legacy.cpp does not call it, so the legacy tool keeps treating the
-// block exactly as it does today.
 void applySslDefaults(DaemonConfig& cfg);
 
 // Report every `tcp_ssl` listener still missing a cert or key once the
