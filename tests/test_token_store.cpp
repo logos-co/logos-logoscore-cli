@@ -3,6 +3,7 @@
 #include "daemon/token_store.h"
 #include "daemon/daemon_state.h"
 #include "config.h"
+#include "platform_compat.h"
 
 #include <unistd.h>
 
@@ -250,6 +251,25 @@ TEST_F(TokenStoreTest, ExpiresAt_MalformedFailsClosed)
     EXPECT_FALSE(store.lookupByToken(tok, "local").has_value())
         << "malformed expires_at must reject the token, not pass through "
            "as non-expiring";
+}
+
+TEST_F(TokenStoreTest, ExpiresAt_TrailingJunkFailsClosed)
+{
+    // strptime stops at the end of the format and ignores the rest, so
+    // a valid stamp followed by junk must still be rejected.
+    std::tm tm{};
+    EXPECT_TRUE(logosctl::strptimeIso8601Utc("2099-01-01T00:00:00Z", tm));
+    EXPECT_FALSE(logosctl::strptimeIso8601Utc("2099-01-01T00:00:00Zgarbage", tm));
+
+    TokenStore store = makeStore();
+    const auto tok = mustIssue(store, "dave",
+        std::string("2099-01-01T00:00:00Z"));
+    auto entries = TokensFile::read();
+    ASSERT_EQ(entries.size(), 1u);
+    entries[0].expiresAt = "2099-01-01T00:00:00Zgarbage";
+    ASSERT_TRUE(TokensFile::write(entries));
+
+    EXPECT_FALSE(store.lookupByToken(tok, "local").has_value());
 }
 
 // -- BUG-011: empty token must never authenticate -------------------------
