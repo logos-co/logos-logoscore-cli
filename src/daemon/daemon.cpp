@@ -359,7 +359,6 @@ bool Daemon::refuseIfAlreadyRunning()
 int Daemon::start(int argc, char* argv[],
                   const DaemonConfig& cfg,
                   const std::string& configSource,
-                  bool persistConfig,
                   bool verbose)
 {
     const auto& modulesDirs      = cfg.modulesDirs;
@@ -387,10 +386,6 @@ int Daemon::start(int argc, char* argv[],
     // makes a session portable; an override is an explicit decision to move
     // one out (a shared keyring, a cache on a bigger disk, a modules tree
     // something else manages).
-    // Everything gated on this is a logosctl feature; logoscore keeps the
-    // behaviour it has today.
-    const bool modern = (Config::flavor() == Config::Flavor::Modern);
-
     Config::setSessionDirOverride(Config::SessionDir::Modules, cfg.dirs.modules);
     Config::setSessionDirOverride(Config::SessionDir::Plugins, cfg.dirs.plugins);
     Config::setSessionDirOverride(Config::SessionDir::Keyring, cfg.dirs.keyring);
@@ -406,22 +401,20 @@ int Daemon::start(int argc, char* argv[],
     // boot -- including a failure during it, which is exactly when the log is
     // worth having. Non-fatal: a daemon that cannot write a log file is still
     // a working daemon.
-    if (modern) {
-        LogSink::Options lo;
-        lo.enabled   = cfg.logging.enabled;
-        lo.dir       = Config::logsDir();
-        lo.file      = cfg.logging.file;
-        lo.maxSizeMb = cfg.logging.maxSizeMb;
-        lo.maxFiles  = cfg.logging.maxFiles;
-        // Mirror whenever configured: a caller doing `daemon start > out.log`
-        // is watching that pipe. A --detach child has nobody to mirror to.
-        lo.console   = cfg.logging.console;
-        lo.detached  = detached;
-        if (cfg.logging.enabled && !LogSink::instance().start(lo)) {
-            fprintf(stderr, "Warning: could not open the log file under %s; "
-                            "continuing without file logging.\n",
-                    lo.dir.c_str());
-        }
+    LogSink::Options lo;
+    lo.enabled   = cfg.logging.enabled;
+    lo.dir       = Config::logsDir();
+    lo.file      = cfg.logging.file;
+    lo.maxSizeMb = cfg.logging.maxSizeMb;
+    lo.maxFiles  = cfg.logging.maxFiles;
+    // Mirror whenever configured: a caller doing `daemon start > out.log`
+    // is watching that pipe. A --detach child has nobody to mirror to.
+    lo.console   = cfg.logging.console;
+    lo.detached  = detached;
+    if (cfg.logging.enabled && !LogSink::instance().start(lo)) {
+        fprintf(stderr, "Warning: could not open the log file under %s; "
+                        "continuing without file logging.\n",
+                lo.dir.c_str());
     }
     const auto& moduleTransports = cfg.modules;
     // 1. Generate instance ID BEFORE core init, so logos_host inherits it
@@ -529,18 +522,13 @@ int Daemon::start(int argc, char* argv[],
     //     see, so install-then-load could not work at all. Created eagerly so
     //     the package manager has somewhere to write on its very first
     //     install rather than failing on a missing directory.
-    std::string sessionDir, pkgDir;
-    if (modern) {
+    for (const std::string& dir : {Config::modulesDir(), Config::pluginsDir(),
+                                   Config::keyringDir(), Config::cacheDir()}) {
         std::error_code ec;
-        for (const std::string& dir : {Config::modulesDir(), Config::pluginsDir(),
-                                       Config::keyringDir(), Config::cacheDir()}) {
-            std::filesystem::create_directories(dir, ec);
-        }
-        sessionDir = Config::modulesDir();
-        // The bundled package modules live in their own directory so that
-        // logoscore's module list is byte-identical to what it reports today.
-        pkgDir = paths::bundledPackageModulesDir();
+        std::filesystem::create_directories(dir, ec);
     }
+    const std::string sessionDir = Config::modulesDir();
+    const std::string pkgDir = paths::bundledPackageModulesDir();
 
     // The session dir goes last so its copy of a module beats a bundled one
     // wherever the dir order decides. The first dir also locates logos_host.
@@ -713,17 +701,15 @@ int Daemon::start(int argc, char* argv[],
     //     packages is still a perfectly good daemon for loading and calling
     //     modules, and refusing to boot would turn a missing optional module
     //     into total unavailability.
-    if (modern)
-        bootstrapPackageModules(coreServiceApi, paths::bundledPackageModulesDir(),
-                                cfg.signaturePolicy, verbose);
+    bootstrapPackageModules(coreServiceApi, paths::bundledPackageModulesDir(),
+                            cfg.signaturePolicy, verbose);
 
     // 9. Write the live-instance state file. Carries the resolved
     //    transport endpoints (post-bind, with real ports), instanceId/
     //    pid/startedAt for co-resident clients, and a snapshot of the
     //    operator-resolved config for diagnostics. Persistent state
-    //    (tokens.json) and operator preferences (config.json, only
-    //    written on --persist-config) live in their own files and
-    //    aren't touched here.
+    //    (tokens.json) and the operator's config (config.yaml) live in
+    //    their own files and aren't touched here.
     DaemonRuntimeState state;
     state.instanceId    = instanceId;
     state.pid           = pid;
@@ -752,19 +738,6 @@ int Daemon::start(int argc, char* argv[],
     // no sink, our stdout/stderr are still that file.
     if (detached && LogSink::instance().currentFile().empty())
         LogSink::discardStdio();
-
-    // Persist operator preferences only if asked (legacy front-end only).
-    // Done after state.json is on disk so a config that fails earlier (e.g. a
-    // bind failure) doesn't pollute config.json.
-    if (persistConfig) {
-        if (DaemonConfigFile::write(cfg)) {
-            fprintf(stdout, "Persisted config: %s\n",
-                    DaemonConfigFile::filePath().c_str());
-        } else {
-            fprintf(stderr, "Warning: failed to persist config to %s\n",
-                    DaemonConfigFile::filePath().c_str());
-        }
-    }
 
     // 10. Generate the local-client convenience artifacts (client/config.json
     //     + client/auto.json). The config.json write is gated inside

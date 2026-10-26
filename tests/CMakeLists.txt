@@ -6,7 +6,6 @@ set(TEST_LIB_SOURCES
     ${CMAKE_SOURCE_DIR}/src/paths.cpp
     ${CMAKE_SOURCE_DIR}/src/yaml_json.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/daemon_state.cpp
-    ${CMAKE_SOURCE_DIR}/src/daemon/access_policy_arg.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/port_allocator.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/token_store.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/log_sink.cpp
@@ -58,7 +57,6 @@ target_link_libraries(logosctl_testlib PUBLIC
 add_executable(unit_tests
     test_config.cpp
     test_log_sink.cpp
-    test_access_policy_arg.cpp
     test_daemon_state.cpp
     test_paths.cpp
     test_output.cpp
@@ -104,23 +102,6 @@ target_include_directories(cli_tests PRIVATE
 
 gtest_discover_tests(cli_tests)
 
-# The same suite against logoscore. Both binaries ship, so both are tested;
-# this target goes away with the tool.
-add_executable(cli_tests_logoscore
-    test_cli_logoscore.cpp
-)
-
-target_link_libraries(cli_tests_logoscore PRIVATE
-    GTest::gtest_main
-    Qt${QT_VERSION_MAJOR}::Core
-)
-
-target_include_directories(cli_tests_logoscore PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-)
-
-gtest_discover_tests(cli_tests_logoscore)
-
 # ── Daemon-backed integration tests (own target, own CTest entry) ────────────
 #
 # Kept separate from cli_tests and registered as a SINGLE CTest test
@@ -140,20 +121,6 @@ target_link_libraries(integration_tests PRIVATE
 )
 
 target_include_directories(integration_tests PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-)
-
-# Same again for logoscore. Deleted with the tool.
-add_executable(integration_tests_logoscore
-    test_integration_logoscore.cpp
-)
-
-target_link_libraries(integration_tests_logoscore PRIVATE
-    GTest::gtest_main
-    Qt${QT_VERSION_MAJOR}::Core
-)
-
-target_include_directories(integration_tests_logoscore PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 

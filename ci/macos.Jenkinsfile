@@ -38,13 +38,13 @@ pipeline {
   stages {
     stage('Build') {
       steps { script {
-        nix.flake('cli-bundle-dir')
+        nix.flake('ctl-bundle-dir')
       } }
     }
 
     stage('Smoke Test') {
       steps {
-        sh 'result/bin/logoscore --version'
+        sh 'result/bin/logosctl --version'
       }
     }
 

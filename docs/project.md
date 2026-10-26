@@ -15,19 +15,15 @@ This project will live in its own repository. liblogos is consumed as an externa
 logos-logoscore-cli/
 ├── src/                              # All CLI source code
 │   ├── main.cpp                      # logosctl entry point — detects mode, dispatches
-│   ├── main_legacy.cpp               # logoscore entry point — same daemon/client/core_service
-│   │                                 # code below, frozen surface (see the README)
 │   ├── config.cpp/h                  # Token + config file resolution
 │   ├── paths.cpp/h                   # Executable/bundle-relative path resolution (no Qt)
 │   │
 │   ├── daemon/                       # Daemon path (logosctl daemon start)
 │   │   ├── daemon.cpp/h              # Start core, register core_service, run event loop,
 │   │   │                             # open each --module-transport listener
-│   │   ├── daemon_state.cpp/h        # DaemonConfig (config.json) + DaemonRuntimeState
-│   │   │                             # (state.json) — operator preferences (writes only
-│   │   │                             # on --persist-config) + live runtime state.
-│   │   ├── access_policy_arg.cpp/h   # Resolve --access-policy into the JSON document
-│   │   │                             # handed to logos_core_set_access_policy()
+│   │   ├── daemon_state.cpp/h        # DaemonConfig (config.yaml) + DaemonRuntimeState
+│   │   │                             # (state.json) — the operator's config + live
+│   │   │                             # runtime state.
 │   │   ├── log_sink.cpp/h            # Pipe-based capture of daemon + module-host
 │   │   │                             # stdout/stderr into a rotating log file
 │   │   ├── port_allocator.cpp/h      # Reserve an ephemeral TCP port before spawning a child
@@ -37,7 +33,7 @@ logos-logoscore-cli/
 │   ├── client/                       # Client path (all subcommands)
 │   │   ├── client.cpp/h              # Client interface + RpcClient — connect to the
 │   │   │                             # daemon's core_service via LogosAPIClient
-│   │   ├── client_state.cpp/h        # Read/write <configDir>/client/config.json (dial spec)
+│   │   ├── client_state.cpp/h        # Read/write <configDir>/client/config.yaml (dial spec)
 │   │   ├── output.cpp/h              # Output formatter (human / JSON / NDJSON)
 │   │   └── commands/                 # Subcommand implementations
 │   │       ├── command.cpp/h         # Base command class
@@ -78,18 +74,14 @@ logos-logoscore-cli/
 │   ├── test_config.cpp               # Token + config-dir resolution
 │   ├── test_paths.cpp                # Executable/bundle path resolution
 │   ├── test_port_allocator.cpp       # Ephemeral-port allocation
-│   ├── test_access_policy_arg.cpp    # --access-policy argument resolution
 │   ├── test_log_sink.cpp             # Log capture + rotation
 │   ├── test_cli.cpp                  # End-to-end logosctl CLI
-│   ├── test_integration.cpp          # logosctl against a live daemon
-│   ├── test_cli_logoscore.cpp        # End-to-end logoscore CLI (frozen duplicate)
-│   └── test_integration_logoscore.cpp # logoscore against a live daemon (frozen duplicate)
+│   └── test_integration.cpp          # logosctl against a live daemon
 │
 ├── docs/
 │   ├── index.md                      # Doc index
 │   ├── spec.md                       # CLI specification (user-facing behavior)
 │   ├── project.md                    # This file (implementation details)
-│   ├── logoscore.md                  # logoscore user guide
 │   └── logosctl.md                   # logosctl user guide
 │
 ├── doctests/                         # Executable documentation specs
@@ -179,13 +171,12 @@ main.cpp
        value into client/auto.json, register hashes with TokenManager
     7. Write <configDir>/daemon/state.json       // resolved listeners + instance_id
        (Tokens already persisted to daemon/tokens.json by step 6.)
-       Write <configDir>/client/config.json      // local-default dial spec (first-boot only)
-       If --persist-config: write <configDir>/daemon/config.json (operator intent)
+       Write <configDir>/client/config.yaml      // local-default dial spec (first-boot only)
     8. Print startup message to stdout
     9. logos_core_exec()                          // Qt event loop (blocks)
    10. On SIGINT/SIGTERM or shutdown RPC:
        logos_core_cleanup()
-       Remove daemon/state.json (tokens.json + config.json survive)
+       Remove daemon/state.json (tokens.json + config.yaml survive)
        exit(0)
 ```
 
@@ -241,7 +232,7 @@ hashes.
 ```
 main.cpp
   → Client::connect()
-    1. Read <configDir>/client/config.json (dial spec + instance_id + token_file)
+    1. Read <configDir>/client/config.yaml (dial spec + instance_id + token_file)
     2. Set LOGOS_INSTANCE_ID env var from instance_id
        → now LogosInstance::id("core_service") returns the correct registry URL
     3. Read the raw token from token_file (or LOGOSCTL_TOKEN env var if set)
@@ -261,7 +252,7 @@ main.cpp
 
 Client commands **never** call liblogos C API functions. They talk exclusively
 to the daemon's `core_service` module via the SDK's RPC mechanism, using
-whatever dial spec `client/config.json` provides. This means the client path
+whatever dial spec `client/config.yaml` provides. This means the client path
 depends only on `logos-cpp-sdk`, not on `liblogos`.
 
 **Liveness** is not a general pre-check — a PID probe is meaningless for a
@@ -532,20 +523,20 @@ nlohmann::json CoreServiceImpl::callMethodStd(const std::string& methodName,
 
 | Method | Description |
 |--------|-------------|
-| `Daemon::start(modulesDirs) -> int` | Init liblogos, register core_service, write `daemon/state.json` + emit `client/config.json` and `client/auto.json`, run event loop |
+| `Daemon::start(modulesDirs) -> int` | Init liblogos, register core_service, write `daemon/state.json` + emit `client/config.yaml` and `client/auto.json`, run event loop |
 | `Daemon::setupSignalHandlers()` | Handle SIGINT/SIGTERM for clean shutdown |
 
 ### DaemonConfigFile + DaemonRuntimeStateFile
 
 **Files:** `src/daemon/daemon_state.cpp/h`
 
-**Purpose:** Manage the two daemon-side config-tree files. `DaemonConfigFile` reads/writes `<configDir>/daemon/config.json` (operator preferences, written only when `--persist-config` is passed). `DaemonRuntimeStateFile` writes `<configDir>/daemon/state.json` on every successful boot and removes it at shutdown. Both files are daemon-owned; the client never reads `config.json`, and only consults `state.json` for a fast same-host liveness check.
+**Purpose:** Manage the two daemon-side config-tree files. `DaemonConfigFile` reads/writes `<configDir>/daemon/config.yaml` (the operator's config, installed by `daemon config set`). `DaemonRuntimeStateFile` writes `<configDir>/daemon/state.json` on every successful boot and removes it at shutdown. Both files are daemon-owned; the client never reads `config.json`, and only consults `state.json` for a fast same-host liveness check.
 
 **API:**
 
 | Method | Description |
 |--------|-------------|
-| `DaemonConfigFile::read() -> optional<DaemonConfig>` | Parse `daemon/config.json`. Returns `nullopt` if missing or schema-mismatched. |
+| `DaemonConfigFile::read() -> optional<DaemonConfig>` | Parse `daemon/config.yaml`. Returns `nullopt` if missing or schema-mismatched. |
 | `DaemonConfigFile::write(cfg)` | Atomic write of operator-intent values. `port: 0` stays `0` (resolved values live in `state.json`). |
 | `DaemonRuntimeStateFile::write(state)` | Atomic write of resolved live state (`instance_id`, `pid`, `started_at`, `resolved.modules` with actually-bound ports). The temp file staged before the atomic rename is per-writer-unique (`<path>.tmp.<pid>.<seq>`) so concurrent writers can't truncate/rename the same temp and corrupt the result. |
 | `DaemonRuntimeStateFile::read() -> DaemonRuntimeState` | Parse `state.json`. `fileOk` is true iff the file exists with a non-empty `instance_id` — says nothing about liveness; pair with `kill(pid, 0)` for that. |
@@ -586,7 +577,7 @@ nlohmann::json CoreServiceImpl::callMethodStd(const std::string& methodName,
 }
 ```
 
-**`config.json` format** (lifecycle: written only on `--persist-config`): same as `state.json`'s `resolved` block + `version`. Reflects operator intent (`port: 0` stays `0`).
+**`config.yaml` format** (lifecycle: installed by `daemon config set`, never written by the daemon): same as `state.json`'s `resolved` block + `version`. Reflects operator intent (`port: 0` stays `0`).
 
 **`tokens.json` format** (lifecycle: independent — survives daemon restarts):
 
@@ -633,26 +624,26 @@ The CLI client is **not** a child process of the daemon — it's a separate invo
 
 1. Daemon starts → `LogosInstance::id()` generates `a3f1c8d20b4e` → sets `LOGOS_INSTANCE_ID`
 2. core_service registers at `local:logos_core_service_a3f1c8d20b4e`
-3. Daemon writes `instance_id` into both `daemon/state.json` and the auto-emitted `client/config.json`
-4. Client reads `instance_id` from `client/config.json` → sets `LOGOS_INSTANCE_ID=a3f1c8d20b4e` in its own process → now `LogosInstance::id("core_service")` returns the matching URL
+3. Daemon writes `instance_id` into both `daemon/state.json` and the auto-emitted `client/config.yaml`
+4. Client reads `instance_id` from `client/config.yaml` → sets `LOGOS_INSTANCE_ID=a3f1c8d20b4e` in its own process → now `LogosInstance::id("core_service")` returns the matching URL
 5. Client connects via `LogosAPIClient` → reaches the correct daemon
 
-The client/config.json carries `instance_id` rather than a hardcoded registry URL so the client can reconstruct URLs using the same `LogosInstance::id()` function the SDK uses internally.
+The client/config.yaml carries `instance_id` rather than a hardcoded registry URL so the client can reconstruct URLs using the same `LogosInstance::id()` function the SDK uses internally.
 
-The token is generated on daemon startup, hashed into `tokens.json["tokens"]`, and emitted raw to `client/auto.json` for the local-default client to pick up. Client commands read it automatically via `client/config.json`'s `token_file` pointer. For remote/CI usage, the token can also be passed via `LOGOSCTL_TOKEN` env var.
+The token is generated on daemon startup, hashed into `tokens.json["tokens"]`, and emitted raw to `client/auto.json` for the local-default client to pick up. Client commands read it automatically via `client/config.yaml`'s `token_file` pointer. For remote/CI usage, the token can also be passed via `LOGOSCTL_TOKEN` env var.
 
 ### ClientStateFile
 
 **Files:** `src/client/client_state.cpp/h`
 
-**Purpose:** Read/write `<configDir>/client/config.json` — the client's
+**Purpose:** Read/write `<configDir>/client/config.yaml` — the client's
 dial spec. This is the only daemon-tree file a client command ever opens
 during normal RPC (it never touches `daemon/state.json`,
-`daemon/config.json`, or `daemon/tokens.json`). The daemon auto-emits one
-for the local-default client at boot; remote clients hand-write it (or
-generate it via the `--client-*` flags + `--persist-config`).
+`daemon/config.yaml`, or `daemon/tokens.json`). The daemon auto-emits one
+for the local-default client at boot; remote clients install one with
+`logosctl client config set`.
 
-**`client/config.json` format** (`version` must equal `kClientStateSchemaVersion`, currently `2`):
+**`client/config.yaml` format** (`version` must equal `kClientStateSchemaVersion`, currently `2`):
 
 ```jsonc
 {
@@ -697,16 +688,14 @@ For `tcp_ssl`, each module entry also accepts `"ca": "<path>"` and
 - `fileOk` (the "usable for dialing" bit `RpcClient::connect` checks) is true
   iff at least one `daemon` entry parsed **and** `token_file` is non-empty.
 - `core_service` and `capability_module` may target different ports — they're
-  independent daemon listeners. The `--client-*` CLI flags apply one transport
-  shape to *both* modules, so divergent ports require hand-editing this file.
+  independent daemon listeners.
 
 **API:**
 
 | Method | Description |
 |--------|-------------|
-| `ClientStateFile::read() -> ClientState` | Parse `client/config.json` (or return the in-process override set by `setOverride`). `fileOk=false` on missing file, bad version, or invalid transport entry. |
-| `ClientStateFile::write(state) -> bool` | Serialize a `ClientState` back to `client/config.json` (used by the `--persist-config` path). Writes `transport`/`host`/`port`/`codec` (+ `ca`/`verify_peer` for tcp_ssl), and `instance_id` only when non-empty. |
-| `ClientStateFile::setOverride(opt)` | Inject a CLI-flag-merged `ClientState` that `read()` returns verbatim — lets `--client-*` flags affect a run without writing to disk. |
+| `ClientStateFile::read() -> ClientState` | Parse `client/config.yaml` (or return the in-process override set by `setOverride`). `fileOk=false` on missing file, bad version, or invalid transport entry. |
+| `ClientStateFile::setOverride(opt)` | Inject a `ClientState` that `read()` returns verbatim, bypassing disk (a test seam). |
 | `ClientStateFile::readTokenFile(filename) -> string` | Read `<configDir>/client/<filename>` and return its `"token"` field. Empty string if missing/malformed. When `--token-file` is passed explicitly, `main` now validates the content with this up front: a file that exists but yields an empty token (missing/empty `token` field, or unparseable JSON) is a hard error (exit 1) pointing at the bad file, instead of being accepted and surfacing later as "No authentication token" at connect time. |
 
 ### Client
@@ -724,7 +713,7 @@ For `tcp_ssl`, each module entry also accepts `"ca": "<path>"` and
 
 | Method | core_service method called |
 |--------|---------------------------|
-| `Client::connect() -> bool` | Read `<configDir>/client/config.json`, set `LOGOS_INSTANCE_ID` from `instance_id`, build `LogosTransportConfig` from the dial spec, load token from `token_file` (or `LOGOSCTL_TOKEN` env), create `LogosAPIClient` targeting `"core_service"`, authenticate |
+| `Client::connect() -> bool` | Read `<configDir>/client/config.yaml`, set `LOGOS_INSTANCE_ID` from `instance_id`, build `LogosTransportConfig` from the dial spec, load token from `token_file` (or `LOGOSCTL_TOKEN` env), create `LogosAPIClient` targeting `"core_service"`, authenticate |
 | `Client::isConnected() -> bool` | — |
 | `Client::lastError() -> std::string` | — (last connect/RPC failure reason) |
 | `Client::loadModule(name, withOptional) -> LogosMap` | `core_service.loadModule(name, withOptional)` |
@@ -785,11 +774,11 @@ LogosMap RpcClient::loadModule(const std::string& name) {
 | `Config::daemonConfigPath() / daemonStatePath() / daemonTokensPath() / daemonTokensDir()` | Daemon-side path helpers under `<configDir>/daemon/` |
 | `Config::clientConfigPath() / clientDir() / clientTokenPath(filename)` | Client-side path helpers under `<configDir>/client/`. `clientTokenPath` rejects any `filename` that isn't a plain name (contains `/`, `\`, or `..`) and resolves it to an in-`client/` sentinel, so an operator-influenced `token_file` value can't escape the dir to read an arbitrary file as a credential. |
 
-The client dial spec lives in `client/config.json` and is loaded via `ClientStateFile::read()` (not `Config`). See the **ClientStateFile** section above for the schema and parsing contract.
+The client dial spec lives in `client/config.yaml` and is loaded via `ClientStateFile::read()` (not `Config`). See the **ClientStateFile** section above for the schema and parsing contract.
 
 **Token resolution order:**
 1. `LOGOSCTL_TOKEN` environment variable
-2. `<configDir>/client/<token_file>` (`token_file` defaults to `auto.json` when `client/config.json` doesn't override it)
+2. `<configDir>/client/<token_file>` (`token_file` defaults to `auto.json` when `client/config.yaml` doesn't override it)
 
 **Config dir resolution order:**
 1. `--config-dir <path>` CLI flag (sets process-wide override, mirrors into `LOGOSCTL_CONFIG_DIR`)
@@ -838,7 +827,7 @@ logosctl daemon [--modules-dir <path>]...
 **Behavior:**
 1. `logos_core_init(argc, argv)`, add module directories, `logos_core_start()`
 2. Register `core_service` in-process via `LogosAPIProvider::registerObject()` (not `logos_core_register_module()`, which only maps a plugin *name* to a file path for on-disk discovery)
-3. Write `~/.logosctl/daemon/state.json` (listeners + hashed-token table) and emit `~/.logosctl/client/config.json` + `~/.logosctl/client/auto.json` for the local client
+3. Write `~/.logosctl/daemon/state.json` (listeners + hashed-token table) and emit `~/.logosctl/client/config.yaml` + `~/.logosctl/client/auto.json` for the local client
 4. `logos_core_exec()` (Qt event loop — blocks)
 5. On SIGINT/SIGTERM: `logos_core_cleanup()`, remove `daemon/state.json`, exit
 
@@ -907,7 +896,7 @@ logosctl daemon status
 ```
 
 **Behavior:**
-1. Reads `<configDir>/client/config.json` to learn how to dial. If missing or unparseable, prints "not running" and exits with code 1 (no point trying to connect).
+1. Reads `<configDir>/client/config.yaml` to learn how to dial. If missing or unparseable, prints "not running" and exits with code 1 (no point trying to connect).
 2. Runs the same `detectStaleSession()` guard `ensureConnected()` does, one step earlier: a session whose own daemon's pid is gone reports `not_running` with the pid and the reason, exit 1. Earlier and separately because "no daemon" is an *answer* to `status`, not an error — the shared guard's `NO_DAEMON` / exit 2 would be the wrong shape.
 3. Otherwise tries to connect and call `core_service.getStatus()`. The RPC call IS the liveness check — there's no separate cheap probe, because no cheap probe is correct across every transport (local Unix socket vs remote TCP across NAT is a meaningless question for PID-based liveness).
 4. On RPC timeout / connect refused: reports "not running" with the error reason, exits with code 1.
@@ -1213,16 +1202,16 @@ export LOGOSCTL_TOKEN=xyz123
 # Or inline per-command
 LOGOSCTL_TOKEN=xyz123 logosctl module load waku
 
-# Or via the client/ tree (point client/config.json's token_file at a JSON
+# Or via the client/ tree (point client/config.yaml's token_file at a JSON
 # file the daemon emitted — useful for remote clients). The file is a
 # {"version":1,"name":"alice","token":"<raw>","issued_at":"<iso>"}
 # object that `issue-token --name alice` writes to
 # <daemon-host>/.logosctl/daemon/tokens/alice.json. Copy it across
 # (scp / ansible / cloud-secret-fetch) and reference it from
-# client/config.json's token_file:
+# client/config.yaml's token_file:
 mkdir -p ~/.logosctl/client
 scp daemon-host:~/.logosctl/daemon/tokens/alice.json ~/.logosctl/client/
-# then ensure ~/.logosctl/client/config.json's token_file = "alice.json"
+# then ensure ~/.logosctl/client/config.yaml's token_file = "alice.json"
 logosctl module load waku
 ```
 
@@ -1261,17 +1250,15 @@ done
 | `test_output.cpp` | Output formatter (human/JSON), TTY detection, printSuccess/printError/printRaw. |
 | `test_daemon_state.cpp` | Round-trip `daemon/state.json` — instance_id, pid, modulesDirs, per-module `transports` entries (local/tcp/tcp_ssl, codec defaulting), and the `tokens` array (`name, hash, issued_at, expires_at, local_only`). `fileOk` is independent of the pid (it's a parse check, not liveness). |
 | `test_token_store.cpp` | Token issuance (including `--expires` and `--local-only`), duplicate-name rejection (unless `--replace`), revocation, list, persistence round-trip. Confirms `tokens.json["tokens"]` stores hashes only; plaintext lives in `daemon/tokens/<name>.json`. Fail-closed invariants: an empty token never authenticates, `issueToken` Ok implies a non-empty token, a failed `--replace` preserves the prior raw token, and issuing against an unsupported-schema-version file refuses instead of clobbering it. |
-| `test_config.cpp` | Token resolution order (env var → `client/<token_file>`); `client/config.json` parsing; `clientTokenPath` accepts plain filenames and rejects path-traversal (`../`, absolute, sub-dirs). |
+| `test_config.cpp` | Token resolution order (env var → `client/<token_file>`); `client/config.yaml` parsing; `clientTokenPath` accepts plain filenames and rejects path-traversal (`../`, absolute, sub-dirs). |
 | `test_port_allocator.cpp` | Ephemeral-port allocation: bad host returns 0, an IPv6 any-address (`::`) allocates a port, consecutive allocations are distinct. |
-| `test_access_policy_arg.cpp` | `--access-policy` resolution: the `enforce` alias expands to the deny-by-default document, the alias beats the file branch, inline JSON and file paths pass through unchanged, and a bad path / malformed JSON fails with a reason rather than degrading to "no policy". |
 | `test_log_sink.cpp` | Pipe-based stdout/stderr capture into the rotating daemon log. |
 | `test_paths.cpp` | Executable / bundle-relative path resolution (`paths.h`). |
 | `test_cli.cpp` | End-to-end CLI tests: help, version, no-args, client commands without daemon, daemon startup with --verbose; rejection of an invalid `--module-transport` port, an invalid `--client-codec`, and a `--token-file` that carries no usable token. |
 | `test_integration.cpp` | Daemon-backed integration: a real `logosctl` daemon against a real module directory, driven through the client subcommands — error paths, the full `test_basic_module` API surface, event subscription via `watch`, and many simultaneous clients on one daemon. |
-| `test_cli_logoscore.cpp` / `test_integration_logoscore.cpp` | The same two suites frozen against `logoscore`'s surface, so shared-runtime changes can't regress the tool people actually use. They get deleted with the binary. |
 
-`checks.<sys>.tests` runs the unit and CLI suites. Both `integration_tests` suites need real
-module plugins, so they run in logos-test-modules as `checks.<sys>.logoscore-cli-integration-*`.
+`checks.<sys>.tests` runs the unit and CLI suites. `integration_tests` needs real module
+plugins, so it runs in logos-test-modules as `checks.<sys>.logoscore-cli-integration-logosctl`.
 
 ---
 

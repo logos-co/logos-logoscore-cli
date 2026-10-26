@@ -8,7 +8,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <optional>
 #include <fcntl.h>
 #ifdef _WIN32
 #include <windows.h>
@@ -29,7 +28,6 @@
 #include "daemon/daemon.h"
 #include "daemon/daemon_state.h"
 #include "daemon/log_sink.h"
-#include "daemon/access_policy_arg.h"
 #include "client/client_state.h"
 #include "client/client.h"
 #include "client/output.h"
@@ -267,17 +265,6 @@ static std::string preScanConfigDir(int argc, char* argv[])
     return {};
 }
 
-// Resolve the --access-policy argument (see daemon/access_policy_arg.h for the
-// three accepted spellings) and print the reason on stderr if it can't be.
-static std::optional<std::string> resolveAccessPolicy(const std::string& arg)
-{
-    std::string error;
-    auto resolved = logoscore::resolveAccessPolicyArg(arg, &error);
-    if (!resolved)
-        std::cerr << "Error: " << error << std::endl;
-    return resolved;
-}
-
 // Collapse the two-token group verbs into the single tokens CLI11 has
 // subcommands for, before any parsing happens:
 //
@@ -348,10 +335,6 @@ static std::vector<std::string> normalizeGroupVerbs(int argc, char* argv[])
 
 int main(int argc, char *argv[])
 {
-    // This binary is logosctl: new surface, own session directory,
-    // YAML config. Set before any Config::* call.
-    Config::setFlavor(Config::Flavor::Modern);
-
     // Pre-scan argv for `--config-dir` so the override applies before
     // any Config::* call. The CLI11 parse below picks the same flag up
     // again and re-applies it, but we need it earlier than that —
@@ -369,15 +352,14 @@ int main(int argc, char *argv[])
     }
 
     // The config tree splits by lifetime under <configDir>/:
-    //   daemon/config.json   — operator preferences (writes only on --persist-config)
+    //   daemon/config.yaml   — the operator's config (installed by `daemon config set`)
     //   daemon/state.json    — live runtime state (created at boot, removed at shutdown)
     //   daemon/tokens.json   — hashed-at-rest accepted tokens (survives restarts)
-    //   client/config.json   — client dial spec (writes only on --persist-config)
-    // CLI flags merge over disk via per-flag Option::count() detection.
+    //   client/config.yaml   — client dial spec (written at boot if absent)
 
     // ── CLI11 setup ──────────────────────────────────────────────────────────
     CLI::App app{"logosctl - Logos Core runtime CLI"};
-    app.set_version_flag("--version", logosctl_version::versionString("logosctl"));
+    app.set_version_flag("--version", logosctl_version::versionString());
     app.set_help_flag("-h,--help", "Show this help");
 
     // Global flags
@@ -889,9 +871,6 @@ int main(int argc, char *argv[])
         // before state.json is written, so the resolved snapshot shows the
         // material each listener actually bound with rather than the intent
         // it was derived from.
-        //
-        // logosctl-only by construction -- this is main.cpp, the Modern
-        // front-end. logoscore (main_legacy.cpp) never calls it.
         applySslDefaults(mergedCfg);
 
         // Make sure the well-known modules at least *have* an entry,
@@ -989,14 +968,7 @@ int main(int argc, char *argv[])
             return 1;
         }
 
-        // Both trailing parameters are bool. Name them at the call site: this
-        // line used to read `..., configSource, g_verbose)`, which silently
-        // handed g_verbose to persistConfig and left verbose false forever --
-        // so -v never reached anything the daemon gates on it, and it quietly
-        // rewrote the config file instead. logosctl has no --persist-config;
-        // configuration is installed with `daemon config set`.
-        return Daemon::start(argc, argv, mergedCfg, configSource,
-                             /*persistConfig=*/false, /*verbose=*/g_verbose);
+        return Daemon::start(argc, argv, mergedCfg, configSource, g_verbose);
     }
 
     // ── Client mode ──────────────────────────────────────────────────────────

@@ -429,13 +429,7 @@ bool DaemonConfigFile::write(const DaemonConfig& cfg)
 {
     json obj = daemonConfigToJson(cfg, /*includeSecrets=*/true);
     obj["version"] = kDaemonConfigSchemaVersion;
-    // logoscore keeps writing JSON so an existing deployment's config file
-    // stays readable by the tool that wrote it; logosctl writes YAML.
-    // Reading needs no branch: YAML is a superset of JSON, so the same
-    // parser handles both.
-    return Config::flavor() == Config::Flavor::Modern
-        ? atomicWriteText(fs::path(filePath()), yaml_json::dump(obj))
-        : atomicWriteJson(fs::path(filePath()), obj);
+    return atomicWriteText(fs::path(filePath()), yaml_json::dump(obj));
 }
 
 // -- DaemonRuntimeStateFile -------------------------------------------------
@@ -807,10 +801,8 @@ bool DaemonRuntimeStateFile::writeLocalClientArtifacts(
         // The client config carries no secret (the token lives in a separate
         // file), so it is safe to make group-readable when sharing. Written
         // as YAML: this is a file operators hand-edit for remote setups.
-        const bool wrote = Config::flavor() == Config::Flavor::Modern
-            ? atomicWriteText(fs::path(clientCfgPath), yaml_json::dump(client), fileMode)
-            : atomicWriteJson(fs::path(clientCfgPath), client, fileMode);
-        if (!wrote) return false;
+        if (!atomicWriteText(fs::path(clientCfgPath), yaml_json::dump(client), fileMode))
+            return false;
 #ifndef _WIN32
         // chown/uid_t do not exist in mingw-w64; shareWithGroup is always false
         // on Windows anyway (resolveOsGroupGid refuses there).
