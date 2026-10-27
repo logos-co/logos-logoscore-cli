@@ -1,6 +1,6 @@
 #!/usr/bin/env groovy
 
-library 'status-jenkins-lib@v1.10.1'
+library 'status-jenkins-lib@v1.10.3'
 
 pipeline {
   agent {
@@ -37,21 +37,26 @@ pipeline {
   environment {
     ARCH       = getArch()
     NIX_SYSTEM = "${getArch()}-linux"
+    PLATFORM   = "linux/${getArch()}"
+    ARTIFACT   = "pkg/logosctl-${getArch()}-linux.tar.gz"
   }
 
   stages {
     stage('Build') {
-      steps { 
-        script {
-          nix.flake('ctl-appimage')
-          sh '''
-            src=$(find result/ -name '*.AppImage' -print -quit)
-            mkdir -p pkg
-            cp "$src" "logosctl-${ARCH}.AppImage"
-            chmod +x "logosctl-${ARCH}.AppImage"
-            tar -czf "pkg/logosctl-${ARCH}-linux.tar.gz" "logosctl-${ARCH}.AppImage"
-          '''
-        } 
+      steps { script {
+        nix.flake('ctl-appimage')
+      } }
+    }
+
+    stage('Package') {
+      steps {
+        sh '''
+          src=$(find result/ -name '*.AppImage' -print -quit)
+          mkdir -p pkg
+          cp "$src" "logosctl-${ARCH}.AppImage"
+          chmod +x "logosctl-${ARCH}.AppImage"
+          tar -czf "${ARTIFACT}" "logosctl-${ARCH}.AppImage"
+        '''
       }
     }
 
@@ -72,13 +77,17 @@ pipeline {
     }
 
     stage('Archive') {
-      steps {
-        archiveArtifacts(artifacts: 'pkg/*, test-results/*.xml', allowEmptyArchive: false)
-      }
+      steps { script {
+        archiveArtifacts(artifacts: "${env.ARTIFACT}, test-results/*.xml", allowEmptyArchive: false)
+        env.PKG_URL = "${env.BUILD_URL}artifact/${env.ARTIFACT}"
+        jenkins.setBuildDesc(TARGZ: env.PKG_URL)
+      } }
     }
   }
 
   post {
+    success { script { github.notifyPR(true) } }
+    failure { script { github.notifyPR(false) } }
     cleanup {
       cleanWs(disableDeferredWipeout: true)
       dir(env.WORKSPACE_TMP) { deleteDir() }

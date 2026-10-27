@@ -1,11 +1,11 @@
 #!/usr/bin/env groovy
 
-library 'status-jenkins-lib@v1.10.1'
+library 'status-jenkins-lib@v1.10.3'
 
 def isPRBuild = utils.isPRBuild()
 
 pipeline {
-  agent { label "macos && ${getArch()} && nix" }
+  agent { label "macos && aarch64 && nix" }
 
   options {
     timestamps()
@@ -31,8 +31,8 @@ pipeline {
   }
 
   environment {
-    PLATFORM = "macos/${getArch()}"
-    ARTIFACT = "pkg/${utils.pkgFilename(name: 'logos-logoscore-cli', type: 'macos', ext: 'tar.gz', arch: getArch())}"
+    PLATFORM = "macos/aarch64"
+    ARTIFACT = "pkg/logosctl-aarch64-macos.tar.gz"
   }
 
   stages {
@@ -49,16 +49,14 @@ pipeline {
     }
 
     stage('Sign & Notarize') {
-      steps {
-        script {
-          logos.codesign(
-            dirPath: 'result',
-            outputPath: 'signed',
-            mode: 'both',
-            timeout: '30m'
-          )
-        }
-      }
+      steps { script {
+        logos.codesign(
+          dirPath: 'result',
+          outputPath: 'signed',
+          mode: 'both',
+          timeout: '30m'
+        )
+      } }
     }
 
     stage('Package') {
@@ -70,22 +68,18 @@ pipeline {
     stage('Archive') {
       steps { script {
         archiveArtifacts(artifacts: env.ARTIFACT, allowEmptyArchive: false)
-        jenkins.setBuildDesc(TARGZ: "${env.BUILD_URL}artifact/${env.ARTIFACT}")
+        env.PKG_URL = "${env.BUILD_URL}artifact/${env.ARTIFACT}"
+        jenkins.setBuildDesc(TARGZ: env.PKG_URL)
       } }
     }
   }
 
   post {
+    success { script { github.notifyPR(true) } }
+    failure { script { github.notifyPR(false) } }
     cleanup {
       cleanWs(disableDeferredWipeout: true)
       dir(env.WORKSPACE_TMP) { deleteDir() }
     }
-  }
-}
-
-def getArch() {
-  def tokens = Thread.currentThread().getName().split('/')
-  for (def arch in ['x86_64', 'aarch64']) {
-    if (tokens.contains(arch)) { return arch }
   }
 }

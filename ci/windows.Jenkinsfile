@@ -1,6 +1,6 @@
 #!/usr/bin/env groovy
 
-library 'status-jenkins-lib@v1.10.1'
+library 'status-jenkins-lib@v1.10.3'
 
 pipeline {
   agent {
@@ -35,6 +35,11 @@ pipeline {
     copyArtifactPermission('/logos/logoscore-cli/*')
   }
 
+  environment {
+    PLATFORM = 'windows/x86_64'
+    ARTIFACT = 'pkg/logosctl-x86_64-windows.zip'
+  }
+
   stages {
     stage('Build') {
       steps { script {
@@ -44,18 +49,29 @@ pipeline {
 
     stage('Package') {
       steps { script {
-        nix.develop('./scripts/package-windows.sh result pkg')
+        sh '''
+          rm -rf logosctl-x86_64-windows pkg
+          mkdir -p logosctl-x86_64-windows pkg
+          cp -rL result/. logosctl-x86_64-windows/
+          chmod -R u+w logosctl-x86_64-windows
+          ls logosctl-x86_64-windows/bin/*.exe
+        '''
+        nix.develop("zip -qr ${env.ARTIFACT} logosctl-x86_64-windows")
       } }
     }
 
     stage('Archive') {
-      steps {
-        archiveArtifacts(artifacts: 'pkg/*', allowEmptyArchive: false)
-      }
+      steps { script {
+        archiveArtifacts(artifacts: env.ARTIFACT, allowEmptyArchive: false)
+        env.PKG_URL = "${env.BUILD_URL}artifact/${env.ARTIFACT}"
+        jenkins.setBuildDesc(Windows: env.PKG_URL)
+      } }
     }
   }
 
   post {
+    success { script { github.notifyPR(true) } }
+    failure { script { github.notifyPR(false) } }
     cleanup {
       cleanWs(disableDeferredWipeout: true)
       dir(env.WORKSPACE_TMP) { deleteDir() }
