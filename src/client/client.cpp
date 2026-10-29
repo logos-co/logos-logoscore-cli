@@ -66,6 +66,7 @@ namespace {
 // running and about to succeed.
 constexpr int kCatalogTimeoutMs  = rpc_deadlines::kCatalogMs;
 constexpr int kTransferTimeoutMs = rpc_deadlines::kTransferMs;
+constexpr int kUnloadTimeoutMs   = rpc_deadlines::kUnloadMs;
 
 // Deadlines for `shutdown`, which is the one call whose reply is expected to
 // go missing -- see RpcClient::shutdown below.
@@ -75,8 +76,8 @@ constexpr int kTransferTimeoutMs = rpc_deadlines::kTransferMs;
 // is not coming; the 20s default only makes the operator wait for it.
 constexpr int kShutdownTimeoutMs = 5 * 1000;
 // How long to watch for the daemon to exit, reply or no reply. Generous:
-// a clean shutdown unloads every module, which is one subprocess apiece.
-constexpr int kShutdownConfirmMs = 45 * 1000;
+// a clean shutdown stops every module in turn, each up to 14 s (kUnloadMs).
+constexpr int kShutdownConfirmMs = 120 * 1000;
 // Per-probe budget when the daemon is remote and there is no pid to watch.
 constexpr int kShutdownProbeMs   = 1500;
 constexpr int kShutdownProbeGapMs = 200;
@@ -225,7 +226,8 @@ LogosMap RpcClient::loadModule(const std::string& name, bool withOptional)
 LogosMap RpcClient::unloadModule(const std::string& name, bool withDependents)
 {
     nlohmann::json ret = d->invoke("unloadModule",
-                                   nlohmann::json::array({name, withDependents}));
+                                   nlohmann::json::array({name, withDependents}),
+                                   kUnloadTimeoutMs);
     if (ret.is_object()) return ret;
     return LogosMap{{"status","error"},{"code","RPC_FAILED"},
                     {"message", fmt::format("unloadModule('{}') RPC call failed.", name)}};
@@ -284,7 +286,8 @@ LogosMap RpcClient::downloadPackage(const std::string& name, const LogosMap& opt
 
 LogosMap RpcClient::reloadModule(const std::string& name)
 {
-    nlohmann::json ret = d->invoke("reloadModule", nlohmann::json::array({name}));
+    nlohmann::json ret = d->invoke("reloadModule", nlohmann::json::array({name}),
+                                   kUnloadTimeoutMs);
     if (ret.is_object()) return ret;
     return LogosMap{{"status","error"},{"code","RPC_FAILED"},
                     {"message", fmt::format("reloadModule('{}') RPC call failed.", name)}};
