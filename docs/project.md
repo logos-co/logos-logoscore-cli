@@ -375,7 +375,8 @@ public:
     // Proxied call — delegates to target module
     StdLogosResult callModuleMethod(const std::string& module,
                                     const std::string& method,
-                                    const LogosList& args);
+                                    const LogosList& args,
+                                    int timeoutMs = 0);
 
     // Event forwarding
     bool watchModuleEvents(const std::string& module,
@@ -425,7 +426,7 @@ method, scanned by a code generator; neither is used here any more.)
 | `getStatus()` | Reads daemon state (PID, uptime, version) + calls `listModules("all")`. Returns `{"daemon":{...},"modules_summary":{...},"modules":[...]}` |
 | `getModuleInfo(name)` | Pulls the module's entry from `logos_core_get_modules_info()` (version from embedded metadata, dependencies, dependents) and, for loaded modules, methods/events via SDK introspection over RPC. Returns extended JSON |
 | `getModuleStats()` | Calls `logos_core_get_module_stats()`. Returns CPU/memory per module |
-| `callModuleMethod(module, method, args)` | Uses `m_api->getClient(module)->invokeRemoteMethod()` to proxy the call to the target module. Returns the result. `LogosResult` return values are unpacked into `{success, value, error}` here so that the JSON shape is identical regardless of whether the daemon-module hop went over the local socket (QRO) or the plain-C++ transport (tcp / tcp_ssl). |
+| `callModuleMethod(module, method, args[, timeoutMs])` | Uses `m_api->getClient(module)->invokeRemoteMethod()` to proxy the call to the target module, on the caller's `timeoutMs` budget (omitted or `0`: the transport default). The CLI always sends it and waits `rpc_deadlines::kReplyMarginMs` beyond it, so a timeout here reaches the client as this call's error rather than racing the client's own deadline. Returns the result. `LogosResult` return values are unpacked into `{success, value, error}` here so that the JSON shape is identical regardless of whether the daemon-module hop went over the local socket (QRO) or the plain-C++ transport (tcp / tcp_ssl). |
 | `watchModuleEvents(module, event)` | Registers an event listener on the target module via `m_api->getClient(module)->onEvent()`. Forwards received events by calling `emitEvent()` on core_service, which the CLI client receives over its own event subscription |
 | `shutdown()` | Schedules `QCoreApplication::quit()` after a 200ms delay (to allow the RPC response to be sent), then the daemon performs its normal cleanup (unload modules, remove `daemon/state.json`, exit) |
 

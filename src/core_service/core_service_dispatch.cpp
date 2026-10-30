@@ -5,6 +5,9 @@
 #include "core_service_impl.h"
 #include <logos_api.h>
 
+#include <algorithm>
+#include <limits>
+
 // ---------------------------------------------------------------------------
 // Helpers: extract the value payload from StdLogosResult
 // ---------------------------------------------------------------------------
@@ -109,11 +112,19 @@ nlohmann::json CoreServiceImpl::callMethodStd(const std::string& methodName,
     if (methodName == "getModuleStats")
         return getModuleStats();
 
-    if (methodName == "callModuleMethod" && args.size() >= 3)
+    if (methodName == "callModuleMethod" && args.size() >= 3) {
+        // Older callers pass no deadline; they keep the transport default.
+        // Clamped so an out-of-range value cannot wrap into a negative int; a
+        // negative or zero one means "default" too.
+        const long long requested = args.size() >= 4 ? args[3].get<long long>() : 0;
+        const int timeoutMs = static_cast<int>(std::clamp<long long>(
+            requested, 0, (std::numeric_limits<int>::max)()));
         return stdLogosResultToJson(
             callModuleMethod(args[0].get<std::string>(),
                              args[1].get<std::string>(),
-                             args[2]));
+                             args[2],
+                             timeoutMs));
+    }
 
     if (methodName == "watchModuleEvents" && args.size() >= 2)
         return watchModuleEvents(args[0].get<std::string>(),
@@ -216,7 +227,8 @@ std::vector<LogosMethodMetadata> CoreServiceImpl::getMethodsStd()
     mkMethod("callModuleMethod",
              nlohmann::json::array({mkParam("module", "string"),
                                     mkParam("method", "string"),
-                                    mkParam("args", "LogosList")}),
+                                    mkParam("args", "LogosList"),
+                                    mkParam("timeoutMs", "int")}),
              "StdLogosResult");
 
     mkMethod("watchModuleEvents",

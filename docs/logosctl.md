@@ -686,7 +686,24 @@ These global flags work before or after any subcommand:
       --no-json,--human Force human-readable output even when piped
   -q, --quiet           Suppress non-essential output
       --config-dir DIR  Which session to act on (also LOGOSCTL_CONFIG_DIR)
+      --timeout MS      Per-call RPC timeout in milliseconds, applied to every
+                        daemon call (also LOGOSCTL_TIMEOUT). Overrides the
+                        built-in per-operation deadlines; 0 keeps them.
 ```
+
+`--timeout` is the one knob for a call that is slower or faster than the
+defaults assume. The defaults already stretch for the calls that need it — an
+install waits up to 30 minutes, a status query 20 seconds — so reach for it
+when a module method of your own runs long, or when you want a short deadline
+to fail fast against an unresponsive daemon.
+
+For `call`, the value is the module method's own budget: the daemon applies it
+to the call it makes into the module, and logosctl waits up to 5 seconds
+longer for the daemon's answer. A method that runs out its budget therefore
+fails as `METHOD_FAILED` with `error.code` `timeout`, rather than racing
+logosctl's own deadline into a bare `RPC_FAILED` that cannot say whether the
+method ran. The extra 5 seconds are only ever spent waiting on a daemon that
+has stopped answering.
 
 #### Access policy
 

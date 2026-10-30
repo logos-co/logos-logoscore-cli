@@ -495,7 +495,8 @@ std::vector<std::string> exposedMethodNames(LogosAPIClient* client,
 
 StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
                                                  const std::string& method,
-                                                 const LogosList& args)
+                                                 const LogosList& args,
+                                                 int timeoutMs)
 {
     LogosMap result;
 
@@ -540,10 +541,16 @@ StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
     // that was wrong: lp_invoke branches on callErr.ok() and NEVER on the value,
     // so a failed call and a method returning null were already distinct
     // everywhere else on this surface. Only here did they collapse.
+    //
+    // The deadline is the caller's: the client sends the budget it was given
+    // and waits rpc_deadlines::kReplyMarginMs beyond it, so when this call runs
+    // out the METHOD_FAILED below still reaches it, instead of racing its own
+    // deadline as the two equal 20 s defaults used to.
     logos::CallError err;
     const QVariant qret = moduleClient->invokeRemoteMethod(
         QString::fromStdString(module), QString::fromStdString(method),
-        logos::nlohmannArgsToQVariantList(args), Timeout(), &err);
+        logos::nlohmannArgsToQVariantList(args),
+        timeoutMs > 0 ? Timeout(timeoutMs) : Timeout(), &err);
     const nlohmann::json ret = logos::qvariantToNlohmann(qret);
 
     result = core_service::callEnvelope(

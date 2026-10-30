@@ -33,3 +33,22 @@ TEST(RpcDeadlines, BudgetsExceedTheTransportDefault) {
     EXPECT_GT(rpc_deadlines::kCatalogMs, Timeout().ms);
     EXPECT_GT(rpc_deadlines::kTransferMs, rpc_deadlines::kCatalogMs);
 }
+
+// The client's leg must outlast the daemon's call it wraps. When the two were
+// equal they expired together and the client's -- which starts first -- usually
+// won, so a daemon-side timeout surfaced as a bare RPC_FAILED.
+TEST(RpcDeadlines, ClientLegOutlastsTheDaemonLeg) {
+    using rpc_deadlines::clientDeadlineFor;
+    EXPECT_GT(rpc_deadlines::kReplyMarginMs, 0);
+    for (int daemonMs : {1, Timeout().ms, rpc_deadlines::kCatalogMs, rpc_deadlines::kTransferMs})
+        EXPECT_EQ(clientDeadlineFor(daemonMs), daemonMs + rpc_deadlines::kReplyMarginMs) << daemonMs;
+}
+
+// `--timeout` accepts up to INT_MAX; adding the margin must not wrap negative.
+TEST(RpcDeadlines, ClientDeadlineSaturatesInsteadOfOverflowing) {
+    using rpc_deadlines::clientDeadlineFor;
+    constexpr int kMax = (std::numeric_limits<int>::max)();
+    EXPECT_EQ(clientDeadlineFor(kMax), kMax);
+    EXPECT_EQ(clientDeadlineFor(kMax - rpc_deadlines::kReplyMarginMs), kMax);
+    EXPECT_EQ(clientDeadlineFor(kMax - rpc_deadlines::kReplyMarginMs - 1), kMax - 1);
+}

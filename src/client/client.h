@@ -84,6 +84,19 @@ public:
     bool isConnected() const override;
     std::string lastError() const override;
 
+    // Override the per-call RPC deadline for every call this client makes.
+    // `ms > 0` replaces both the transport default (Timeout(), 20 s) and the
+    // per-operation deadlines in rpc_deadlines.h; `0` (the default) keeps them.
+    // Set once from the `--timeout` flag before the command runs, so "each
+    // call" means every core_service RPC the invocation issues.
+    //
+    // Two calls treat it differently. callModuleMethod hands it to the daemon
+    // as the module call's own budget and waits rpc_deadlines::kReplyMarginMs
+    // beyond it, so the method gets exactly `ms` and its timeout comes back as
+    // the daemon's error. The internal shutdown-confirmation probe opts out --
+    // see RpcClient::confirmDaemonStopped.
+    void setCallTimeoutMs(int ms);
+
     LogosMap loadModule(const std::string& name, bool withOptional = true) override;
     LogosMap unloadModule(const std::string& name, bool withDependents) override;
     LogosMap reloadModule(const std::string& name) override;

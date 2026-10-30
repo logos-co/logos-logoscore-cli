@@ -39,6 +39,12 @@ struct RpcClient::Impl {
     std::string token;
     ClientState clientState;
 
+    // User-chosen deadline for every call, from `--timeout` (milliseconds).
+    // 0 means "unset": fall back to the per-call `timeoutMs` below. When set
+    // it wins over both that and the transport default, which is the whole
+    // point -- the operator asked for this budget on each call.
+    int overrideTimeoutMs = 0;
+
     // Helper: invoke a core_service method via the nlohmann::json overload.
     //
     // `timeoutMs` exists because the transport's default deadline is 20
@@ -46,12 +52,20 @@ struct RpcClient::Impl {
     // short for anything that touches the network. An install that outran it
     // reported "RPC call failed" while the daemon carried on and finished the
     // job -- the package landed on disk and the user was told it had not.
+    //
+    // `honorOverride` lets a caller sit out the user's `--timeout`: the
+    // shutdown-confirmation probe needs its own short, fixed budget so a large
+    // override cannot stall the poll loop (see confirmDaemonStopped), and
+    // callModuleMethod has already folded the override into its own deadline.
     nlohmann::json invoke(const std::string& method,
                           const nlohmann::json& args = nlohmann::json::array(),
-                          int timeoutMs = 0) {
-        if (timeoutMs > 0) {
+                          int timeoutMs = 0,
+                          bool honorOverride = true) {
+        const int effectiveMs = (honorOverride && overrideTimeoutMs > 0)
+                                    ? overrideTimeoutMs : timeoutMs;
+        if (effectiveMs > 0) {
             return coreService->invokeRemoteMethod("core_service", method, args,
-                                                   Timeout(timeoutMs));
+                                                   Timeout(effectiveMs));
         }
         return coreService->invokeRemoteMethod("core_service", method, args);
     }
@@ -63,9 +77,10 @@ namespace {
 // shared with the daemon's own calls into the package modules. Generous on
 // purpose: the cost of waiting too long is a slow command, the cost of waiting
 // too little is telling someone their install failed while it is still
-// running and about to succeed.
-constexpr int kCatalogTimeoutMs  = rpc_deadlines::kCatalogMs;
-constexpr int kTransferTimeoutMs = rpc_deadlines::kTransferMs;
+// running and about to succeed. Each is the daemon's budget plus the reply
+// margin, so a daemon-side timeout reaches us as the daemon's own error.
+constexpr int kCatalogTimeoutMs  = rpc_deadlines::clientDeadlineFor(rpc_deadlines::kCatalogMs);
+constexpr int kTransferTimeoutMs = rpc_deadlines::clientDeadlineFor(rpc_deadlines::kTransferMs);
 constexpr int kUnloadTimeoutMs   = rpc_deadlines::kUnloadMs;
 
 // Deadlines for `shutdown`, which is the one call whose reply is expected to
@@ -211,6 +226,11 @@ std::string RpcClient::lastError() const
     return m_lastError;
 }
 
+void RpcClient::setCallTimeoutMs(int ms)
+{
+    d->overrideTimeoutMs = ms > 0 ? ms : 0;
+}
+
 // ---------------------------------------------------------------------------
 // Module lifecycle — delegate to core_service
 // ---------------------------------------------------------------------------
@@ -341,8 +361,15 @@ LogosMap RpcClient::callModuleMethod(const std::string& module,
                                       const std::string& method,
                                       const LogosList& args)
 {
+    // The daemon makes the actual call into the module, so the budget travels
+    // with the request and this leg waits a margin beyond it. Sent even when
+    // it is the default, so both legs agree on the number. A daemon that
+    // predates the fourth argument ignores it and keeps the transport default.
+    const int budgetMs = d->overrideTimeoutMs > 0 ? d->overrideTimeoutMs : Timeout().ms;
     nlohmann::json ret = d->invoke("callModuleMethod",
-                                   nlohmann::json::array({module, method, args}));
+                                   nlohmann::json::array({module, method, args, budgetMs}),
+                                   rpc_deadlines::clientDeadlineFor(budgetMs),
+                                   /*honorOverride=*/false);
     if (ret.is_object()) return ret;
     return LogosMap{{"status","error"},{"code","RPC_FAILED"},
                     {"message", fmt::format("callModuleMethod('{}','{}') RPC call failed.",
@@ -450,8 +477,12 @@ bool RpcClient::confirmDaemonStopped(long long pid, std::string& how)
     const auto deadline = std::chrono::steady_clock::now()
                         + std::chrono::milliseconds(kShutdownConfirmMs);
     for (;;) {
+        // honorOverride=false: this poll leans on a short, fixed per-probe
+        // budget (kShutdownProbeMs) to notice the endpoint going quiet. A
+        // user's `--timeout` of minutes would turn each probe into a long
+        // block and defeat the loop, so it does not apply here.
         if (!d->invoke("getStatus", nlohmann::json::array(),
-                       kShutdownProbeMs).is_object()) {
+                       kShutdownProbeMs, /*honorOverride=*/false).is_object()) {
             how = "endpoint-unreachable";
             return true;
         }
