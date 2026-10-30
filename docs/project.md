@@ -1014,8 +1014,8 @@ logosctl daemon stop
 3. Reads `daemon/state.json` for the daemon's pid **before** issuing the call — a clean shutdown deletes that file, so afterwards it is unreadable
 4. Calls `core_service.shutdown()` (5s deadline; the daemon answers before doing any work, so a slower reply is a lost one)
 5. core_service posts a main-thread timer, `LOGOSCTL_SHUTDOWN_GRACE_MS` (default 200ms) later, that drains the event loop and then calls `QCoreApplication::quit()`
-6. If the RPC response arrives: waits up to 45s for the pid from step 3 to exit, then prints success, so an immediate `daemon start` finds the config dir free. Still running ⇒ `SHUTDOWN_TIMEOUT`, naming the pid. A remote daemon has no pid to watch, so this returns at once
-7. If it does not, the client asks whether the daemon actually died, for up to 45s: by watching the pid from step 3, or — for a remote daemon, where there is no local pid — by re-probing `getStatus`. Gone ⇒ success, with `confirmed_by` naming the evidence. Still there ⇒ `RPC_FAILED`
+6. If the RPC response arrives: waits up to 120s for the pid from step 3 to exit, then prints success, so an immediate `daemon start` finds the config dir free. Still running ⇒ `SHUTDOWN_TIMEOUT`, naming the pid. A remote daemon has no pid to watch, so this returns at once
+7. If it does not, the client asks whether the daemon actually died, for up to 120s: by watching the pid from step 3, or — for a remote daemon, where there is no local pid — by re-probing `getStatus`. Gone ⇒ success, with `confirmed_by` naming the evidence. Still there ⇒ `RPC_FAILED`
 
 A zombie (exited, not yet reaped by its parent) counts as exited in both steps.
 
