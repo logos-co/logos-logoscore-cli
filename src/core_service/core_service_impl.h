@@ -50,10 +50,13 @@ public:
     LogosMap getModuleInfo(const std::string& name);
     LogosList getModuleStats();
 
-    // Proxied call -- delegates to target module
+    // Proxied call -- delegates to target module. `timeoutMs` is the caller's
+    // budget for the module call (`logosctl --timeout`); 0 keeps the transport
+    // default. The client waits a margin beyond it (rpc_deadlines.h).
     StdLogosResult callModuleMethod(const std::string& module,
                                     const std::string& method,
-                                    const LogosList& args);
+                                    const LogosList& args,
+                                    int timeoutMs = 0);
 
     // Event forwarding
     bool watchModuleEvents(const std::string& module,

@@ -69,6 +69,7 @@ logosctl [global-flags] <command> [command-flags] [args...]
 | `--json` | `-j` | Output as JSON. Default when stdout is not a TTY. |
 | `--modules-dir <path>` | `-m` | Module search directory (daemon mode only, repeatable). |
 | `--config-dir <path>` | | Override the config directory (default: `~/.logosctl`; also `LOGOSCTL_CONFIG_DIR`). Client commands must pass the same value as the daemon they target. The directory contains the `daemon/` and `client/` subtrees (see [Authentication](#authentication)). |
+| `--timeout <ms>` | | Per-call RPC timeout in milliseconds, applied to every daemon call the invocation makes (also `LOGOSCTL_TIMEOUT`). Overrides the built-in per-operation deadlines (e.g. a status query's 20 s, an install's 30 min); `0` (the default) keeps them. For `call` it is the module method's own budget: the daemon applies it, and the client waits 5 s longer so a timeout arrives as `METHOD_FAILED` (`error.code: timeout`) rather than `RPC_FAILED`. Accepted before or after the subcommand. |
 | `--quiet` | `-q` | Suppress non-essential output. |
 | `--verbose` | `-v` | Show debug/info/warning logs (suppressed by default). |
 | `--help` | `-h` | Show help. |

@@ -17,6 +17,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
+#include <limits>
 #include <map>
 #include <sstream>
 #include <string>
@@ -377,6 +378,26 @@ int main(int argc, char *argv[])
     bool quiet = false;
     app.add_flag("-q,--quiet", quiet, "Suppress non-essential output");
 
+    // Per-call RPC timeout, in milliseconds, applied to every daemon call the
+    // invocation makes. It overrides the built-in per-operation deadlines
+    // (a status query's 20 s default, an install's 30 min; see rpc_deadlines.h),
+    // so it is the one knob for "this call is slower/faster than the default
+    // assumes". Left at 0 the defaults stand. Like --json it is accepted both
+    // before the subcommand (parsed here) and after it (pulled out of the
+    // subcommand's remaining() below).
+    //
+    // For `call` it is the module method's own budget: the daemon applies it
+    // to the call it makes, and the client waits a short margin beyond that
+    // (rpc_deadlines::kReplyMarginMs) so the daemon's timeout error arrives.
+    int callTimeoutMs = 0;
+    app.add_option("--timeout", callTimeoutMs,
+                   "Per-call RPC timeout in milliseconds, applied to every daemon "
+                   "call (overrides the built-in per-operation deadlines; also "
+                   "LOGOSCTL_TIMEOUT). For `call` it is the module method's own "
+                   "budget. 0 keeps the defaults.")
+        ->envname("LOGOSCTL_TIMEOUT")
+        ->check(CLI::NonNegativeNumber);
+
     // Daemon flag (-D as shorthand for daemon subcommand)
     bool daemonFlag = false;
     app.add_flag("-D", daemonFlag, "Start the daemon process");
@@ -542,6 +563,27 @@ int main(int argc, char *argv[])
         logosctl::setEnvVar("LOGOSCTL_CONFIG_DIR", absCfgPath.string().c_str());
     }
 
+    // Shared by the two loops below that pull global flags back out of a
+    // subcommand's remaining() tokens (the after-the-subcommand placement the
+    // app-level option cannot see). Parses one --timeout value, in
+    // milliseconds, into callTimeoutMs; prints the reason and returns false on
+    // anything that is not a non-negative integer that fits the SDK's int ms.
+    const std::string kTimeoutEq = "--timeout=";
+    auto parseTimeoutArg = [&](const std::string& val) -> bool {
+        try {
+            std::size_t pos = 0;
+            long long v = std::stoll(val, &pos);
+            // (max) in parentheses: this file includes <windows.h> on Windows.
+            if (pos == val.size() && v >= 0 && v <= (std::numeric_limits<int>::max)()) {
+                callTimeoutMs = static_cast<int>(v);
+                return true;
+            }
+        } catch (...) {}
+        std::cerr << "Error: --timeout expects a non-negative integer "
+                     "(milliseconds), got '" << val << "'." << std::endl;
+        return false;
+    };
+
     // ── `daemon <verb>` / `client <verb>` routing ────────────────────────────
     // Management verbs are handled before the daemon-mode branch below, so
     // `daemon config set` and `daemon stop` never boot a second runtime.
@@ -549,10 +591,22 @@ int main(int argc, char *argv[])
         auto runManagementCommand = [&](const std::string& mapped,
                                         CLI::App* sub) -> int {
             std::vector<std::string> extras;
-            for (const auto& r : sub->remaining()) {
+            const auto& rem = sub->remaining();
+            for (std::size_t i = 0; i < rem.size(); ++i) {
+                const std::string& r = rem[i];
                 if (r == "--json" || r == "-j")               jsonMode = true;
                 else if (r == "--no-json" || r == "--human")  humanMode = true;
                 else if (r == "--quiet" || r == "-q")         quiet = true;
+                else if (r == "--timeout") {
+                    if (i + 1 >= rem.size()) {
+                        std::cerr << "Error: --timeout expects a value (milliseconds)." << std::endl;
+                        return 1;
+                    }
+                    if (!parseTimeoutArg(rem[++i])) return 1;
+                }
+                else if (r.rfind(kTimeoutEq, 0) == 0) {
+                    if (!parseTimeoutArg(r.substr(kTimeoutEq.size()))) return 1;
+                }
                 else                                          extras.push_back(r);
             }
             QCoreApplication qapp(argc, argv);
@@ -1007,13 +1061,23 @@ int main(int argc, char *argv[])
         // (global flags placed after the subcommand end up in remaining())
         std::vector<std::string> cmdArgs;
 
-        for (const auto& r : sub->remaining()) {
+        const auto& rem = sub->remaining();
+        for (std::size_t i = 0; i < rem.size(); ++i) {
+            const std::string& r = rem[i];
             if (r == "--json" || r == "-j") {
                 jsonMode = true;
             } else if (r == "--no-json" || r == "--human") {
                 humanMode = true;
             } else if (r == "--quiet" || r == "-q") {
                 quiet = true;
+            } else if (r == "--timeout") {
+                if (i + 1 >= rem.size()) {
+                    std::cerr << "Error: --timeout expects a value (milliseconds)." << std::endl;
+                    return 1;
+                }
+                if (!parseTimeoutArg(rem[++i])) return 1;
+            } else if (r.rfind(kTimeoutEq, 0) == 0) {
+                if (!parseTimeoutArg(r.substr(kTimeoutEq.size()))) return 1;
             } else {
                 cmdArgs.push_back(r);
             }
@@ -1034,6 +1098,9 @@ int main(int argc, char *argv[])
         if (humanMode)
             output.setHumanMode(true);
         RpcClient rpcClient;
+        // 0 is a no-op; a positive --timeout (or LOGOSCTL_TIMEOUT) sets the
+        // deadline for every RPC this command issues.
+        rpcClient.setCallTimeoutMs(callTimeoutMs);
 
         auto cmd = createCommand(commandName, rpcClient, output);
         if (!cmd) {

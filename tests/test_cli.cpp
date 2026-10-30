@@ -170,6 +170,67 @@ TEST_F(CLITest, NoArgs_ShowsHelp) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// Global --timeout flag
+//
+// --timeout overrides the per-call RPC deadline for every daemon call. These
+// cases need no daemon: the flag is parsed, and either accepted (then the
+// command fails on the missing daemon, not on parsing) or rejected with a
+// message of its own. Accepted on both sides of the subcommand, like --json.
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST_F(CLITest, Timeout_DocumentedInHelp) {
+    std::string output;
+    int exitCode = runLogosctl("--help", &output);
+    EXPECT_EQ(exitCode, 0);
+    EXPECT_NE(output.find("--timeout"), std::string::npos)
+        << "Help should document the --timeout flag";
+}
+
+TEST_F(CLITest, Timeout_AcceptedBeforeSubcommand) {
+    // A valid --timeout before the subcommand is accepted: the command gets
+    // as far as the daemon connection rather than being rejected on parsing.
+    // Asserted on the absence of a rejection, not the exit code -- that
+    // depends on whether a daemon (or a stale session) is around.
+    std::string output;
+    runLogosctl("--timeout 5000 status --json", &output);
+    EXPECT_EQ(output.find("--timeout expects"), std::string::npos)
+        << "A valid --timeout before the subcommand must not be rejected";
+    EXPECT_EQ(output.find("not in range"), std::string::npos)
+        << "A valid --timeout before the subcommand must not be rejected";
+}
+
+TEST_F(CLITest, Timeout_AcceptedAfterSubcommand) {
+    std::string output;
+    runLogosctl("status --timeout 5000 --json", &output);
+    EXPECT_EQ(output.find("--timeout expects"), std::string::npos)
+        << "A valid --timeout after the subcommand must not be rejected";
+}
+
+TEST_F(CLITest, Timeout_BadValueRejected) {
+    std::string output;
+    int exitCode = runLogosctl("status --timeout abc --json", &output);
+    EXPECT_NE(exitCode, 0);
+    EXPECT_NE(output.find("--timeout expects a non-negative integer"), std::string::npos)
+        << "A non-numeric --timeout should be rejected with a clear message";
+}
+
+TEST_F(CLITest, Timeout_MissingValueRejected) {
+    std::string output;
+    int exitCode = runLogosctl("status --timeout", &output);
+    EXPECT_NE(exitCode, 0);
+    EXPECT_NE(output.find("--timeout expects a value"), std::string::npos)
+        << "A --timeout with no value should be rejected with a clear message";
+}
+
+TEST_F(CLITest, Timeout_NegativeValueRejected) {
+    std::string output;
+    int exitCode = runLogosctl("status --timeout=-5 --json", &output);
+    EXPECT_NE(exitCode, 0);
+    EXPECT_NE(output.find("--timeout expects a non-negative integer"), std::string::npos)
+        << "A negative --timeout should be rejected";
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // Client commands without daemon (should fail gracefully)
 // ═════════════════════════════════════════════════════════════════════════════
 
