@@ -65,8 +65,7 @@ protected:
     // its first call into it, which covers a reload. start() is
     // idempotent, and its answer is not checked: one that predates it refuses
     // the method and is running already, and any other failure surfaces on the
-    // call that follows. Both start it with the storage node off until a
-    // download needs it.
+    // call that follows.
     void startPackageDownloader();
 
 private:

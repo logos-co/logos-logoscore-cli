@@ -336,14 +336,3 @@ TEST(PackageOpsDownload, StartsTheDownloaderBeforeDownloading)
     ASSERT_LT(download, pm.methods.size());
     EXPECT_LT(firstCall(pm.methods, "start"), download);
 }
-
-// logosctl runs a storage node only for a download that needs it.
-TEST(PackageOpsDownload, AsksForTheStorageNodeOnDemandBeforeStarting)
-{
-    FakeModules pm;
-    auto backend = pm.backend();
-    package_ops::download(backend, "S", {}, "/nonexistent");
-    const size_t start = firstCall(pm.methods, "start");
-    ASSERT_LT(start, pm.methods.size());
-    EXPECT_LT(firstCall(pm.methods, "setStorageOnDemand"), start);
-}
