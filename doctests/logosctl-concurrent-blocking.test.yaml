@@ -89,8 +89,8 @@ sections:
           Start logosctl in daemon mode in the background. It logs to
           `session/logs/daemon.log`, and `--detach` returns only once it is
           accepting commands:
-        # The bundled package downloader starts a storage node in $HOME; keep it
-        # inside the working directory.
+        # A download from a logos: url starts the bundled downloader's storage
+        # node in $HOME; keep it inside the working directory.
         run: 'mkdir -p home && HOME="$PWD/home" ./logos/bin/logosctl --config-dir ./session daemon start --detach'
         code_block: "logosctl --config-dir ./session daemon start --detach"
         expect_contains:

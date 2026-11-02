@@ -380,6 +380,10 @@ lists it on a `not available:` line with the reason, and `install` never picks
 it. `--json` output carries the downloader's per-release `sourceAvailable` and
 `sourceUnavailableReason`.
 
+The daemon runs no storage node until a download picks a Logos Storage URL. That
+download starts the node, unless it already runs, and waits up to 90 s for it;
+under `any` it then falls back to HTTP.
+
 Two defaults are worth stating plainly, because they are the opposite of what
 some tools do:
 
