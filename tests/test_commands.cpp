@@ -2186,7 +2186,8 @@ TEST_F(CommandTest, CatalogList_StartsTheDownloaderFirst)
     captureOutput([&]() { EXPECT_EQ(cmd->execute({"ls"}), 0); });
 
     EXPECT_EQ(mockClient.calledMethods, (std::vector<std::string>{
-        "package_downloader.start", "package_downloader.listRepositories"}));
+        "package_downloader.setStorageOnDemand", "package_downloader.start",
+        "package_downloader.listRepositories"}));
 }
 
 TEST_F(CommandTest, CatalogSource_StartsTheDownloaderFirst)
@@ -2197,7 +2198,8 @@ TEST_F(CommandTest, CatalogSource_StartsTheDownloaderFirst)
     captureOutput([&]() { EXPECT_EQ(cmd->execute({"source"}), 0); });
 
     EXPECT_EQ(mockClient.calledMethods, (std::vector<std::string>{
-        "package_downloader.start", "package_downloader.getDownloadSource"}));
+        "package_downloader.setStorageOnDemand", "package_downloader.start",
+        "package_downloader.getDownloadSource"}));
 }
 
 TEST_F(CommandTest, PackageSearch_StartsTheDownloaderFirst)
@@ -2208,7 +2210,8 @@ TEST_F(CommandTest, PackageSearch_StartsTheDownloaderFirst)
     captureOutput([&]() { cmd->execute({"search"}); });
 
     EXPECT_EQ(mockClient.calledMethods, (std::vector<std::string>{
-        "package_downloader.start", "package_downloader.getCatalog"}));
+        "package_downloader.setStorageOnDemand", "package_downloader.start",
+        "package_downloader.getCatalog"}));
 }
 
 TEST_F(CommandTest, PackageShow_StartsTheDownloaderBeforeTheCatalog)
@@ -2220,7 +2223,8 @@ TEST_F(CommandTest, PackageShow_StartsTheDownloaderBeforeTheCatalog)
 
     EXPECT_EQ(mockClient.calledMethods, (std::vector<std::string>{
         "package_manager.getInstalledPackages",
-        "package_downloader.start", "package_downloader.getCatalog"}));
+        "package_downloader.setStorageOnDemand", "package_downloader.start",
+        "package_downloader.getCatalog"}));
 }
 
 // ── package search / show under a restrictive download source ───────────────

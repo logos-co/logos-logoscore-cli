@@ -112,6 +112,7 @@ int Command::ensureConnected()
 
 void Command::startPackageDownloader()
 {
+    m_client.callModuleMethod("package_downloader", "setStorageOnDemand", LogosList::array({true}));
     m_client.callModuleMethod("package_downloader", "start", LogosList::array());
 }
 

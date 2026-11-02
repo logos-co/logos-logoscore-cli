@@ -285,14 +285,18 @@ void bootstrapPackageModules(LogosAPI* api,
     };
 
     // The answer is not checked, as in the client: a downloader that predates
-    // start() refuses it and is running already.
+    // start() refuses it and is running already. The storage node stays off
+    // until a download needs it, which an older downloader refuses too.
     hooks.startDownloader = [api]() {
         LogosAPIClient* pd =
             api ? api->getClient(package_bootstrap::kPackageDownloader) : nullptr;
         if (!pd) return false;
+        const QString module = QString::fromLatin1(package_bootstrap::kPackageDownloader);
+        logos::CallError onDemandErr;
+        pd->invokeRemoteMethod(module, QStringLiteral("setStorageOnDemand"), QVariantList{true},
+                               Timeout(), &onDemandErr);
         logos::CallError err;
-        pd->invokeRemoteMethod(QString::fromLatin1(package_bootstrap::kPackageDownloader),
-                               QStringLiteral("start"), QVariantList{}, Timeout(), &err);
+        pd->invokeRemoteMethod(module, QStringLiteral("start"), QVariantList{}, Timeout(), &err);
         return err.ok();
     };
 

@@ -32,9 +32,11 @@ nlohmann::json call(Backend& api, const char* module, const std::string& method,
 // package_downloader does nothing until a consumer starts it, and start() is
 // idempotent, so each operation asks before its first call into it. The answer
 // is not checked: one that predates start() refuses the method and is running
-// already, and any other failure surfaces on the call that follows.
+// already, and any other failure surfaces on the call that follows. The storage
+// node stays off until a download needs it; once started, that is refused.
 void startDownloader(Backend& api)
 {
+    call(api, kPd, "setStorageOnDemand", LogosList::array({true}));
     call(api, kPd, "start");
 }
 
