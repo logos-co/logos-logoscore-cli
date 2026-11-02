@@ -46,9 +46,9 @@ Outcome run(const Hooks& hooks, const Dirs& dirs,
             hooks.note(std::string("Loaded bundled module: ") + m.name);
     }
 
-    // Started once loaded, as Basecamp does: its storage node comes up with the
-    // session, and a stop made later sticks. `catalog` and `package` commands
-    // still start it when they need it, which covers a reload.
+    // Started once loaded, as Basecamp does. The storage node stays off until a
+    // download from a logos: url needs it. `catalog` and `package` commands
+    // still start the downloader when they need it, which covers a reload.
     if (out.downloaderLoaded && hooks.startDownloader) {
         out.downloaderStarted = hooks.startDownloader();
         if (!out.downloaderStarted)

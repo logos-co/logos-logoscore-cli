@@ -243,19 +243,14 @@ does.
 logosctl call package_downloader getState
 ```
 
-### 4.5 The downloader starts the node
+### 4.5 The node waits for a download
 
-The downloader sees the storage module become ready and starts its
-node. Nobody starts the node by hand.
+The downloader watches the storage module but leaves its node off:
+the first download from a `logos:` URL starts it.
 
 ```bash
+logosctl call package_downloader getStorageState
 logosctl call storage_module isRunning
-```
-
-### 4.6 The node is on the catalog's network
-
-```bash
-logosctl call storage_module network
 ```
 
 ---
@@ -319,7 +314,17 @@ jq -es --arg src "logos:logos.dev:$(cat cid.txt)" \
 
 ```
 
-### 6.6 The session's node now holds the package
+### 6.6 The download started the node
+
+Nobody started the node by hand: the install did, and it runs on the
+catalog's network.
+
+```bash
+logosctl call storage_module isRunning
+logosctl call storage_module network
+```
+
+### 6.7 The session's node now holds the package
 
 A node that downloads a file keeps it, and provides it to the
 network.

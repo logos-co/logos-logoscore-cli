@@ -339,30 +339,28 @@ sections:
         expect_contains:
           - '"result":"running"'
 
-      - title: "The downloader starts the node"
+      - title: "The node waits for a download"
         text: |
-          The downloader sees the storage module become ready and starts its
-          node. Nobody starts the node by hand.
+          The downloader watches the storage module but leaves its node off:
+          the first download from a `logos:` URL starts it.
         run: |
           set -eu
 
-          # The node takes a few seconds to join the network
+          # The downloader reports the node once the storage module is ready
           for _ in $(seq 30); do
-            running=$(./result-portable/bin/logosctl --config-dir ./storage-session call storage_module isRunning)
-            case "$running" in *'"result":true'*) break ;; esac
+            state=$(./result-portable/bin/logosctl --config-dir ./storage-session call package_downloader getStorageState)
+            case "$state" in *'"idle"'*) break ;; esac
             sleep 1
           done
 
-          echo "$running"
-        code_block: "logosctl call storage_module isRunning"
+          echo "$state"
+          ./result-portable/bin/logosctl --config-dir ./storage-session call storage_module isRunning
+        code_block: |
+          logosctl call package_downloader getStorageState
+          logosctl call storage_module isRunning
         expect_contains:
-          - "true"
-
-      - title: "The node is on the catalog's network"
-        run: "./result-portable/bin/logosctl --config-dir ./storage-session call storage_module network"
-        code_block: "logosctl call storage_module network"
-        expect_contains:
-          - "logos.dev"
+          - '"state":"idle"'
+          - '"result":false'
 
   - title: "Find something to install"
     step: true
@@ -452,6 +450,21 @@ sections:
             'map(select(.event == "downloadDone")) | last | .data.arg1 == $src' events.txt
         expect_contains:
           - "true"
+
+      - title: "The download started the node"
+        text: |
+          Nobody started the node by hand: the install did, and it runs on the
+          catalog's network.
+        run: |
+          set -eu
+          ./result-portable/bin/logosctl --config-dir ./storage-session call storage_module isRunning
+          ./result-portable/bin/logosctl --config-dir ./storage-session call storage_module network
+        code_block: |
+          logosctl call storage_module isRunning
+          logosctl call storage_module network
+        expect_contains:
+          - '"result":true'
+          - "logos.dev"
 
       - title: "The session's node now holds the package"
         text: |
