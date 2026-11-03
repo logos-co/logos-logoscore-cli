@@ -72,6 +72,10 @@ public:
     // silently clobber an operator's tokens during a version mismatch.
     // Missing/empty/unparseable files return false (nothing to protect).
     static bool onDiskVersionUnsupported();
+    // True iff the file has content that is not a JSON object (truncated,
+    // hand-edited). read() returns empty for it, so issuing would rewrite
+    // it with only the new token.
+    static bool onDiskCorrupt();
 };
 
 struct IssuedToken {
