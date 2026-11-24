@@ -214,13 +214,16 @@ jobs:
           [ -n "$version" ] || { echo "::error::VERSION must not be empty"; exit 1; }
           echo "tag=$version" >> "$GITHUB_OUTPUT"
 
+      # The action creates the tag when it is missing, at target_commitish --
+      # which defaults to master, so pin it to the release-branch commit built.
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           name: Pre-release ${{ steps.tag.outputs.tag }}
           prerelease: true
           body: |
-            This release ships **`logosctl`**: `logoscore`, `lgpd` and `lgpm` merged into one binary, with package management built in. Usage is in [docs/logosctl.md](https://github.com/${{ github.repository }}/blob/${{ github.sha }}/docs/logosctl.md).
+            This release ships **`logosctl`**: `logoscore`, `lgpd` and `lgpm` merged into one binary, with package management built in. Usage is in [docs/logosctl.md](https://github.com/${{ github.repository }}/blob/${{ steps.tag.outputs.tag }}/docs/logosctl.md).
 
             `logoscore` binaries are no longer published; earlier releases still carry them. The two share no state: `logosctl` keeps its session in `~/.logosctl` (`%LOCALAPPDATA%\.logosctl` on Windows) and never reads `~/.logoscore`.
 
