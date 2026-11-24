@@ -212,6 +212,12 @@ jobs:
         run: |
           version="$(tr -d '\r\n' < VERSION)"
           [ -n "$version" ] || { echo "::error::VERSION must not be empty"; exit 1; }
+          # A tag on another commit means VERSION was not bumped; a re-run of this commit passes.
+          tagged=$(git ls-remote origin "refs/tags/$version" "refs/tags/$version^{}" | tail -1 | cut -f1)
+          if [ -n "$tagged" ] && [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "::error::tag $version already exists on $tagged; bump VERSION to publish this commit"
+            exit 1
+          fi
           echo "tag=$version" >> "$GITHUB_OUTPUT"
 
       # The action creates the tag when it is missing, at target_commitish --
