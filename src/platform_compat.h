@@ -78,7 +78,8 @@ inline bool strptimeIso8601Utc(const char* s, std::tm& out)
     out.tm_sec  = sec;
     return true;
 #else
-    return ::strptime(s, "%Y-%m-%dT%H:%M:%SZ", &out) != nullptr;
+    const char* end = ::strptime(s, "%Y-%m-%dT%H:%M:%SZ", &out);
+    return end != nullptr && *end == '\0';
 #endif
 }
 
