@@ -811,7 +811,7 @@ int PackageCommand::download(const std::vector<std::string>& args)
 
     LogosMap opts = LogosMap::object();
     opts["version"] = version;
-    opts["root_hash"] = rootHash;
+    opts["rootHash"] = rootHash;
     opts["catalog"] = catalog;
     opts["output"] = outDir;
 

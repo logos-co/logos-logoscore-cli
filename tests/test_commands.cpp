@@ -1796,6 +1796,25 @@ TEST_F(CommandTest, PackageDownload_PassesOutputDirectoryThrough)
     EXPECT_EQ(mockClient.lastDownloadOpts.value("output", std::string{}), "/out");
 }
 
+// The daemon reads these keys in toOptions(); any other spelling is dropped there.
+TEST_F(CommandTest, PackageDownload_SendsPinsUnderTheKeysTheDaemonReads)
+{
+    mockClient.downloadResult = LogosMap{
+        {"status", "ok"}, {"result", LogosMap{{"path", "/x/p.lgx"}}}};
+
+    auto cmd = createCommand("package", mockClient, output);
+    captureOutput([&]() {
+        int exitCode = cmd->execute({"download", "storage_module", "--version", "1.2.0",
+                                     "--root-hash", "abc123", "--catalog", "main"});
+        EXPECT_EQ(exitCode, 0);
+    });
+
+    const LogosMap& opts = mockClient.lastDownloadOpts;
+    EXPECT_EQ(opts.value("version", std::string{}), "1.2.0");
+    EXPECT_EQ(opts.value("rootHash", std::string{}), "abc123");
+    EXPECT_EQ(opts.value("catalog", std::string{}), "main");
+}
+
 // A relative -o has to become absolute before it leaves this process: the
 // daemon does the move, and its working directory is not ours -- for a
 // detached daemon it is wherever it happened to be started.
