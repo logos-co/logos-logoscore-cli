@@ -423,3 +423,51 @@ TEST_F(TokenStoreTest, TokensFile_RejectsUnknownSchemaVersion)
     std::ofstream(p) << R"({"version":99,"tokens":[]})" << "\n";
     EXPECT_TRUE(TokensFile::read().empty());
 }
+
+// -- corrupt tokens.json must not be rewritten ------------------------------
+
+static std::string slurp(const std::string& path)
+{
+    std::ifstream ifs(path);
+    return {std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>()};
+}
+
+TEST_F(TokenStoreTest, IssueRefusesToClobberCorruptFile)
+{
+    // A truncated file used to read as empty, so the next issue (and the
+    // daemon's "auto" token at boot) rewrote it with only the new entry.
+    TokenStore store = makeStore();
+    mustIssue(store, "alice");
+    mustIssue(store, "bob");
+    const std::string path = TokensFile::filePath();
+    const std::string full = slurp(path);
+    {
+        std::ofstream ofs(path, std::ios::trunc);
+        ofs << full.substr(0, full.size() / 2);
+    }
+    const std::string before = slurp(path);
+
+    EXPECT_EQ(store.issueToken("carol").status, TokenStore::IssueStatus::IoError);
+    EXPECT_EQ(store.issueToken("auto", {}, true, true).status,
+              TokenStore::IssueStatus::IoError);
+    EXPECT_EQ(slurp(path), before);
+}
+
+TEST_F(TokenStoreTest, NonObjectFile_ReadsEmptyAndRefusesIssue)
+{
+    // Valid JSON that is not an object made json::value() throw.
+    const std::string path = TokensFile::filePath();
+    fs::create_directories(fs::path(path).parent_path());
+    for (const std::string doc : {"[]", "42", "null", "\"x\""}) {
+        {
+            std::ofstream ofs(path, std::ios::trunc);
+            ofs << doc;
+        }
+        TokenStore store = makeStore();
+        EXPECT_TRUE(TokensFile::read().empty()) << doc;
+        EXPECT_FALSE(store.lookupByToken("x", "local").has_value()) << doc;
+        EXPECT_EQ(store.issueToken("auto", {}, true, true).status,
+                  TokenStore::IssueStatus::IoError) << doc;
+        EXPECT_EQ(slurp(path), doc);
+    }
+}

@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <iostream>
 #include <sstream>
 
@@ -79,6 +80,7 @@ std::vector<TokenEntry> TokensFile::read()
     json obj;
     try { obj = json::parse(ifs); }
     catch (...) { return out; }
+    if (!obj.is_object()) return out;
 
     const int v = obj.value("version", 0);
     if (v != kTokensFileSchemaVersion) {
@@ -109,6 +111,16 @@ bool TokensFile::onDiskVersionUnsupported()
     if (!obj.is_object()) return false;
     const int v = obj.value("version", 0);
     return v != kTokensFileSchemaVersion;
+}
+
+bool TokensFile::onDiskCorrupt()
+{
+    std::ifstream ifs(filePath());
+    if (!ifs) return false;
+    const std::string body((std::istreambuf_iterator<char>(ifs)),
+                           std::istreambuf_iterator<char>());
+    if (body.find_first_not_of(" \t\r\n") == std::string::npos) return false;
+    return !json::parse(body, nullptr, /*allow_exceptions=*/false).is_object();
 }
 
 bool TokensFile::write(const std::vector<TokenEntry>& tokens)
@@ -340,6 +352,12 @@ TokenStore::issueToken(const std::string& name,
         std::cerr << "TokenStore: refusing to issue — " << TokensFile::filePath()
                   << " has an unsupported schema version. Back it up and "
                      "reissue tokens to regenerate it." << std::endl;
+        return {IssueStatus::IoError, {}};
+    }
+    if (TokensFile::onDiskCorrupt()) {
+        std::cerr << "TokenStore: refusing to issue — " << TokensFile::filePath()
+                  << " is not valid JSON. Fix or remove it, then issue again."
+                  << std::endl;
         return {IssueStatus::IoError, {}};
     }
 
